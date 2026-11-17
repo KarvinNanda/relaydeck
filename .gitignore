@@ -9,3 +9,10 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Docs stay local, except the as-built architecture doc
+docs/*
+!docs/architecture.md
+
+# Throwaway spike code (findings are kept locally under docs/)
+/spikes/
