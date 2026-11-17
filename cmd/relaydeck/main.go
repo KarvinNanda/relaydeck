@@ -2,9 +2,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/KarvinNanda/relaydeck/internal/mcpserver"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -32,7 +35,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return 0
-	case "serve", "mcp", "hook":
+	case "mcp":
+		if err := mcpserver.Run(context.Background(), os.Getenv, nil); err != nil {
+			fmt.Fprintf(stderr, "relaydeck mcp: %v\n", err)
+			return 1
+		}
+		return 0
+	case "serve", "hook":
 		fmt.Fprintf(stderr, "relaydeck %s: not implemented\n", cmd)
 		return 1
 	default:
