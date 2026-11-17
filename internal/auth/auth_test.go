@@ -323,3 +323,37 @@ func TestNewTokenLengthAndUniqueness(t *testing.T) {
 		seen[tk] = true
 	}
 }
+
+func TestGuardStatic(t *testing.T) {
+	get := func(host, origin string, setOrigin bool) req {
+		return req{method: http.MethodGet, host: host, origin: origin, setOrigin: setOrigin}
+	}
+	tests := []struct {
+		name string
+		c    req
+		want int
+	}{
+		{"ip host no token", get("127.0.0.1:7341", "", false), 200},
+		{"localhost host no token", get("localhost:7341", "", false), 200},
+		{"good origin", get("127.0.0.1:7341", "http://localhost:7341", true), 200},
+		{"evil host", get("evil.example:7341", "", false), 421},
+		{"wrong port", get("127.0.0.1:9999", "", false), 421},
+		{"empty host", get("", "", false), 421},
+		{"evil origin", get("127.0.0.1:7341", "http://evil.example", true), 403},
+		{"null origin", get("127.0.0.1:7341", "null", true), 403},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := false
+			h := newGuard().Static(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+			}))
+			if got, _ := run(h, tc.c.build()); got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+			if ran != (tc.want == 200) {
+				t.Fatalf("handler ran = %v, want %v", ran, tc.want == 200)
+			}
+		})
+	}
+}

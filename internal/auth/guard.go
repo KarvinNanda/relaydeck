@@ -9,6 +9,7 @@ import (
 )
 
 // AgentTokens maps an agent token to the agent it belongs to.
+// Implementations should look tokens up by sha256(token) (or compare in constant time), never by a prefix scan.
 type AgentTokens interface {
 	Lookup(token string) (agentID string, ok bool)
 }
@@ -93,6 +94,17 @@ func (g *Guard) UI(next http.Handler) http.Handler {
 		if !ok || g.UIToken == "" ||
 			subtle.ConstantTimeCompare([]byte(t), []byte(g.UIToken)) != 1 {
 			unauthorized(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Static guards routes that serve public files (the UI bundle): Host and Origin
+// (if present) are checked, no credentials. This keeps a DNS-rebound origin out.
+func (g *Guard) Static(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !g.checkHostOrigin(w, r, false) {
 			return
 		}
 		next.ServeHTTP(w, r)
