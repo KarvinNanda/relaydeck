@@ -16,3 +16,10 @@ docs/*
 
 # Throwaway spike code (findings are kept locally under docs/)
 /spikes/
+
+# Build output
+/relaydeck
+/relaydeck.exe
+web/node_modules/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
