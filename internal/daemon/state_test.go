@@ -47,9 +47,14 @@ func TestAddWorkspaceAndFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Ruling 17: the account is kept on darwin and linux, dropped on windows.
+	wantAccount := "2"
+	if e.opts.GOOS == "windows" {
+		wantAccount = ""
+	}
 	_, saved, ok := c.Folder("v", "c")
-	if !ok || saved.Path != real || saved.Account != "2" {
-		t.Fatalf("saved folder = %+v ok %v", saved, ok)
+	if !ok || saved.Path != real || saved.Account != wantAccount || f.Account != wantAccount {
+		t.Fatalf("saved folder = %+v ok %v, want account %q on %s", saved, ok, wantAccount, e.opts.GOOS)
 	}
 
 	file := filepath.Join(t.TempDir(), "file.txt")
@@ -191,6 +196,10 @@ func TestCswapPoll(t *testing.T) {
 	answer := cswap.Info{DefaultAccount: "2"}
 	var answerErr error
 	e := newEnv(t, func(o *Options) {
+		// The poll logic is the same on darwin and linux. Pin a cswap
+		// platform so this also runs on windows runners; the windows rule
+		// (never poll) is TestCswapNotPolledOnWindows.
+		o.GOOS = "linux"
 		o.CswapPath = "/opt/cswap"
 		o.CswapEvery = 20 * time.Millisecond
 		o.Config.Workspaces[0].Folders[0].Account = "2"
@@ -235,6 +244,42 @@ func TestCswapPoll(t *testing.T) {
 	st = e.d.State()
 	if st.Account.Default != "" || st.Workspaces[0].Folders[0].OnDefaultLogin {
 		t.Fatalf("guessed an account after an error: %+v", st.Account)
+	}
+}
+
+// Rulings 13 and 17: on windows cswap is never polled, even when a cswap
+// path is passed, and the account stays unknown.
+func TestCswapNotPolledOnWindows(t *testing.T) {
+	called := make(chan struct{}, 1)
+	e := newEnv(t, func(o *Options) {
+		o.GOOS = "windows"
+		o.CswapPath = "/opt/cswap"
+		o.CswapEvery = 10 * time.Millisecond
+		o.Config.Workspaces[0].Folders[0].Account = "2"
+		o.CswapStatus = func(context.Context, string) (cswap.Info, error) {
+			select {
+			case called <- struct{}{}:
+			default:
+			}
+			return cswap.Info{DefaultAccount: "2"}, nil
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.d.Run(ctx); close(done) }()
+	select {
+	case <-called:
+		t.Fatal("cswap polled on windows")
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	<-done
+	st := e.d.State()
+	if st.Account != (Account{}) {
+		t.Fatalf("account on windows = %+v, want zero", st.Account)
+	}
+	if f := st.Workspaces[0].Folders[0]; f.Account != "" || f.OnDefaultLogin {
+		t.Fatalf("folder on windows shows account %q, on default %v", f.Account, f.OnDefaultLogin)
 	}
 }
 
