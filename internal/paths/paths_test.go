@@ -155,3 +155,26 @@ func TestClaudeHome(t *testing.T) {
 		}
 	})
 }
+
+func TestCanonicalizeUnreadableParent(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	base := realTemp(t)
+	parent := filepath.Join(base, "locked")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	got, err := Canonicalize(child)
+	if err != nil {
+		t.Fatalf("existing dir below a search-only parent must be accepted: %v", err)
+	}
+	if got != child {
+		t.Errorf("got %q, want %q", got, child)
+	}
+}

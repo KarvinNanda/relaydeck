@@ -50,7 +50,8 @@ func Canonicalize(p string) (string, error) {
 
 // walkCase rebuilds p one component at a time, replacing each component with
 // the matching directory entry's on-disk spelling. An exact match wins over a
-// case-insensitive one. A component with no match is kept as given.
+// case-insensitive one. A component with no match, or below a directory that cannot be listed,
+// is kept as given.
 func walkCase(p string) (string, error) {
 	vol := filepath.VolumeName(p)
 	rest := strings.TrimPrefix(p, vol)
@@ -61,7 +62,10 @@ func walkCase(p string) (string, error) {
 		}
 		entries, err := os.ReadDir(cur)
 		if err != nil {
-			return "", err
+			// A search-only parent (mode --x) cannot be listed, so the case
+			// cannot be fixed here. Keep the part as given and go on.
+			cur = filepath.Join(cur, part)
+			continue
 		}
 		name := part
 		folded := ""
