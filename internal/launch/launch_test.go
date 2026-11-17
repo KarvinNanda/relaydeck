@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,14 @@ const (
 	testUUID2 = "223e4567-e89b-42d3-a456-426614174000"
 	testToken = "tok-SECRET-0123456789"
 )
+
+// testRuntimeDir is absolute on the host OS, as Build requires.
+var testRuntimeDir = func() string {
+	if runtime.GOOS == "windows" {
+		return `C:\run\agent-1`
+	}
+	return "/run/agent-1"
+}()
 
 func base() Input {
 	return Input{
@@ -30,7 +39,7 @@ func base() Input {
 		DaemonURL:    "http://127.0.0.1:7341",
 		NewSessionID: testUUID,
 		GOOS:         "linux",
-		RuntimeDir:   "/run/agent-1",
+		RuntimeDir:   testRuntimeDir,
 		BaseEnv:      []string{"PATH=/bin"},
 	}
 }
@@ -54,8 +63,8 @@ func TestBuildPlainClaude(t *testing.T) {
 	}
 	want := map[string]string{
 		"--permission-mode": "auto",
-		"--mcp-config":      filepath.Join("/run/agent-1", "mcp.json"),
-		"--settings":        filepath.Join("/run/agent-1", "settings.json"),
+		"--mcp-config":      filepath.Join(testRuntimeDir, "mcp.json"),
+		"--settings":        filepath.Join(testRuntimeDir, "settings.json"),
 		"--session-id":      testUUID,
 		"--name":            "ws/api",
 	}
@@ -73,7 +82,7 @@ func TestBuildPlainClaude(t *testing.T) {
 	if c.Dir != "/p/api" {
 		t.Errorf("Dir = %q", c.Dir)
 	}
-	for _, k := range []string{filepath.Join("/run/agent-1", "mcp.json"), filepath.Join("/run/agent-1", "settings.json")} {
+	for _, k := range []string{filepath.Join(testRuntimeDir, "mcp.json"), filepath.Join(testRuntimeDir, "settings.json")} {
 		if len(c.Files[k]) == 0 {
 			t.Errorf("missing file %s", k)
 		}
@@ -291,7 +300,7 @@ func TestSettingsHooksJSON(t *testing.T) {
 		}
 		Permissions any
 	}
-	if err := json.Unmarshal(c.Files[filepath.Join("/run/agent-1", "settings.json")], &s); err != nil {
+	if err := json.Unmarshal(c.Files[filepath.Join(testRuntimeDir, "settings.json")], &s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Permissions != nil {
@@ -362,7 +371,7 @@ func TestMCPJSON(t *testing.T) {
 			Args          []string
 		}
 	}
-	if err := json.Unmarshal(c.Files[filepath.Join("/run/agent-1", "mcp.json")], &m); err != nil {
+	if err := json.Unmarshal(c.Files[filepath.Join(testRuntimeDir, "mcp.json")], &m); err != nil {
 		t.Fatal(err)
 	}
 	r := m.McpServers["relaydeck"]
