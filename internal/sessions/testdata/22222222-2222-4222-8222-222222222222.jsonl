@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"first prompt"}}
+{"type":"ai-title","aiTitle":"Old title","sessionId":"a"}
+not json {"type":"user"
+{"type":"ai-title","aiTitle":"Final title","sessionId":"a"}
