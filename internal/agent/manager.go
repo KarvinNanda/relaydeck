@@ -149,6 +149,19 @@ func (m *Manager) Get(id string) (*Agent, bool) {
 	return a, ok
 }
 
+// Remove forgets a stopped agent so its scrollback can be freed. It refuses a
+// running agent and reports whether the agent was removed.
+func (m *Manager) Remove(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.agents[id]
+	if !ok || !a.isStopped() {
+		return false
+	}
+	delete(m.agents, id)
+	return true
+}
+
 // Events returns a channel of status events and a cancel function. The
 // channel is buffered and sends never block: a slow consumer misses events.
 func (m *Manager) Events() (<-chan Event, func()) {

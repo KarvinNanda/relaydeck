@@ -271,6 +271,15 @@ func (a *Agent) Stop(grace time.Duration) error {
 		return nil
 	case <-time.After(grace):
 	}
+	return a.Kill()
+}
+
+// Kill ends the process tree at once without typing anything, and returns
+// once the process is gone. Use it when /exit could join a draft.
+func (a *Agent) Kill() error {
+	if a.isStopped() {
+		return nil
+	}
 	var err error
 	if p := a.cmd.Process; p != nil {
 		if err = killTree(p); errors.Is(err, os.ErrProcessDone) {
