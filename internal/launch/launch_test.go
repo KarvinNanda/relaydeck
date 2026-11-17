@@ -3,6 +3,7 @@ package launch
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -53,8 +54,8 @@ func TestBuildPlainClaude(t *testing.T) {
 	}
 	want := map[string]string{
 		"--permission-mode": "auto",
-		"--mcp-config":      "/run/agent-1/mcp.json",
-		"--settings":        "/run/agent-1/settings.json",
+		"--mcp-config":      filepath.Join("/run/agent-1", "mcp.json"),
+		"--settings":        filepath.Join("/run/agent-1", "settings.json"),
 		"--session-id":      testUUID,
 		"--name":            "ws/api",
 	}
@@ -72,7 +73,7 @@ func TestBuildPlainClaude(t *testing.T) {
 	if c.Dir != "/p/api" {
 		t.Errorf("Dir = %q", c.Dir)
 	}
-	for _, k := range []string{"/run/agent-1/mcp.json", "/run/agent-1/settings.json"} {
+	for _, k := range []string{filepath.Join("/run/agent-1", "mcp.json"), filepath.Join("/run/agent-1", "settings.json")} {
 		if len(c.Files[k]) == 0 {
 			t.Errorf("missing file %s", k)
 		}
@@ -290,7 +291,7 @@ func TestSettingsHooksJSON(t *testing.T) {
 		}
 		Permissions any
 	}
-	if err := json.Unmarshal(c.Files["/run/agent-1/settings.json"], &s); err != nil {
+	if err := json.Unmarshal(c.Files[filepath.Join("/run/agent-1", "settings.json")], &s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Permissions != nil {
@@ -332,7 +333,7 @@ func TestMCPJSON(t *testing.T) {
 			Args          []string
 		}
 	}
-	if err := json.Unmarshal(c.Files["/run/agent-1/mcp.json"], &m); err != nil {
+	if err := json.Unmarshal(c.Files[filepath.Join("/run/agent-1", "mcp.json")], &m); err != nil {
 		t.Fatal(err)
 	}
 	r := m.McpServers["relaydeck"]
