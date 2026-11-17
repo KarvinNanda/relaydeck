@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/KarvinNanda/relaydeck/internal/auth"
 )
@@ -32,12 +33,11 @@ func post(h http.Handler, body string) *httptest.ResponseRecorder {
 }
 
 func TestRunForwardsOnlyKnownFields(t *testing.T) {
-	var got string
-	var auth string
+	type seen struct{ body, authz string }
+	ch := make(chan seen, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		got = string(b)
-		auth = r.Header.Get("Authorization")
+		ch <- seen{string(b), r.Header.Get("Authorization")}
 		if r.URL.Path != "/agent/hook" || r.Method != "POST" {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
 		}
@@ -49,14 +49,16 @@ func TestRunForwardsOnlyKnownFields(t *testing.T) {
 	if err := Run("SessionStart", strings.NewReader(stdin), func(k string) string { return env[k] }, srv.Client()); err != nil {
 		t.Fatal(err)
 	}
+	sn := <-ch
+	got := sn.body
 	if strings.Contains(got, "secret") || strings.Contains(got, "/x") {
 		t.Errorf("body leaks fields: %s", got)
 	}
 	if !strings.Contains(got, `"event":"SessionStart"`) || !strings.Contains(got, goodID) || !strings.Contains(got, `"source":"resume"`) {
 		t.Errorf("body = %s", got)
 	}
-	if auth != "Bearer tok" {
-		t.Errorf("auth = %q", auth)
+	if sn.authz != "Bearer tok" {
+		t.Errorf("authz = %q", sn.authz)
 	}
 }
 
@@ -106,6 +108,81 @@ func TestRunTimeout(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("took %v", d)
+	}
+}
+
+func TestRunStdinNeverClosedIsCutOff(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	env := map[string]string{"RELAYDECK_URL": "http://127.0.0.1:1", "RELAYDECK_AGENT_TOKEN": "tok"}
+	start := time.Now()
+	err := Run("Stop", pr, func(k string) string { return env[k] }, nil)
+	if err == nil {
+		t.Error("want error")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("took %v", d)
+	}
+}
+
+func TestRunDoesNotFollowRedirects(t *testing.T) {
+	var evilHits int32
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&evilHits, 1) }))
+	defer evil.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	env := map[string]string{"RELAYDECK_URL": srv.URL, "RELAYDECK_AGENT_TOKEN": "tok"}
+	err := Run("Stop", strings.NewReader("{}"), func(k string) string { return env[k] }, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "307") {
+		t.Errorf("err = %v", err)
+	}
+	if atomic.LoadInt32(&evilHits) != 0 {
+		t.Error("redirect was followed")
+	}
+}
+
+func TestRunRejectsNonLoopbackURLAndEmptyToken(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&hits, 1) }))
+	defer srv.Close()
+	for _, u := range []string{"http://example.com:7341", "http://10.0.0.1:7341", "http://127.0.0.1.evil.test", "ftp://127.0.0.1", "not a url"} {
+		env := map[string]string{"RELAYDECK_URL": u, "RELAYDECK_AGENT_TOKEN": "tok"}
+		if err := Run("Stop", strings.NewReader("{}"), func(k string) string { return env[k] }, nil); err == nil {
+			t.Errorf("url %q accepted", u)
+		}
+	}
+	env := map[string]string{"RELAYDECK_URL": srv.URL}
+	if err := Run("Stop", strings.NewReader("{}"), func(k string) string { return env[k] }, srv.Client()); err == nil {
+		t.Error("empty token accepted")
+	}
+	if hits != 0 {
+		t.Error("request sent")
+	}
+	env = map[string]string{"RELAYDECK_URL": "http://localhost:1", "RELAYDECK_AGENT_TOKEN": "tok"}
+	err := Run("Stop", strings.NewReader("{}"), func(k string) string { return env[k] }, nil)
+	if err != nil && strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("localhost refused: %v", err)
+	}
+}
+
+func TestHandlerCapsFields(t *testing.T) {
+	var got Report
+	h := guarded(Handler(func(_ string, r Report) { got = r }))
+	msg := strings.Repeat("é", 2000) // 4000 bytes
+	body := `{"event":"Notification","message":"` + msg + `","source":"` + strings.Repeat("a", 65) + `","notification_type":"bad\u0000type"}`
+	if rec := post(h, body); rec.Code != 204 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	if len(got.Message) > 2048 || !utf8.ValidString(got.Message) || got.Message == "" {
+		t.Errorf("message len %d valid %v", len(got.Message), utf8.ValidString(got.Message))
+	}
+	if got.Source != "" || got.NotificationType != "" {
+		t.Errorf("source %q type %q kept", got.Source, got.NotificationType)
+	}
+	if rec := post(h, `{"event":"Notification","source":"startup","notification_type":"idle_prompt"}`); rec.Code != 204 || got.Source != "startup" || got.NotificationType != "idle_prompt" {
+		t.Errorf("good values dropped: %+v", got)
 	}
 }
 

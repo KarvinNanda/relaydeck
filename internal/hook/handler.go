@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"unicode/utf8"
 
 	"github.com/KarvinNanda/relaydeck/internal/auth"
 )
@@ -12,6 +13,31 @@ import (
 const maxBody = 64 << 10
 
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// capRunes cuts s to at most n bytes without splitting a UTF-8 character.
+func capRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// shortASCII returns s if it is at most 64 printable ASCII characters, else "".
+func shortASCII(s string) string {
+	if len(s) > 64 {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return ""
+		}
+	}
+	return s
+}
 
 // StatusFor maps a report to an agent status. ok is false for an unknown event.
 func StatusFor(r Report) (status string, ok bool) {
@@ -64,6 +90,9 @@ func Handler(onEvent func(agentID string, r Report)) http.Handler {
 		if !uuidRE.MatchString(r.SessionID) {
 			r.SessionID = ""
 		}
+		r.Message = capRunes(r.Message, maxMessage)
+		r.Source = shortASCII(r.Source)
+		r.NotificationType = shortASCII(r.NotificationType)
 		onEvent(id, r)
 		w.WriteHeader(http.StatusNoContent)
 	})
