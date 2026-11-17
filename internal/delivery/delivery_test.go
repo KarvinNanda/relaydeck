@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +34,11 @@ type fakeAgents struct {
 	injected    [][]byte
 }
 
-func (f *fakeAgents) Running(ws, folder string) bool { f.mu.Lock(); defer f.mu.Unlock(); return f.running }
+func (f *fakeAgents) Running(ws, folder string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.running
+}
 func (f *fakeAgents) Status(ws, folder string) agent.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -95,6 +101,7 @@ func newRig() *rig {
 	r := notify.NewRouter(dir{"ws": {"be", "fe"}}, c.now, func() string { n++; return fmt.Sprintf("m%d", n) })
 	fa := &fakeAgents{running: true, status: agent.StatusIdle, scr: readyScreen}
 	d := New(r, fa, 0, c.now)
+	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	d.Targets = func() []Target { return []Target{{"ws", "fe"}} }
 	return &rig{r, fa, d, c}
 }
@@ -137,7 +144,6 @@ func TestIdleTargetGetsOneNudge(t *testing.T) {
 		t.Fatal("body typed")
 	}
 }
-
 
 func TestBusyTargetWaits(t *testing.T) {
 	for _, s := range []agent.Status{agent.StatusBusy, agent.StatusAttention, agent.StatusStarting} {
