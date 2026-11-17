@@ -179,3 +179,13 @@ func TestScrollbackIsBounded(t *testing.T) {
 		t.Fatalf("scrollback length = %d, want <= 1", n)
 	}
 }
+
+func TestPanelCharsBelowAnchoredBoxNotReady(t *testing.T) {
+	s := New(100, 30, nil)
+	// Lower rule at 1-based row 28 (index rows-3), so the anchoring rule
+	// passes. Only the box-drawing chars in the row below can fail it.
+	s.Write(boxFrame(26, "╭────╮", "footer"))
+	if st := s.State(); st.Ready() {
+		t.Fatalf("panel chars below an anchored box must not be Ready: %+v", st)
+	}
+}
