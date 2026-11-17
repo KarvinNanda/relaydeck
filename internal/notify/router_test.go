@@ -437,3 +437,20 @@ func TestSendPendingCap(t *testing.T) {
 		t.Fatalf("after read: %v", err)
 	}
 }
+
+func TestReadNStrictFIFO(t *testing.T) {
+	r := newTestRouter()
+	for _, n := range []int{1000, 5000, 10} {
+		if _, err := r.Send("ws", "fe", "be", strings.Repeat("a", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, rest := r.ReadN("ws", "be", 3000)
+	if len(got) != 1 || len(got[0].Body) != 1000 || rest != 2 {
+		t.Fatalf("got %d msgs rest %d", len(got), rest)
+	}
+	got, rest = r.ReadN("ws", "be", 3000)
+	if len(got) != 1 || len(got[0].Body) != 5000 || rest != 1 {
+		t.Fatalf("second: got %d msgs rest %d", len(got), rest)
+	}
+}

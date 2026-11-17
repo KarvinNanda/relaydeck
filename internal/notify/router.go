@@ -153,6 +153,7 @@ func (r *Router) ReadN(ws, agent string, maxBytes int) (msgs []Message, remainin
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	used, maxHop := 0, 0
+	full := false
 	for _, m := range r.msgs {
 		if m.Workspace != ws || m.To != agent {
 			continue
@@ -161,7 +162,9 @@ func (r *Router) ReadN(ws, agent string, maxBytes int) (msgs []Message, remainin
 			continue
 		}
 		size := len(Envelope(*m))
-		if len(msgs) > 0 && used+size > maxBytes {
+		if full || (len(msgs) > 0 && used+size > maxBytes) {
+			// Strict FIFO: after the first message that does not fit, nothing later is taken.
+			full = true
 			remaining++
 			continue
 		}

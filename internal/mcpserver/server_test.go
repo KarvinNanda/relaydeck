@@ -229,8 +229,8 @@ func TestHandlerAuthAndErrors(t *testing.T) {
 	if code, _ := post(t, d, "/agent/tools/notify", "tok-fe", "not json"); code != 400 {
 		t.Fatalf("bad json: %d", code)
 	}
-	big := `{"target":"be","message":"` + strings.Repeat("a", 70<<10) + `"}`
-	if code, b := post(t, d, "/agent/tools/notify", "tok-fe", big); code != 400 || !strings.Contains(b, "request body over 64 KiB") {
+	big := `{"target":"be","message":"` + strings.Repeat("a", 140<<10) + `"}`
+	if code, b := post(t, d, "/agent/tools/notify", "tok-fe", big); code != 400 || !strings.Contains(b, "request body over 128 KiB") {
 		t.Fatalf("oversize: %d %s", code, b)
 	}
 }
@@ -372,5 +372,36 @@ func TestClientRejectsOversizeAnswer(t *testing.T) {
 	res := call(t, cs, "read_messages", nil)
 	if !res.IsError || text(res) != "daemon response unreadable or too large" {
 		t.Fatalf("got %q err=%v", text(res), res.IsError)
+	}
+}
+
+func TestReadMessagesEscapeHeavyNoLoss(t *testing.T) {
+	d := newDaemon(t)
+	fe := connect(t, d, "tok-fe")
+	be := connect(t, d, "tok-be")
+	const total = 50
+	for i := 0; i < total; i++ {
+		// Control characters are valid UTF-8 but JSON-escape to 6 bytes each.
+		body := fmt.Sprintf("%02d", i) + strings.Repeat("\x01", 16<<10-2)
+		if res := call(t, fe, "notify", map[string]any{"target": "be", "message": body}); res.IsError {
+			t.Fatalf("notify %d: %q", i, text(res))
+		}
+	}
+	got := 0
+	for calls := 0; got < total; calls++ {
+		if calls > total {
+			t.Fatal("too many calls")
+		}
+		res := call(t, be, "read_messages", nil)
+		if res.IsError {
+			t.Fatalf("read error after %d messages: %q", got, text(res))
+		}
+		got += strings.Count(text(res), "[relaydeck message] from agent")
+	}
+	if got != total {
+		t.Fatalf("got %d messages, want %d", got, total)
+	}
+	if s := text(call(t, be, "read_messages", nil)); s != "No messages." {
+		t.Fatalf("leftover %q", s)
 	}
 }

@@ -15,9 +15,13 @@ import (
 )
 
 const (
-	maxBody     = 64 << 10
-	readBudget  = 256 << 10 // bytes of envelopes per read_messages answer
-	maxRespSize = 1 << 20   // the client refuses answers above this
+	maxBody = 128 << 10 // 16 KiB body, worst case 6x JSON escaping = 96 KiB
+	// readBudget is the raw envelope bytes per read_messages answer. Worst case
+	// every byte is a control character that JSON escapes to 6 bytes: 128 KiB * 6
+	// = 768 KiB, plus overhead and one oversized first message, still under the
+	// client's maxRespSize (1 MiB). HTML escaping is off, so < > & stay 1 byte.
+	readBudget  = 128 << 10
+	maxRespSize = 1 << 20 // the client refuses answers above this
 )
 
 type notifyArgs struct {
@@ -53,7 +57,7 @@ func Handlers(r *notify.Router, dir notify.Directory, status func(ws, folder str
 			if derr := json.NewDecoder(req.Body).Decode(&a); derr != nil {
 				var mbe *http.MaxBytesError
 				if errors.As(derr, &mbe) {
-					writeErr(w, http.StatusBadRequest, "request body over 64 KiB")
+					writeErr(w, http.StatusBadRequest, "request body over 128 KiB")
 					return
 				}
 				writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -123,5 +127,7 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
 }
