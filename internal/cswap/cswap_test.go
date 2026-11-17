@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -48,20 +49,59 @@ func TestMapNoMappings(t *testing.T) {
 }
 
 func TestMapParsesClearLine(t *testing.T) {
-	out := "Directory mappings:\n  /work/a  ->  Account-2 (user1@example.com)\n  /work/ab -> Account-5\n"
-	acc, ok := parseMap(out, "/work/a")
-	if !ok || acc != "2" {
+	a := filepath.Join(os.TempDir(), "work", "a")
+	ab := filepath.Join(os.TempDir(), "work", "ab")
+	parent := filepath.Join(os.TempDir(), "work")
+	out := "Directory mappings:\n  " + a + "  ->  Account-2 (user1@example.com)\n  " + ab + " -> Account-5\n"
+	if acc, ok := parseMap(out, a); !ok || acc != "2" {
 		t.Fatalf("got %q %v", acc, ok)
 	}
-	acc, ok = parseMap(out, "/work/ab")
-	if !ok || acc != "5" {
+	if acc, ok := parseMap(out, ab); !ok || acc != "5" {
 		t.Fatalf("got %q %v", acc, ok)
 	}
-	if _, ok := parseMap(out, "/work"); ok {
+	if _, ok := parseMap(out, parent); ok {
 		t.Fatal("prefix of a path must not match")
 	}
-	if _, ok := parseMap("/work/a is mapped somewhere\n", "/work/a"); ok {
-		t.Fatal("a line with no account must be skipped")
+	slash := "  " + filepath.ToSlash(a) + " -> user1@example.com\n"
+	if acc, ok := parseMap(slash, a); !ok || acc != "user1@example.com" {
+		t.Fatalf("got %q %v", acc, ok)
+	}
+	if acc, ok := parseMap("1) "+a+" -> Account-2\n", a); !ok || acc != "2" {
+		t.Fatalf("list number must not win: %q %v", acc, ok)
+	}
+}
+
+func TestMapSkipsUnclearLines(t *testing.T) {
+	a := filepath.Join(os.TempDir(), "work", "a")
+	for _, line := range []string{
+		a + " is mapped somewhere\n",
+		"1) " + a + "\n",
+		a + " 5\n",
+		"Account-2 maps nothing here\n",
+	} {
+		if acc, ok := parseMap(line, a); ok {
+			t.Errorf("%q: got %q", line, acc)
+		}
+	}
+}
+
+func TestMapIgnoresCaseOnCaseInsensitiveOS(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive only on darwin and windows")
+	}
+	a := filepath.Join(os.TempDir(), "work", "a")
+	line := strings.ToUpper(a) + " -> Account-4\n"
+	if acc, ok := parseMap(line, a); !ok || acc != "4" {
+		t.Fatalf("got %q %v", acc, ok)
+	}
+}
+
+func TestIndexFoldKeepsOffsets(t *testing.T) {
+	if got := indexFold("Ä /X/y -> Z", "/x/Y", true); got != 3 {
+		t.Fatalf("got %d", got)
+	}
+	if got := indexFold("/X/y", "/x/Y", false); got != -1 {
+		t.Fatalf("got %d", got)
 	}
 }
 

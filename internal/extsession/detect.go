@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -73,17 +74,33 @@ func (d Detector) Open(ctx context.Context, dir, sessionID string, exclude map[i
 		if s.Kind != "interactive" || exclude[s.PID] {
 			continue
 		}
-		if (sessionID != "" && s.SessionID == sessionID) || (s.Cwd != "" && samePath(s.Cwd, dir)) {
+		// An unknown cwd cannot be ruled out, so it counts as open.
+		if (sessionID != "" && s.SessionID == sessionID) || s.Cwd == "" || samePath(s.Cwd, dir) {
 			return s.PID, true, nil
 		}
 	}
 	return 0, false, nil
 }
 
-// samePath compares two paths after cleaning. darwin and windows file systems
-// are treated as case-insensitive.
+// samePath compares two paths after cleaning, and again after resolving
+// symlinks (when resolution fails the cleaned path is used). Either form
+// matching is enough. darwin and windows are treated as case-insensitive.
 func samePath(a, b string) bool {
 	a, b = filepath.Clean(a), filepath.Clean(b)
+	if equalPath(a, b) {
+		return true
+	}
+	return equalPath(resolve(a), resolve(b))
+}
+
+func resolve(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(r)
+	}
+	return p
+}
+
+func equalPath(a, b string) bool {
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		return strings.EqualFold(a, b)
 	}
@@ -118,13 +135,15 @@ func runAgents(ctx context.Context) ([]Session, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run claude agents: %w", err)
+		return nil, fmt.Errorf("run claude agents: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return ParseAgents(stdout.Bytes())
 }
 
 // ListProcs scans the process list for claude binaries and reports each one
-// with its working directory. It cannot know the session id.
+// with its working directory. It cannot know the session id. A claude process
+// whose cwd cannot be read is kept with an empty Cwd, which Open treats as
+// open.
 func ListProcs() ([]Session, error) {
 	ps, err := process.Processes()
 	if err != nil {
@@ -132,24 +151,37 @@ func ListProcs() ([]Session, error) {
 	}
 	var out []Session
 	for _, p := range ps {
-		if !looksLikeClaude(p) {
+		name, _ := p.Name()
+		exe, exeErr := p.Exe()
+		if !classify(name, exe, exeErr) {
 			continue
 		}
-		cwd, err := p.Cwd()
-		if err != nil || cwd == "" {
-			continue
-		}
-		out = append(out, Session{PID: int(p.Pid), Cwd: cwd, Kind: "interactive"})
+		cwd, cwdErr := p.Cwd()
+		out = append(out, toSession(int(p.Pid), cwd, cwdErr))
 	}
 	return out, nil
 }
 
-func looksLikeClaude(p *process.Process) bool {
-	if exe, err := p.Exe(); err == nil {
-		if strings.Contains(exe, "/claude/versions/") || strings.Contains(exe, `\claude\versions\`) {
-			return true
-		}
+// toSession builds a Session for a claude process. An unreadable cwd becomes
+// an empty Cwd instead of dropping the process.
+func toSession(pid int, cwd string, cwdErr error) Session {
+	if cwdErr != nil {
+		cwd = ""
 	}
-	name, err := p.Name()
-	return err == nil && (name == "claude" || name == "claude.exe")
+	return Session{PID: pid, Cwd: cwd, Kind: "interactive"}
+}
+
+var versionNameRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+// classify says whether a process may be claude. The native build reports its
+// version string as the process name, so when the exe path cannot be read and
+// the name looks like a version, it is treated as claude (cannot rule out).
+func classify(name, exe string, exeErr error) bool {
+	if exeErr == nil && (strings.Contains(exe, "/claude/versions/") || strings.Contains(exe, `\claude\versions\`)) {
+		return true
+	}
+	if name == "claude" || name == "claude.exe" {
+		return true
+	}
+	return exeErr != nil && versionNameRe.MatchString(name)
 }

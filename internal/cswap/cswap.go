@@ -35,16 +35,18 @@ type Info struct {
 var (
 	statusRe  = regexp.MustCompile(`(?m)^Status: Account-(\d+) \(`)
 	accountRe = regexp.MustCompile(`^Account-(\d+)$`)
+	emailRe   = regexp.MustCompile(`^[^@\s/]+@[^@\s/]+\.[^@\s/]+$`)
 )
 
 func run(ctx context.Context, path string, argv []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, argv...)
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("run cswap %s: %w", argv[0], err)
+		return "", fmt.Errorf("run cswap %s: %w: %s", argv[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }
@@ -77,53 +79,69 @@ func MappedAccount(ctx context.Context, path, dir string) (string, bool, error) 
 	return acc, ok, nil
 }
 
-// parseMap looks for a line that holds dir as a whole path and an account
-// number (Account-N or a bare number) or an email. The list format is not
-// documented, so any other line is skipped.
+// parseMap looks for a line that holds dir as a whole path and, on the same
+// line, an Account-N token or an email. The list format is not documented, so
+// any other line is skipped. The path is searched in its native form and with
+// forward slashes.
 func parseMap(out, dir string) (string, bool) {
 	dir = filepath.Clean(dir)
-	fold := runtime.GOOS == "darwin" || runtime.GOOS == "windows"
-	if fold {
-		dir = strings.ToLower(dir)
+	cands := []string{dir}
+	if s := filepath.ToSlash(dir); s != dir {
+		cands = append(cands, s)
 	}
+	fold := runtime.GOOS == "darwin" || runtime.GOOS == "windows"
 	for _, line := range strings.Split(out, "\n") {
-		hay := line
-		if fold {
-			hay = strings.ToLower(line)
-		}
-		i := strings.Index(hay, dir)
-		if i < 0 {
-			continue
-		}
-		end := i + len(dir)
-		if end < len(hay) && !strings.ContainsRune(" \t\"'),;:", rune(hay[end])) {
-			continue
-		}
-		if i > 0 && !strings.ContainsRune(" \t\"'(", rune(hay[i-1])) {
-			continue
-		}
-		rest := line[:i] + " " + line[end:]
-		for _, f := range strings.Fields(rest) {
-			f = strings.Trim(f, "()[],;:\"'")
-			if m := accountRe.FindStringSubmatch(f); m != nil {
-				return m[1], true
+		for _, c := range cands {
+			i := findPath(line, c, fold)
+			if i < 0 {
+				continue
 			}
-			if isNumber(f) || strings.Contains(f, "@") {
-				return f, true
+			rest := line[:i] + " " + line[i+len(c):]
+			for _, f := range strings.Fields(rest) {
+				f = strings.Trim(f, "()[],;:\"'")
+				if m := accountRe.FindStringSubmatch(f); m != nil {
+					return m[1], true
+				}
+				if emailRe.MatchString(f) {
+					return f, true
+				}
 			}
 		}
 	}
 	return "", false
 }
 
-func isNumber(s string) bool {
-	if s == "" {
-		return false
+// findPath returns the offset of path in line when it appears as a whole
+// path, not as part of a longer one, or -1.
+func findPath(line, path string, fold bool) int {
+	for from := 0; from <= len(line)-len(path); {
+		i := indexFold(line[from:], path, fold)
+		if i < 0 {
+			return -1
+		}
+		i += from
+		end := i + len(path)
+		okEnd := end == len(line) || strings.ContainsRune(" \t\"'),;:", rune(line[end]))
+		okStart := i == 0 || strings.ContainsRune(" \t\"'(", rune(line[i-1]))
+		if okEnd && okStart {
+			return i
+		}
+		from = i + 1
 	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
+	return -1
+}
+
+// indexFold is strings.Index, optionally ignoring case. The offset is in h
+// itself, unlike searching a lowercased copy. The match must have the same
+// byte length as n.
+func indexFold(h, n string, fold bool) int {
+	if !fold {
+		return strings.Index(h, n)
+	}
+	for i := 0; i+len(n) <= len(h); i++ {
+		if strings.EqualFold(h[i:i+len(n)], n) {
+			return i
 		}
 	}
-	return true
+	return -1
 }
