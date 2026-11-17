@@ -28,6 +28,8 @@ const (
 const (
 	MaxBody  = 16 << 10
 	HopLimit = 3
+	// MaxPendingPerTarget caps unread messages (including held ones) per target agent.
+	MaxPendingPerTarget = 50
 )
 
 type Message struct {
@@ -94,6 +96,15 @@ func (r *Router) Send(ws, from, to, body string) (Message, error) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	pending := 0
+	for _, o := range r.msgs {
+		if o.Workspace == ws && o.To == to && (inFlight(o.State) || o.State == StateAwaitingApproval) {
+			pending++
+		}
+	}
+	if pending >= MaxPendingPerTarget {
+		return Message{}, fmt.Errorf("%q has %d unread messages; wait until it reads them", to, MaxPendingPerTarget)
+	}
 	hop := r.hop[agentKey{ws, from}] + 1
 	state := StateQueued
 	if hop >= HopLimit {
@@ -133,6 +144,42 @@ func (r *Router) Read(ws, agent string) []Message {
 		r.hop[agentKey{ws, agent}] = maxHop
 	}
 	return out
+}
+
+// ReadN is Read with a byte budget. It returns the oldest pending messages while the
+// sum of len(Envelope(m)) stays within maxBytes (always at least one), marks only
+// those delivered, and reports how many remain pending for the next call.
+func (r *Router) ReadN(ws, agent string, maxBytes int) (msgs []Message, remaining int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	used, maxHop := 0, 0
+	full := false
+	for _, m := range r.msgs {
+		if m.Workspace != ws || m.To != agent {
+			continue
+		}
+		if m.State != StateQueued && m.State != StateHeldDraft && m.State != StateNudged {
+			continue
+		}
+		size := len(Envelope(*m))
+		if full || (len(msgs) > 0 && used+size > maxBytes) {
+			// Strict FIFO: after the first message that does not fit, nothing later is taken.
+			full = true
+			remaining++
+			continue
+		}
+		used += size
+		m.State = StateDelivered
+		if m.Hop > maxHop {
+			maxHop = m.Hop
+		}
+		msgs = append(msgs, *m)
+		r.publish(*m)
+	}
+	if len(msgs) > 0 {
+		r.hop[agentKey{ws, agent}] = maxHop
+	}
+	return msgs, remaining
 }
 
 // UserPrompt records that the user typed in the agent's panel: a new turn, hop 0.
