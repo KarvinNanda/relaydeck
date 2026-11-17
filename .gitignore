@@ -1,0 +1,11 @@
+# Personal working notes, never committed
+NOTES.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local env files (never commit secrets)
+.env
+.env.*
+!.env.example
