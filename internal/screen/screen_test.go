@@ -129,3 +129,53 @@ func TestConcurrentWriteAndState(t *testing.T) {
 		}
 	}
 }
+
+func boxFrame(boxTop int, below ...string) []byte {
+	r := strings.Repeat("─", 100)
+	var b strings.Builder
+	b.WriteString("\x1b[2J")
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", boxTop, r)
+	fmt.Fprintf(&b, "\x1b[%d;1H❯ \x1b[2mTry \"x\"\x1b[22m", boxTop+1)
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", boxTop+2, r)
+	for i, l := range below {
+		fmt.Fprintf(&b, "\x1b[%d;3H%s", boxTop+3+i, l)
+	}
+	return []byte(b.String())
+}
+
+func TestSyntheticBoxReady(t *testing.T) {
+	s := New(100, 30, nil)
+	s.Write(boxFrame(27, "footer"))
+	if !s.State().Ready() {
+		t.Fatalf("anchored box with footer should be Ready: %+v", s.State())
+	}
+}
+
+func TestOverlayBelowBoxNotReady(t *testing.T) {
+	s := New(100, 30, nil)
+	// Box at rows 22-24, then a 5 row panel below it with box-drawing chars.
+	s.Write(boxFrame(22, "╭──────╮", "│ menu │", "│ menu │", "│ menu │", "╰──────╯"))
+	if st := s.State(); st.Ready() {
+		t.Fatalf("overlay below box must not be Ready: %+v", st)
+	}
+}
+
+func TestBoxNotAnchoredNotReady(t *testing.T) {
+	s := New(100, 30, nil)
+	s.Write(boxFrame(24)) // lower rule at row 26 of 30, blank rows below
+	if st := s.State(); st.Ready() {
+		t.Fatalf("box not anchored to the bottom must not be Ready: %+v", st)
+	}
+}
+
+func TestScrollbackIsBounded(t *testing.T) {
+	s := New(100, 30, nil)
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&b, "line %d\r\n", i)
+	}
+	s.Write([]byte(b.String()))
+	if n := s.em.ScrollbackLen(); n > 1 {
+		t.Fatalf("scrollback length = %d, want <= 1", n)
+	}
+}

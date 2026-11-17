@@ -45,12 +45,16 @@ type Screen struct {
 
 // New creates a screen of the given size. The emulator answers terminal
 // queries on its read side; those bytes are drained continuously and written
-// to reply (which may be nil to discard them). The drain goroutine lives as
-// long as the process: vt.Emulator.Close races with a blocked Read (it writes
+// to reply (which may be nil to discard them). New starts a goroutine that
+// lives for the process, and reply must not block (a blocked reply stalls the
+// drain and then Write). vt.Emulator.Close races with a blocked Read (it writes
 // the closed flag unsynchronised), so Screen has no Close. One goroutine per
 // Screen is the cost.
 func New(cols, rows int, reply io.Writer) *Screen {
 	s := &Screen{em: vt.NewSafeEmulator(cols, rows)}
+	// The detector reads only visible rows. The library ignores 0 (it keeps
+	// the 10,000 line default), so 1 is the smallest scrollback.
+	s.em.SetScrollbackSize(1)
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -110,6 +114,9 @@ func (s *Screen) State() State {
 		if cellContent(s.em, 0, y) != "❯" || cellContent(s.em, 1, y) != nbsp {
 			continue
 		}
+		if !anchored(rows, y+1) {
+			continue
+		}
 		st.InputVisible = true
 		st.InputEmpty = true
 		for x := 2; x < w; x++ {
@@ -125,6 +132,21 @@ func (s *Screen) State() State {
 		break
 	}
 	return st
+}
+
+// anchored reports whether the lower rule at row lower sits at the bottom of
+// the screen: at most 2 rows below it (a footer that wraps), none of them
+// containing box-drawing characters (a panel or menu drawn below the box).
+func anchored(rows []string, lower int) bool {
+	if lower < len(rows)-3 {
+		return false
+	}
+	for _, r := range rows[lower+1:] {
+		if strings.ContainsAny(r, "─│╭╮╰╯") {
+			return false
+		}
+	}
+	return true
 }
 
 func cellContent(em *vt.SafeEmulator, x, y int) string {
