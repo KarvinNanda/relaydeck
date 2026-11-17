@@ -231,15 +231,15 @@ func TestEnvelopeExact(t *testing.T) {
 
 func TestNudgeExact(t *testing.T) {
 	one := []Message{{From: "be"}}
-	if got, want := Nudge(one), `[relaydeck] You have 1 message from agent "be". Call read_messages.`; got != want {
+	if got, want := Nudge(one), `[relaydeck] 1 new message. Call read_messages.`; got != want {
 		t.Fatalf("got %q", got)
 	}
 	three := []Message{{From: "be"}, {From: "fe-admin"}, {From: "be"}}
-	if got, want := Nudge(three), `[relaydeck] You have 3 messages from agents "be", "fe-admin". Call read_messages.`; got != want {
+	if got, want := Nudge(three), `[relaydeck] 3 new messages. Call read_messages.`; got != want {
 		t.Fatalf("got %q", got)
 	}
 	two := []Message{{From: "be"}, {From: "be"}}
-	if got, want := Nudge(two), `[relaydeck] You have 2 messages from agent "be". Call read_messages.`; got != want {
+	if got, want := Nudge(two), `[relaydeck] 2 new messages. Call read_messages.`; got != want {
 		t.Fatalf("got %q", got)
 	}
 }
