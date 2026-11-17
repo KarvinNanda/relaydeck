@@ -193,7 +193,7 @@ func TestStateSnapshot(t *testing.T) {
 // mean "account unknown"; a folder on the default account is flagged.
 func TestCswapPoll(t *testing.T) {
 	var mu sync.Mutex
-	answer := cswap.Info{DefaultAccount: "2"}
+	answer := cswap.Info{DefaultAccount: "2", DefaultEmail: "user1@example.com"}
 	var answerErr error
 	e := newEnv(t, func(o *Options) {
 		// The poll logic is the same on darwin and linux. Pin a cswap
@@ -204,6 +204,12 @@ func TestCswapPoll(t *testing.T) {
 		o.CswapEvery = 20 * time.Millisecond
 		o.Config.Workspaces[0].Folders[0].Account = "2"
 		o.Config.Workspaces[0].Folders[1].Account = "3"
+		p := o.Config.Workspaces[0].Folders[0].Path
+		o.Config.Workspaces[0].Folders = append(o.Config.Workspaces[0].Folders,
+			config.Folder{Name: "by-email", Path: p, Account: "User1@Example.com"},
+			config.Folder{Name: "by-label", Path: p, Account: "Account-2"},
+			config.Folder{Name: "other-email", Path: p, Account: "user2@example.com"},
+		)
 		o.CswapStatus = func(_ context.Context, path string) (cswap.Info, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -224,8 +230,16 @@ func TestCswapPoll(t *testing.T) {
 	if !st.Account.Cswap || st.Account.Default != "2" {
 		t.Fatalf("account = %+v", st.Account)
 	}
-	if !st.Workspaces[0].Folders[0].OnDefaultLogin || st.Workspaces[0].Folders[1].OnDefaultLogin {
-		t.Fatalf("on default login flags wrong: %+v", st.Workspaces[0].Folders)
+	// The default login is matched by number, by "Account-<n>" and by email
+	// (any letter case), so a folder on it is never shown as separate.
+	want := map[string]bool{"a": true, "b": false, "by-email": true, "by-label": true, "other-email": false}
+	for _, f := range st.Workspaces[0].Folders {
+		if f.OnDefaultLogin != want[f.Name] {
+			t.Errorf("folder %s (account %q): on default login = %v, want %v", f.Name, f.Account, f.OnDefaultLogin, want[f.Name])
+		}
+	}
+	if st.Account.Email != "user1@example.com" {
+		t.Fatalf("account email = %q", st.Account.Email)
 	}
 	sawAccount := false
 	for !sawAccount {
@@ -242,7 +256,7 @@ func TestCswapPoll(t *testing.T) {
 	mu.Unlock()
 	eventually(t, "account unknown", func() bool { return !e.d.State().Account.Known })
 	st = e.d.State()
-	if st.Account.Default != "" || st.Workspaces[0].Folders[0].OnDefaultLogin {
+	if st.Account.Default != "" || st.Account.Email != "" || st.Workspaces[0].Folders[0].OnDefaultLogin || st.Workspaces[0].Folders[2].OnDefaultLogin {
 		t.Fatalf("guessed an account after an error: %+v", st.Account)
 	}
 }
@@ -352,4 +366,32 @@ func TestNewRequiresOptions(t *testing.T) {
 			t.Errorf("New without %s succeeded", name)
 		}
 	}
+}
+
+// Fix round 1: every agent start reads cswap status once, so the default
+// login flag is not up to 30 s old.
+func TestAgentStartRefreshesAccount(t *testing.T) {
+	needPTY(t)
+	var mu sync.Mutex
+	calls := 0
+	e := newEnv(t, func(o *Options) {
+		o.GOOS = "linux"
+		o.CswapPath = "/opt/cswap"
+		o.CswapStatus = func(context.Context, string) (cswap.Info, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			return cswap.Info{DefaultAccount: "2"}, nil
+		}
+	})
+	// Run is not started, so the 30 s poll cannot be the caller.
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "cswap status read on start", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 1
+	})
+	eventually(t, "account known", func() bool { return e.d.State().Account.Known })
 }

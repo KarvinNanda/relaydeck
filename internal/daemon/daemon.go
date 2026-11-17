@@ -56,7 +56,7 @@ type Options struct {
 
 	RelaydeckExe string   // resolved os.Executable(), used in hook and MCP commands
 	RuntimeRoot  string   // per-agent dirs are created below it
-	CswapPath    string   // "" when cswap is not available (always "" on windows)
+	CswapPath    string   // "" when cswap is not available (always "" off darwin and linux)
 	BaseEnv      []string // environment the agent env is built from
 	GOOS         string
 	ClaudeHome   string // ~/.claude, for the session list
@@ -104,10 +104,10 @@ func DefaultOptions(configPath string, cfg *config.Config, port int, log *slog.L
 	}, nil
 }
 
-// cswapPath finds cswap on darwin and linux. Windows has no per-folder
-// accounts in v1, so cswap is never used there.
+// cswapPath finds cswap on darwin and linux only (ruling 8). Windows has no
+// per-folder accounts in v1, and other systems are not supported by cswap.
 func cswapPath(goos string, look func(string) (string, error)) string {
-	if goos == "windows" {
+	if goos != "darwin" && goos != "linux" {
 		return ""
 	}
 	p, err := look("cswap")
@@ -133,6 +133,7 @@ type Daemon struct {
 	router *notify.Router
 	deliv  *delivery.Deliverer
 	hub    hub
+	life   lifecycle
 
 	acctMu sync.Mutex
 	acct   Account
@@ -164,8 +165,8 @@ func New(o Options) (*Daemon, error) {
 	if o.GOOS == "" {
 		o.GOOS = runtime.GOOS
 	}
-	if o.GOOS == "windows" {
-		o.CswapPath = ""
+	if o.GOOS != "darwin" && o.GOOS != "linux" {
+		o.CswapPath = "" // ruling 8 and 17: cswap only on darwin and linux
 	}
 	if o.ExternalOpen == nil {
 		det := extsession.Default()
@@ -190,7 +191,7 @@ func New(o Options) (*Daemon, error) {
 		o.StopGrace = defaultStopGrace
 	}
 
-	d := &Daemon{opts: o, log: o.Log, cfg: o.Config, reg: newRegistry()}
+	d := &Daemon{opts: o, log: o.Log, cfg: o.Config, reg: newRegistry(), life: newLifecycle()}
 	d.dir = directory{d}
 	d.acct = Account{Cswap: o.CswapPath != ""}
 	d.router = notify.NewRouter(d.dir, time.Now, func() string {
@@ -201,7 +202,7 @@ func New(o Options) (*Daemon, error) {
 		return id
 	})
 	d.mgr = agent.NewManager(o.Log, d.onUserEnter)
-	deliv, err := delivery.New(d.router, agentsAdapter{d}, o.EnterDelay, time.Now, d.targets)
+	deliv, err := delivery.New(d.router, agentsAdapter{d}, o.EnterDelay, time.Now, d.deliveryTargets)
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +268,8 @@ func (d *Daemon) fanIn(ctx context.Context, evs <-chan agent.Event, msgs <-chan 
 }
 
 // stopAll refuses new starts, then stops every running agent in parallel
-// (ruling 16). An agent with a draft is killed at once: typing /exit after a
-// draft would submit "draft/exit" as a prompt (Task 8 carry).
+// (ruling 16). Only an agent showing the plain empty input box gets /exit;
+// any other (draft, dialog, overlay) is killed at once (stopAgent).
 func (d *Daemon) stopAll() {
 	d.runMu.Lock()
 	d.closing = true
@@ -280,14 +281,12 @@ func (d *Daemon) stopAll() {
 		if a == nil {
 			continue
 		}
+		d.life.markIntended(a.ID())
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			stop := func() error { return a.Stop(d.opts.StopGrace) }
-			if a.HasDraft() {
-				stop = a.Kill
-			}
-			if err := stop(); err != nil {
+			// A draft is not on the plain empty box, so it is killed too.
+			if err := d.stopAgent(a); err != nil {
 				d.log.Error("stop agent failed", "agent_id", a.ID(), "ws", t.WS, "folder", t.Folder, "error", err.Error())
 			}
 			d.reg.revoke(a.ID())

@@ -7,6 +7,10 @@
 //   - Every input line is appended to <FAKECLAUDE_DIR>/<id>.lines and the box
 //     is drawn again. "/exit" exits 0, unless FAKECLAUDE_IGNORE_EXIT is set.
 //     "noprompt" clears the screen and leaves the box away (an overlay).
+//     "trust" draws the box plus the trust dialog text. "busy" draws the box
+//     with "esc to interrupt" in the footer.
+//   - FAKECLAUDE_EXIT_AT_ONCE set: exit 1 right after writing the info file
+//     (a session that cannot be resumed, a crash on start).
 //
 // The PTY stays in canonical mode, so typed or pasted text is echoed into the
 // input box by the terminal itself, which the detector reads as a draft.
@@ -43,6 +47,9 @@ func main() {
 			_ = os.Rename(tmp, filepath.Join(dir, id+".json"))
 		}
 	}
+	if os.Getenv("FAKECLAUDE_EXIT_AT_ONCE") != "" {
+		os.Exit(1)
+	}
 	draw()
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
@@ -56,8 +63,17 @@ func main() {
 		if line == "/exit" && os.Getenv("FAKECLAUDE_IGNORE_EXIT") == "" {
 			os.Exit(0)
 		}
-		if line == "noprompt" {
+		switch line {
+		case "noprompt":
 			fmt.Print("\x1b[2J\x1b[1;1Hsome overlay")
+			continue
+		case "trust":
+			draw()
+			fmt.Print("\x1b[5;1H > 1. Yes, I trust this folder\x1b[38;3H")
+			continue
+		case "busy":
+			draw()
+			fmt.Print("\x1b[40;1H  esc to interrupt\x1b[38;3H")
 			continue
 		}
 		draw()

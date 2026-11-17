@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/agent"
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
@@ -23,9 +24,19 @@ var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 // session; with a sessionID it resumes that session; with neither it resumes
 // the folder's current session, or starts a new one when there is none. A
 // session that is open in a terminal outside relaydeck is never resumed.
-// The session used becomes the folder's current session in config.
+// --resume needs the session file: a picked session without one is
+// ErrNoTranscript, the folder's current session without one (started, then
+// stopped before any prompt) gives a new session. The session used becomes
+// the folder's current session in config.
+//
+// A user start also lifts what keeps delivery from starting this folder on
+// its own (a user stop, a recent crash on start).
 func (d *Daemon) StartAgent(ws, folder, sessionID string, newSession bool) error {
-	return d.start(ws, folder, sessionID, newSession, true)
+	if err := d.start(ws, folder, sessionID, newSession, true); err != nil {
+		return err
+	}
+	d.life.release(delivery.Target{WS: ws, Folder: folder})
+	return nil
 }
 
 func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal bool) error {
@@ -49,7 +60,13 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	case newSession:
 		f.SessionID = ""
 	case sessionID != "":
+		if !d.hasTranscript(f.Path, sessionID) {
+			return ErrNoTranscript
+		}
 		f.SessionID = sessionID
+	case f.SessionID != "" && !d.hasTranscript(f.Path, f.SessionID):
+		d.log.Info("current session has no session file, starting a new session", "ws", ws, "folder", folder)
+		f.SessionID = ""
 	}
 	if checkExternal && f.SessionID != "" {
 		open, err := d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, d.opts.OwnPIDs())
@@ -109,44 +126,68 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	}
 	d.setSessionID(ws, folder, sid)
 	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
-	go d.watch(a, runtimeDir)
+	go d.watch(a, t, runtimeDir, time.Now())
+	if d.opts.CswapPath != "" {
+		// Read the default login now, so the "on default login" flag of
+		// this agent is not up to 30 s old.
+		go d.refreshAccount(context.Background())
+	}
 	return nil
 }
 
 // watch revokes the token and removes the runtime dir once the process is
-// gone, whatever made it exit.
-func (d *Daemon) watch(a *agent.Agent, runtimeDir string) {
+// gone, whatever made it exit, and records a crash on start.
+func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, startedAt time.Time) {
 	<-a.Done()
 	d.reg.revoke(a.ID())
+	d.life.exited(t, a.ID(), startedAt)
 	if err := os.RemoveAll(runtimeDir); err != nil {
 		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
 	}
 }
 
-// StopAgent stops the folder's agent: /exit, then a kill after StopGrace. A
-// draft in the input box refuses a normal stop (ErrDraft), because /exit
-// would be appended to the draft and submitted. force kills at once without
-// typing anything.
+// StopAgent stops the folder's agent. A draft in the input box refuses a
+// normal stop (ErrDraft), because /exit would be appended to the draft and
+// submitted. force kills at once without typing anything. Otherwise see
+// stopAgent. After a user stop, delivery does not start the folder again
+// for messages that were already waiting.
 func (d *Daemon) StopAgent(ws, folder string, force bool) error {
 	if _, _, err := d.folderSnapshot(ws, folder); err != nil {
 		return err
 	}
-	a := d.running(delivery.Target{WS: ws, Folder: folder})
+	t := delivery.Target{WS: ws, Folder: folder}
+	a := d.running(t)
 	if a == nil {
 		return ErrNotRunning
 	}
+	if !force && a.HasDraft() {
+		return ErrDraft
+	}
+	// Before the stop, so no Tick can restart it in between: delivery does
+	// not start this folder again until a new message or a user start.
+	d.life.hold(t)
+	d.life.markIntended(a.ID())
 	var err error
 	switch {
 	case force:
 		err = a.Kill() // no /exit: it could join a draft and be submitted
-	case a.HasDraft():
-		return ErrDraft
 	default:
-		err = a.Stop(d.opts.StopGrace)
+		err = d.stopAgent(a)
 	}
 	d.reg.revoke(a.ID())
 	d.log.Info("agent stop", "agent_id", a.ID(), "ws", ws, "folder", folder, "force", force)
 	return err
+}
+
+// stopAgent types /exit only into the plain input box (busy is fine).
+// With an overlay, a dialog or a permission prompt on screen, Enter would
+// pick the highlighted option (trust the folder, approve a tool call), so
+// the agent is killed instead.
+func (d *Daemon) stopAgent(a *agent.Agent) error {
+	if st := a.ScreenState(); st.InputVisible && st.InputEmpty && !st.Trust {
+		return a.Stop(d.opts.StopGrace)
+	}
+	return a.Kill()
 }
 
 // Agent returns the folder's newest agent, running or stopped (a stopped one
@@ -211,8 +252,12 @@ func (x agentsAdapter) Screen(ws, folder string) screen.State {
 }
 
 // Start is called by Tick right after ExternalOpen said no, so it does not
-// check again.
+// check again. A folder whose agent crashed on start is not restarted for a
+// while: the error makes delivery back off instead of looping.
 func (x agentsAdapter) Start(ws, folder string) error {
+	if x.d.life.quickExitRecently(delivery.Target{WS: ws, Folder: folder}) {
+		return fmt.Errorf("agent exited within %v of its start; not restarting it automatically for %v", quickExitWindow, quickExitCooldown)
+	}
 	return x.d.start(ws, folder, "", false, false)
 }
 

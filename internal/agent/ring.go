@@ -30,3 +30,10 @@ func (r *ring) Bytes() []byte {
 	defer r.mu.Unlock()
 	return append([]byte(nil), r.buf...)
 }
+
+// release drops the buffer. The agent is stopped, so nothing writes again.
+func (r *ring) release() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = nil
+}

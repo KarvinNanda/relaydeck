@@ -131,7 +131,9 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 		done:        make(chan struct{}),
 		readDone:    make(chan struct{}),
 	}
-	a.screen = screen.New(defaultCols, defaultRows, replyWriter{a})
+	a.reply = &replyWriter{}
+	a.reply.a.Store(a)
+	a.screen = screen.New(defaultCols, defaultRows, a.reply)
 	m.agents[id] = a
 	go a.replyLoop()
 	go a.readLoop()
@@ -149,8 +151,8 @@ func (m *Manager) Get(id string) (*Agent, bool) {
 	return a, ok
 }
 
-// Remove forgets a stopped agent so its scrollback can be freed. It refuses a
-// running agent and reports whether the agent was removed.
+// Remove forgets a stopped agent and drops its scrollback, so the agent can
+// be freed. It refuses a running agent and reports whether it was removed.
 func (m *Manager) Remove(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,6 +161,7 @@ func (m *Manager) Remove(id string) bool {
 		return false
 	}
 	delete(m.agents, id)
+	a.ring.release()
 	return true
 }
 

@@ -71,7 +71,7 @@ func (d *Daemon) State() State {
 			if windows {
 				fs.Account = ""
 			}
-			fs.OnDefaultLogin = fs.Account != "" && acct.Known && fs.Account == acct.Default
+			fs.OnDefaultLogin = onDefaultLogin(fs.Account, acct)
 			if a := d.running(delivery.Target{WS: w.Name, Folder: f.Name}); a != nil {
 				fs.Status = a.Status()
 				switch scr := a.ScreenState(); {
@@ -109,10 +109,18 @@ func (d *Daemon) Messages(ws string) ([]notify.Message, error) {
 	return msgs, nil
 }
 
-// Approve releases a message held at the hop limit.
+// Approve releases a message held at the hop limit. The user asked for it
+// to be delivered, so a user stop of the target no longer holds it.
 func (d *Daemon) Approve(id string) error {
 	if err := d.router.Approve(id); err != nil {
 		return err
+	}
+	for _, t := range d.targets() {
+		for _, m := range d.router.Pending(t.WS, t.Folder) {
+			if m.ID == id {
+				d.life.release(t)
+			}
+		}
 	}
 	d.deliv.Kick()
 	return nil
@@ -126,6 +134,7 @@ func (d *Daemon) DeliverNow(ws, folder string) error {
 	if _, _, err := d.folderSnapshot(ws, folder); err != nil {
 		return err
 	}
+	d.life.release(delivery.Target{WS: ws, Folder: folder})
 	d.deliv.DeliverNow(ws, folder)
 	return nil
 }

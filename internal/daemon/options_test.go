@@ -40,7 +40,7 @@ func TestDefaultOptions(t *testing.T) {
 	}
 }
 
-// Rulings 8 and 17: cswap is looked up on darwin and linux, never on windows.
+// Rulings 8 and 17: cswap is looked up on darwin and linux only.
 func TestCswapPathPerPlatform(t *testing.T) {
 	found := func(string) (string, error) { return "/usr/local/bin/cswap", nil }
 	missing := func(string) (string, error) { return "", errors.New("not found") }
@@ -53,6 +53,8 @@ func TestCswapPathPerPlatform(t *testing.T) {
 		{"linux", found, "/usr/local/bin/cswap"},
 		{"darwin", missing, ""},
 		{"windows", found, ""},
+		{"freebsd", found, ""}, // ruling 8: darwin and linux only
+		{"", found, ""},
 	} {
 		if got := cswapPath(tc.goos, tc.look); got != tc.want {
 			t.Errorf("cswapPath(%s) = %q, want %q", tc.goos, got, tc.want)

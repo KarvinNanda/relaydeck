@@ -119,3 +119,26 @@ func TestServeStartsAndStops(t *testing.T) {
 		t.Fatal("UI token written to the log")
 	}
 }
+
+// Fix round 1: bare "relaydeck" (and "relaydeck --port N") runs serve. A
+// busy port proves it reached serve without starting a long-running daemon.
+func TestBareRunIsServe(t *testing.T) {
+	cfgPath := isolate(t)
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+	cfg := &config.Config{Port: port}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("port %d is already in use.", port)
+	for _, args := range [][]string{nil, {"--port", fmt.Sprint(port)}} {
+		var out, errb strings.Builder
+		if code := run(args, &out, &errb); code != 1 || !strings.HasPrefix(errb.String(), want) {
+			t.Fatalf("run(%q) = %d, stderr %q", args, code, errb.String())
+		}
+	}
+}

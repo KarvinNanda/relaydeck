@@ -225,3 +225,26 @@ func containsArg(argv []string, s string) bool {
 	}
 	return false
 }
+
+// transcript writes an empty session file for id, as Claude Code does once
+// a session has content, so --resume of id is allowed.
+func (e *testEnv) transcript(t *testing.T, dir, id string) {
+	t.Helper()
+	p := filepath.Join(e.opts.ClaudeHome, "projects", paths.ProjectDirName(dir))
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startsOf counts how many agents were started (one info file each).
+func (e *testEnv) startsOf(t *testing.T) int {
+	t.Helper()
+	m, err := filepath.Glob(filepath.Join(e.out, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(m)
+}

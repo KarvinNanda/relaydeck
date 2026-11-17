@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/screen"
@@ -33,6 +34,7 @@ type Agent struct {
 
 	onUserEnter func(id string)
 	emit        func(Event)
+	reply       *replyWriter
 
 	mu       sync.Mutex
 	status   Status
@@ -73,11 +75,17 @@ func (a *Agent) ExitCode() int {
 
 // replyWriter forwards emulator query replies to the PTY, but only while no
 // browser is attached (an attached xterm.js answers the same queries). It
-// never blocks: the Screen drain goroutine calls it.
-type replyWriter struct{ a *Agent }
+// never blocks: the Screen drain goroutine calls it. That goroutine lives as
+// long as the process (Screen has no Close), so the Agent is held through an
+// atomic pointer that waitLoop clears once the process is gone; then a
+// removed Agent can be freed.
+type replyWriter struct{ a atomic.Pointer[Agent] }
 
-func (w replyWriter) Write(p []byte) (int, error) {
-	a := w.a
+func (w *replyWriter) Write(p []byte) (int, error) {
+	a := w.a.Load()
+	if a == nil {
+		return len(p), nil
+	}
 	a.mu.Lock()
 	attached := len(a.subs) > 0
 	a.mu.Unlock()
@@ -171,6 +179,7 @@ func (a *Agent) waitLoop() {
 	// needs done closed) cannot be overtaken by this event.
 	a.emit(Event{AgentID: a.id, Status: StatusStopped, ExitCode: &code})
 	close(a.done)
+	a.reply.a.Store(nil) // no replies after exit; lets a removed Agent be freed
 	a.mu.Unlock()
 	a.log.Info("agent stopped", "agent_id", a.id, "exit_code", code)
 }

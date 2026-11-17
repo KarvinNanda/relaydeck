@@ -250,3 +250,28 @@ func TestListenLoopbackOnly(t *testing.T) {
 		t.Fatalf("listening on %v, want 127.0.0.1", ip)
 	}
 }
+
+// Fix round 1: a directory without index.html is 404, never a file listing.
+func TestStaticDirWithoutIndexIsNotFound(t *testing.T) {
+	r := newRig(t, fstest.MapFS{
+		".gitkeep":        {Data: []byte("")},
+		"assets/app.js":   {Data: []byte("console.log(1)")},
+		"docs/index.html": {Data: []byte("<p>docs</p>")},
+	})
+	for path, want := range map[string]int{
+		"/":              404,
+		"/assets/":       404,
+		"/assets":        404,
+		"/assets/app.js": 200,
+		"/docs/":         200,
+		"/missing.js":    404,
+	} {
+		code, body := r.do(t, "GET", path, "", "", nil)
+		if code != want {
+			t.Errorf("GET %s = %d, want %d", path, code, want)
+		}
+		if strings.Contains(body, ".gitkeep") || strings.Contains(body, "app.js\"") {
+			t.Errorf("GET %s lists the directory: %q", path, body)
+		}
+	}
+}

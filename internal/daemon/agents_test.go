@@ -16,6 +16,7 @@ import (
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
 	"github.com/KarvinNanda/relaydeck/internal/notify"
 	"github.com/KarvinNanda/relaydeck/internal/paths"
+	"github.com/KarvinNanda/relaydeck/internal/screen"
 )
 
 var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -73,6 +74,8 @@ func TestStartAgentResumeAndPick(t *testing.T) {
 	const cur = "11111111-1111-4111-8111-111111111111"
 	const picked = "22222222-2222-4222-8222-222222222222"
 	e := newEnv(t, func(o *Options) { o.Config.Workspaces[0].Folders[0].SessionID = cur })
+	e.transcript(t, e.dirA, cur)
+	e.transcript(t, e.dirA, picked)
 
 	cases := []struct {
 		sid        string
@@ -159,6 +162,7 @@ func TestStartRefusesExternalResume(t *testing.T) {
 			return sid == cur, nil
 		}
 	})
+	e.transcript(t, e.dirA, cur)
 	if err := e.d.StartAgent("w", "a", "", false); !errors.Is(err, ErrExternalOpen) {
 		t.Fatalf("resume while open outside: %v, want ErrExternalOpen", err)
 	}
@@ -427,8 +431,17 @@ func TestMessagesApproveRejectDeliverNow(t *testing.T) {
 	if err != nil || len(msgs) != 3 {
 		t.Fatalf("Messages = %d err %v", len(msgs), err)
 	}
+	ta := delivery.Target{WS: "w", Folder: "a"}
+	e.d.life.hold(ta) // as after a user stop of "a"
 	if err := e.d.Approve(held.ID); err != nil {
 		t.Fatal(err)
+	}
+	if e.d.isHeld(ta) {
+		t.Fatal("approving a message for a stopped folder did not lift the hold")
+	}
+	e.d.life.hold(ta)
+	if err := e.d.DeliverNow("w", "a"); err != nil || e.d.isHeld(ta) {
+		t.Fatalf("DeliverNow did not lift the hold (err %v)", err)
 	}
 	if err := e.d.Approve(held.ID); err == nil {
 		t.Fatal("approve twice succeeded")
@@ -510,5 +523,156 @@ func TestShutdownKillsDraftWithoutExit(t *testing.T) {
 	}
 	if l := e.lines(a.ID()); strings.Contains(l, "/exit") {
 		t.Fatalf("shutdown typed /exit after the draft: %q", l)
+	}
+}
+
+// Fix round 1: /exit is typed only into the plain input box. With an
+// overlay, the trust dialog or a permission prompt on screen, Enter would
+// pick the highlighted option (trust the folder, approve a tool), so the
+// agent is killed instead. A busy footer still gets /exit.
+func TestStopTypesExitOnlyIntoPlainBox(t *testing.T) {
+	needPTY(t)
+	cases := []struct {
+		cmd      string
+		ready    func(s screen.State) bool
+		wantExit bool
+	}{
+		{"noprompt", func(s screen.State) bool { return !s.InputVisible }, false},
+		{"trust", func(s screen.State) bool { return s.Trust }, false},
+		{"busy", func(s screen.State) bool { return s.Busy && s.InputVisible }, true},
+	}
+	for _, shutdown := range []bool{false, true} {
+		for _, c := range cases {
+			e := newEnv(t, nil)
+			if err := e.d.StartAgent("w", "a", "", false); err != nil {
+				t.Fatal(err)
+			}
+			a, _ := e.d.Agent("w", "a")
+			eventually(t, "prompt", func() bool { return a.ScreenState().Ready() })
+			a.Inject([]byte(c.cmd + "\r"))
+			eventually(t, c.cmd+" on screen", func() bool { return c.ready(a.ScreenState()) })
+			if shutdown {
+				e.d.stopAll()
+			} else if err := e.d.StopAgent("w", "a", false); err != nil {
+				t.Fatalf("%s: %v", c.cmd, err)
+			}
+			<-a.Done()
+			if got := strings.Contains(e.lines(a.ID()), "/exit"); got != c.wantExit {
+				t.Fatalf("shutdown=%v %s: /exit typed = %v, want %v (lines %q)", shutdown, c.cmd, got, c.wantExit, e.lines(a.ID()))
+			}
+		}
+	}
+}
+
+// Fix round 1 (3a): --resume needs the session file. Without it claude exits
+// at once. A picked session with no file is a clear error; the folder's own
+// current session with no file (for example started, then stopped before any
+// prompt) falls back to a new session, for the user and for delivery alike.
+func TestResumeNeedsTranscript(t *testing.T) {
+	needPTY(t)
+	const cur = "88888888-8888-4888-8888-888888888888"
+	const picked = "99999999-9999-4999-8999-999999999999"
+	e := newEnv(t, func(o *Options) { o.Config.Workspaces[0].Folders[0].SessionID = cur })
+
+	if err := e.d.StartAgent("w", "a", picked, false); !errors.Is(err, ErrNoTranscript) {
+		t.Fatalf("picked session without a file: %v, want ErrNoTranscript", err)
+	}
+	for _, viaDelivery := range []bool{false, true} {
+		var err error
+		if viaDelivery {
+			err = agentsAdapter{e.d}.Start("w", "a")
+		} else {
+			err = e.d.StartAgent("w", "a", "", false)
+		}
+		if err != nil {
+			t.Fatalf("delivery=%v: %v", viaDelivery, err)
+		}
+		fi := e.waitInfo(t, e.agentID(t, "a"))
+		sid := argAfter(fi.Argv, "--session-id")
+		if argAfter(fi.Argv, "--resume") != "" || !uuidV4.MatchString(sid) || sid == cur {
+			t.Fatalf("delivery=%v: argv %q, want a new session", viaDelivery, fi.Argv)
+		}
+		if got := e.savedFolder(t, "a").SessionID; got != sid {
+			t.Fatalf("delivery=%v: saved %q, want the new id %q", viaDelivery, got, sid)
+		}
+		if err := e.d.StopAgent("w", "a", false); err != nil {
+			t.Fatal(err)
+		}
+		// Next round starts from a current session that again has no file.
+		e.d.setSessionID("w", "a", cur)
+	}
+}
+
+// Fix round 1 (3b): an agent that exits right after it starts is not
+// restarted by delivery in a tight loop.
+func TestQuickExitIsNotRestartedInALoop(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, func(o *Options) { o.BaseEnv = append(o.BaseEnv, "FAKECLAUDE_EXIT_AT_ONCE=1") })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.d.Run(ctx)
+	if _, err := e.d.router.Send("w", "a", "b", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "first start", func() bool { return e.startsOf(t) >= 1 })
+	time.Sleep(3 * time.Second)
+	if n := e.startsOf(t); n > 2 {
+		t.Fatalf("%d starts within 3 s of a crash on start", n)
+	}
+	if p := e.d.router.Pending("w", "b"); len(p) != 1 {
+		t.Fatalf("pending = %d, the message must stay queued", len(p))
+	}
+	// The user can still start it by hand.
+	if err := e.d.StartAgent("w", "b", "", false); err != nil {
+		t.Fatalf("user start after quick exit: %v", err)
+	}
+}
+
+// Fix round 1 (controller): after the user stops an agent, delivery does not
+// start it again for messages that were already waiting. A new message, or
+// the user starting it, lifts that.
+func TestUserStopHoldsAutoStart(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.d.Run(ctx)
+	if err := e.d.StartAgent("w", "b", "", false); err != nil {
+		t.Fatal(err)
+	}
+	// No SessionStart hook: b stays "starting", so the message waits queued.
+	if _, err := e.d.router.Send("w", "a", "b", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.d.StopAgent("w", "b", false); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2500 * time.Millisecond) // two ticks and more
+	if a := e.d.running(delivery.Target{WS: "w", Folder: "b"}); a != nil {
+		t.Fatal("delivery restarted an agent the user stopped")
+	}
+	if p := e.d.router.Pending("w", "b"); len(p) != 1 || p[0].State != notify.StateQueued {
+		t.Fatalf("pending = %+v, want the old message still queued", p)
+	}
+	if _, err := e.d.router.Send("w", "a", "b", "new"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "restart for a new message", func() bool {
+		return e.d.running(delivery.Target{WS: "w", Folder: "b"}) != nil
+	})
+
+	// A user start also lifts the hold.
+	tb := delivery.Target{WS: "w", Folder: "b"}
+	if err := e.d.StopAgent("w", "b", false); err != nil {
+		t.Fatal(err)
+	}
+	if !e.d.isHeld(tb) {
+		t.Fatal("user stop did not hold auto start")
+	}
+	if err := e.d.StartAgent("w", "b", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if e.d.isHeld(tb) {
+		t.Fatal("user start did not lift the hold")
 	}
 }

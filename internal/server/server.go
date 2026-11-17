@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/KarvinNanda/relaydeck/internal/auth"
 	"github.com/KarvinNanda/relaydeck/internal/daemon"
@@ -19,7 +21,8 @@ import (
 // New returns the root handler. Routes:
 //   - /agent/hook and /agent/tools/{name}: behind Guard.Agent (agent token)
 //   - every other /agent/ path: 401 without a token, 404 with one
-//   - /: the UI bundle from static, behind Guard.Static (no token)
+//   - /: the UI bundle from static, behind Guard.Static (no token); a
+//     directory without index.html is 404
 //
 // Every request gets a request_id and one log line (logx.Middleware).
 func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, log *slog.Logger) http.Handler {
@@ -29,8 +32,27 @@ func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, log *slog.Logger) http.H
 
 	mux := http.NewServeMux()
 	mux.Handle("/agent/", g.Agent(agentLog(log, d, agentMux)))
-	mux.Handle("/", g.Static(http.FileServerFS(static)))
+	mux.Handle("/", g.Static(staticFiles(static)))
 	return logx.Middleware(log, mux)
+}
+
+// staticFiles serves the UI bundle. A directory is served only through its
+// index.html; without one it is 404, never a file listing.
+func staticFiles(fsys fs.FS) http.Handler {
+	files := http.FileServerFS(fsys)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name == "" {
+			name = "."
+		}
+		if st, err := fs.Stat(fsys, name); err == nil && st.IsDir() {
+			if _, err := fs.Stat(fsys, path.Join(name, "index.html")); err != nil {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 // agentLog adds one line per agent call with the agent's identity, so the
