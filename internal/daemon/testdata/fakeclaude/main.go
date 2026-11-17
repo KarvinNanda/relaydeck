@@ -8,7 +8,8 @@
 //     is drawn again. "/exit" exits 0, unless FAKECLAUDE_IGNORE_EXIT is set.
 //     "noprompt" clears the screen and leaves the box away (an overlay).
 //     "trust" draws the box plus the trust dialog text. "busy" draws the box
-//     with "esc to interrupt" in the footer.
+//     with "esc to interrupt" in the footer. "size" prints "SIZE:<cols>x<rows>"
+//     of its terminal on the top row.
 //   - FAKECLAUDE_EXIT_AT_ONCE set: exit 1 right after writing the info file
 //     (a session that cannot be resumed, a crash on start).
 //
@@ -70,6 +71,10 @@ func main() {
 		case "trust":
 			draw()
 			fmt.Print("\x1b[5;1H > 1. Yes, I trust this folder\x1b[38;3H")
+			continue
+		case "size":
+			draw()
+			fmt.Print("\x1b[1;1HSIZE:" + termSize() + "\x1b[38;3H")
 			continue
 		case "busy":
 			draw()

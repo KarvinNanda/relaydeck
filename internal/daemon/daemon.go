@@ -66,6 +66,9 @@ type Options struct {
 	ExternalOpen func(ctx context.Context, dir, sessionID string, exclude map[int]bool) (bool, error)
 	OwnPIDs      func() map[int]bool
 	CswapStatus  func(ctx context.Context, path string) (cswap.Info, error)
+	// CswapMapped reads the account cswap maps to dir (`cswap map`, no
+	// arguments). Used to prefill the account of a new folder.
+	CswapMapped func(ctx context.Context, path, dir string) (string, bool, error)
 
 	CswapEvery time.Duration
 	EnterDelay time.Duration
@@ -181,6 +184,9 @@ func New(o Options) (*Daemon, error) {
 	if o.CswapStatus == nil {
 		o.CswapStatus = cswap.Status
 	}
+	if o.CswapMapped == nil {
+		o.CswapMapped = cswap.MappedAccount
+	}
 	if o.CswapEvery <= 0 {
 		o.CswapEvery = defaultCswapEvery
 	}
@@ -243,6 +249,7 @@ func (d *Daemon) Run(ctx context.Context) {
 	cancelEvs()
 	cancelMsgs()
 	d.stopAll()
+	d.hub.closeAll() // ends every /ws/events stream
 }
 
 // fanIn turns agent and message events into daemon events and kicks the

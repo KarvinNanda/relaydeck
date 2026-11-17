@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -69,6 +70,8 @@ const uiToken = "ui-token-for-server-tests"
 
 type rig struct {
 	d       *daemon.Daemon
+	picker  *fakePicker
+	stop    func() // ends d.Run, as on shutdown
 	srv     *httptest.Server
 	port    int
 	cfgPath string
@@ -76,6 +79,7 @@ type rig struct {
 	logs    *syncBuf
 	dirA    string
 	dirB    string
+	home    string // ClaudeHome
 }
 
 func canon(t *testing.T, p string) string {
@@ -95,6 +99,21 @@ func canon(t *testing.T, p string) string {
 // listener port, so the Host check sees the real port.
 func newRig(t *testing.T, static fstest.MapFS) *rig {
 	t.Helper()
+	return newRigWith(t, func(o *rigOptions) { o.static = static })
+}
+
+type rigOptions struct {
+	static    fstest.MapFS
+	cswapPath string
+	mapped    func(ctx context.Context, path, dir string) (string, bool, error)
+}
+
+func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
+	t.Helper()
+	var o rigOptions
+	if mutate != nil {
+		mutate(&o)
+	}
 	base := t.TempDir()
 	r := &rig{
 		cfgPath: filepath.Join(base, "cfg", "config.yaml"),
@@ -102,6 +121,7 @@ func newRig(t *testing.T, static fstest.MapFS) *rig {
 		dirA:    canon(t, filepath.Join(base, "a")),
 		dirB:    canon(t, filepath.Join(base, "b")),
 		logs:    &syncBuf{},
+		home:    filepath.Join(base, "claudehome"),
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -123,21 +143,25 @@ func newRig(t *testing.T, static fstest.MapFS) *rig {
 		RelaydeckExe: filepath.Join(base, "bin", "relaydeck"),
 		RuntimeRoot:  filepath.Join(base, "runtime"),
 		BaseEnv:      []string{"FAKECLAUDE_DIR=" + r.out},
-		ClaudeHome:   filepath.Join(base, "claudehome"),
+		ClaudeHome:   r.home,
 		ExternalOpen: func(context.Context, string, string, map[int]bool) (bool, error) { return false, nil },
 		OwnPIDs:      func() map[int]bool { return nil },
 		CswapStatus:  func(context.Context, string) (cswap.Info, error) { return cswap.Info{}, cswap.ErrUnknownFormat },
 		EnterDelay:   10 * time.Millisecond,
+		CswapPath:    o.cswapPath,
+		CswapMapped:  o.mapped,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.d = d
 	g := &auth.Guard{Port: r.port, UIToken: uiToken, Agents: d.Tokens(), Tickets: auth.NewTicketStore(time.Now)}
-	if static == nil {
-		static = fstest.MapFS{}
+	static := fs.FS(fstest.MapFS{})
+	if o.static != nil {
+		static = o.static
 	}
-	srv := httptest.NewUnstartedServer(New(d, g, static, log))
+	r.picker = &fakePicker{}
+	srv := httptest.NewUnstartedServer(New(d, g, static, r.picker, log))
 	srv.Listener.Close()
 	srv.Listener = ln
 	srv.Start()
@@ -145,9 +169,9 @@ func newRig(t *testing.T, static fstest.MapFS) *rig {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { d.Run(ctx); close(done) }()
+	r.stop = func() { cancel(); <-done }
 	t.Cleanup(func() {
-		cancel()
-		<-done
+		r.stop()
 		srv.Close()
 	})
 	return r
