@@ -3,6 +3,7 @@ package notify
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -112,12 +113,15 @@ func TestReadReturnsOnlyCallersPending(t *testing.T) {
 	d, _ := r.Send("ws", "be", "fe", "draft")
 	n, _ := r.Send("ws", "be", "fe", "nudged")
 	ex, _ := r.Send("ws", "be", "fe", "external")
-	aw, _ := r.Send("ws", "be", "fe", "approval")
 	other, _ := r.Send("ws", "be", "fe-admin", "other")
+	r.hop[agentKey{"ws", "be"}] = HopLimit - 1 // next send from be needs approval
+	aw, _ := r.Send("ws", "be", "fe", "approval")
+	if aw.State != StateAwaitingApproval {
+		t.Fatalf("aw %+v", aw)
+	}
 	r.SetState(d.ID, StateHeldDraft)
 	r.SetState(n.ID, StateNudged)
 	r.SetState(ex.ID, StateHeldExternal)
-	r.SetState(aw.ID, StateAwaitingApproval)
 	got := r.Read("ws", "fe")
 	ids := map[string]bool{}
 	for _, m := range got {
@@ -160,8 +164,12 @@ func TestPending(t *testing.T) {
 	if len(got) != 2 || got[0].ID != a.ID || got[1].ID != b.ID {
 		t.Fatalf("got %+v", got)
 	}
-	r.SetState(a.ID, StateDelivered)
-	if got := r.Pending("ws", "fe"); len(got) != 1 {
+	r.SetState(b.ID, StateQueued)
+	r.SetState(b.ID, StateHeldExternal)
+	if got := r.Read("ws", "fe"); len(got) != 1 || got[0].ID != a.ID {
+		t.Fatalf("read %+v", got)
+	}
+	if got := r.Pending("ws", "fe"); len(got) != 1 || got[0].ID != b.ID {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -286,4 +294,106 @@ func TestSubscribeFullDoesNotBlock(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func stateOf(r *Router, id string) State {
+	for _, m := range r.Timeline("ws") {
+		if m.ID == id {
+			return m.State
+		}
+	}
+	return ""
+}
+
+func TestSetStateCannotReviveDelivered(t *testing.T) {
+	r := newTestRouter()
+	m, _ := r.Send("ws", "be", "fe", "a")
+	r.Read("ws", "fe")
+	if err := r.SetState(m.ID, StateNudged); err == nil {
+		t.Fatal("want error")
+	}
+	if stateOf(r, m.ID) != StateDelivered {
+		t.Fatalf("state %s", stateOf(r, m.ID))
+	}
+	if got := r.Read("ws", "fe"); len(got) != 0 {
+		t.Fatalf("duplicate delivery %+v", got)
+	}
+}
+
+func TestSetStateCannotBypassApproval(t *testing.T) {
+	r := newTestRouter()
+	r.hop[agentKey{"ws", "be"}] = HopLimit - 1
+	m, _ := r.Send("ws", "be", "fe", "a")
+	if m.State != StateAwaitingApproval {
+		t.Fatalf("m %+v", m)
+	}
+	for _, s := range []State{StateQueued, StateNudged} {
+		if err := r.SetState(m.ID, s); err == nil {
+			t.Fatalf("want error for %s", s)
+		}
+	}
+	if stateOf(r, m.ID) != StateAwaitingApproval {
+		t.Fatalf("state %s", stateOf(r, m.ID))
+	}
+}
+
+func TestSetStateCannotSetTerminal(t *testing.T) {
+	r := newTestRouter()
+	m, _ := r.Send("ws", "be", "fe", "a")
+	for _, s := range []State{StateDelivered, StateRejected, StateAwaitingApproval} {
+		if err := r.SetState(m.ID, s); err == nil {
+			t.Fatalf("want error for %s", s)
+		}
+	}
+	if stateOf(r, m.ID) != StateQueued {
+		t.Fatalf("state %s", stateOf(r, m.ID))
+	}
+}
+
+func TestSetStateInFlight(t *testing.T) {
+	r := newTestRouter()
+	m, _ := r.Send("ws", "be", "fe", "a")
+	for _, s := range []State{StateHeldDraft, StateNudged, StateQueued} {
+		if err := r.SetState(m.ID, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+		if stateOf(r, m.ID) != s {
+			t.Fatalf("state %s, want %s", stateOf(r, m.ID), s)
+		}
+	}
+}
+
+func TestConcurrentUse(t *testing.T) {
+	r := newTestRouter()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r.Send("ws", "be", "fe", "x")
+				r.UserPrompt("ws", "be")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r.Read("ws", "fe")
+				r.Pending("ws", "fe")
+				r.Timeline("ws")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				ch, cancel := r.Subscribe()
+				select {
+				case <-ch:
+				default:
+				}
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
 }

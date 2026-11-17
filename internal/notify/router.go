@@ -159,12 +159,29 @@ func (r *Router) Pending(ws, agent string) []Message {
 	return out
 }
 
+// inFlight reports whether s is a state a message can be in while waiting to be read.
+func inFlight(s State) bool {
+	switch s {
+	case StateQueued, StateHeldExternal, StateHeldDraft, StateNudged:
+		return true
+	}
+	return false
+}
+
+// SetState moves a message between the in-flight states (queued, held_external,
+// held_draft, nudged). It refuses any other current or target state: delivered is
+// reachable only through Read, queued from awaiting_approval only through Approve,
+// rejected only through Reject. This keeps a stale snapshot from reviving a
+// delivered message or skipping the user's approval.
 func (r *Router) SetState(id string, s State) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m, ok := r.byID[id]
 	if !ok {
 		return fmt.Errorf("unknown message %q", id)
+	}
+	if !inFlight(m.State) || !inFlight(s) {
+		return fmt.Errorf("cannot change message %q from %s to %s", id, m.State, s)
 	}
 	m.State = s
 	r.publish(*m)
