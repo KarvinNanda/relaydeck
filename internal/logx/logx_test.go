@@ -1,6 +1,7 @@
 package logx
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -63,5 +64,49 @@ func TestMiddlewareDefaultStatusIs200(t *testing.T) {
 	}
 	if rec["status"] != float64(200) {
 		t.Errorf("status = %v, want 200", rec["status"])
+	}
+}
+
+func TestMiddlewarePassesHijackAndFlushThrough(t *testing.T) {
+	var buf bytes.Buffer
+	mw := Middleware(New(&buf), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := w.(http.Flusher); !ok {
+			t.Error("wrapped writer is not an http.Flusher")
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("wrapped writer is not an http.Hijacker")
+			return
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\n\r\n")
+		_ = rw.Flush()
+	}))
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		mw.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/ws?ticket=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bufio.NewReader(resp.Body)
+	resp.Body.Close()
+	<-done
+
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("log line: %v: %q", err, buf.String())
+	}
+	if rec["status"] != float64(http.StatusSwitchingProtocols) {
+		t.Errorf("status = %v, want 101", rec["status"])
 	}
 }

@@ -3,11 +3,13 @@
 package logx
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -57,8 +59,25 @@ func (s *statusWriter) Write(p []byte) (int, error) {
 	return s.ResponseWriter.Write(p)
 }
 
-// Unwrap lets http.ResponseController reach Flusher and Hijacker (WebSocket upgrades).
+// Unwrap lets http.ResponseController reach the underlying writer.
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// Flush passes through to the underlying writer, so streaming handlers that
+// assert http.Flusher directly keep working.
+func (s *statusWriter) Flush() {
+	_ = http.NewResponseController(s.ResponseWriter).Flush()
+}
+
+// Hijack passes through to the underlying writer, so WebSocket libraries that
+// assert http.Hijacker directly keep working. A successful hijack is a protocol
+// switch, so the log line records status 101.
+func (s *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(s.ResponseWriter).Hijack()
+	if err == nil && s.status == 0 {
+		s.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
 
 // Middleware sets a random request id on the request context and logs one line
 // per request: method, path, status, duration_ms, request_id. The query string
