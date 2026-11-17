@@ -133,3 +133,21 @@ func TestStatusRunsBinaryWithStatusOnly(t *testing.T) {
 		t.Fatal("expected an error for a missing binary")
 	}
 }
+
+// The default login's email is read from the Status line, so a folder that
+// stores the email can be matched too.
+func TestStatusParsesEmail(t *testing.T) {
+	info, err := parseStatus(fixture(t))
+	if err != nil || info.DefaultEmail != "user1@example.com" {
+		t.Fatalf("with banner: %+v %v", info, err)
+	}
+	info, err = parseStatus("Status: Account-3 (user1@example.com [org])\n")
+	if err != nil || info.DefaultAccount != "3" || info.DefaultEmail != "user1@example.com" {
+		t.Fatalf("without banner: %+v %v", info, err)
+	}
+	// No email in the line: the number still parses, the email stays empty.
+	info, err = parseStatus("Status: Account-4 (no email here)\n")
+	if err != nil || info.DefaultAccount != "4" || info.DefaultEmail != "" {
+		t.Fatalf("no email: %+v %v", info, err)
+	}
+}

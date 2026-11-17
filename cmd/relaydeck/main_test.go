@@ -35,8 +35,9 @@ func TestRunDispatch(t *testing.T) {
 		stderr string
 	}{
 		{[]string{"version"}, 0, "dev\n", ""},
-		{nil, 1, "", "not implemented"},
-		{[]string{"serve", "--port", "1"}, 1, "", "not implemented"},
+		{[]string{"serve", "--bogus"}, 2, "", "flag provided but not defined"},
+		{[]string{"serve", "--port", "80"}, 2, "", "--port must be between 1024 and 65535"},
+		{[]string{"serve", "extra"}, 2, "", "usage:"},
 		{[]string{"nope"}, 2, "", "usage:"},
 	}
 	for _, tt := range tests {

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/KarvinNanda/relaydeck/internal/launch"
 	"github.com/aymanbagabas/go-pty"
@@ -496,5 +497,80 @@ func TestHasDraft(t *testing.T) {
 	feed("")
 	if a.HasDraft() {
 		t.Fatal("empty box, HasDraft must be false")
+	}
+}
+
+func TestRemoveOnlyStopped(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	if m.Remove("a") {
+		t.Fatal("Remove dropped a running agent")
+	}
+	if _, ok := m.Get("a"); !ok {
+		t.Fatal("running agent gone after refused Remove")
+	}
+	a.Inject([]byte("quit\r"))
+	<-a.Done()
+	if !m.Remove("a") {
+		t.Fatal("Remove refused a stopped agent")
+	}
+	if _, ok := m.Get("a"); ok {
+		t.Fatal("stopped agent still listed after Remove")
+	}
+	if m.Remove("a") || m.Remove("nope") {
+		t.Fatal("Remove of an unknown id reported true")
+	}
+}
+
+// Kill must not type /exit: after a draft, "/exit" would join the draft
+// and could be submitted as a prompt.
+func TestKillTypesNothing(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, replay, out, "READY")
+	if err := a.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-a.Done():
+	default:
+		t.Fatal("process still running after Kill")
+	}
+	if bytes.Contains(a.ring.Bytes(), []byte("/exit")) {
+		t.Fatalf("Kill typed /exit: %q", a.ring.Bytes())
+	}
+	if err := a.Kill(); err != nil {
+		t.Fatalf("second Kill: %v", err)
+	}
+}
+
+// Fix round 1 (3c): a stopped agent that was removed can be freed. The
+// screen's drain goroutine lives on (Screen has no Close), so it must not
+// keep the Agent (scrollback, emulator feed, PTY) reachable.
+func TestRemovedAgentIsCollected(t *testing.T) {
+	m := newMgr(t, nil)
+	wp := func() weak.Pointer[Agent] {
+		a, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.Inject([]byte("quit\r"))
+		<-a.Done()
+		if !m.Remove("a") {
+			t.Fatal("Remove refused")
+		}
+		if len(a.ring.Bytes()) != 0 {
+			t.Fatal("Remove kept the scrollback")
+		}
+		return weak.Make(a)
+	}()
+	for i := 0; i < 50 && wp.Value() != nil; i++ {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wp.Value() != nil {
+		t.Fatal("removed agent is still reachable after GC")
 	}
 }

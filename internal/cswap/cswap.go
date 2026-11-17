@@ -30,10 +30,12 @@ var ErrUnknownFormat = errors.New("unknown cswap output format")
 type Info struct {
 	// DefaultAccount is the account number of the default login.
 	DefaultAccount string
+	// DefaultEmail is the email shown after the number, "" if none is shown.
+	DefaultEmail string
 }
 
 var (
-	statusRe  = regexp.MustCompile(`(?m)^Status: Account-(\d+) \(`)
+	statusRe  = regexp.MustCompile(`(?m)^Status: Account-(\d+) \(([^)\s]*)`)
 	accountRe = regexp.MustCompile(`^Account-(\d+)$`)
 	emailRe   = regexp.MustCompile(`^[^@\s/]+@[^@\s/]+\.[^@\s/]+$`)
 )
@@ -65,7 +67,11 @@ func parseStatus(out string) (Info, error) {
 	if m == nil {
 		return Info{}, ErrUnknownFormat
 	}
-	return Info{DefaultAccount: m[1]}, nil
+	info := Info{DefaultAccount: m[1]}
+	if emailRe.MatchString(m[2]) {
+		info.DefaultEmail = m[2]
+	}
+	return info, nil
 }
 
 // MappedAccount runs `cswap map` with no arguments and returns the account
