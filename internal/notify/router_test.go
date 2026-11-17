@@ -1,6 +1,8 @@
 package notify
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -194,14 +196,14 @@ func TestApproveReject(t *testing.T) {
 	if got := r.Pending("ws", "fe"); len(got) != 1 || got[0].State != StateQueued {
 		t.Fatalf("got %+v", got)
 	}
-	if err := r.Approve(m3.ID); err == nil {
-		t.Fatal("approve of queued must fail")
+	if err := r.Approve(m3.ID); !errors.Is(err, ErrNotAwaitingApproval) {
+		t.Fatalf("approve of queued = %v, want ErrNotAwaitingApproval", err)
 	}
-	if err := r.Reject(m3.ID); err == nil {
-		t.Fatal("reject of queued must fail")
+	if err := r.Reject(m3.ID); !errors.Is(err, ErrNotAwaitingApproval) {
+		t.Fatalf("reject of queued = %v, want ErrNotAwaitingApproval", err)
 	}
-	if err := r.Approve("nope"); err == nil {
-		t.Fatal("unknown id must fail")
+	if err := r.Approve("nope"); !errors.Is(err, ErrUnknownMessage) {
+		t.Fatalf("unknown id = %v, want ErrUnknownMessage", err)
 	}
 	m4, _ := r.Send("ws", "be", "fe", "d")
 	if m4.State != StateAwaitingApproval {
@@ -452,5 +454,18 @@ func TestReadNStrictFIFO(t *testing.T) {
 	got, rest = r.ReadN("ws", "be", 3000)
 	if len(got) != 1 || len(got[0].Body) != 5000 || rest != 1 {
 		t.Fatalf("second: got %d msgs rest %d", len(got), rest)
+	}
+}
+
+// The UI reads messages as JSON with snake_case keys.
+func TestMessageJSONKeys(t *testing.T) {
+	b, err := json.Marshal(Message{ID: "1", Workspace: "ws", From: "a", To: "b", Body: "x", Hop: 1, State: StateQueued})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"id"`, `"workspace"`, `"from"`, `"to"`, `"body"`, `"hop"`, `"created"`, `"state"`} {
+		if !strings.Contains(string(b), k+":") {
+			t.Errorf("key %s missing in %s", k, b)
+		}
 	}
 }

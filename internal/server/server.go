@@ -1,5 +1,5 @@
-// Package server is the HTTP layer of the daemon. 13a serves the agent
-// endpoints and the UI bundle; the UI API and WebSockets come in 13b.
+// Package server is the HTTP layer of the daemon: the agent endpoints, the
+// UI API and WebSockets, and the UI bundle.
 package server
 
 import (
@@ -21,17 +21,23 @@ import (
 // New returns the root handler. Routes:
 //   - /agent/hook and /agent/tools/{name}: behind Guard.Agent (agent token)
 //   - every other /agent/ path: 401 without a token, 404 with one
+//   - /api/...: the UI API (api.go), behind Guard.UI (UI token)
+//   - /ws/term/{ws}/{name} and /ws/events (ws.go): behind Guard.UIWebSocket
+//     (single-use ticket from POST /api/ws-ticket)
 //   - /: the UI bundle from static, behind Guard.Static (no token); a
 //     directory without index.html is 404
 //
 // Every request gets a request_id and one log line (logx.Middleware).
-func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, log *slog.Logger) http.Handler {
+func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, picker FolderPicker, log *slog.Logger) http.Handler {
+	ui := &api{d: d, g: g, picker: picker, log: log}
 	agentMux := http.NewServeMux()
 	agentMux.Handle("/agent/hook", d.HookHandler())
 	agentMux.Handle("/agent/tools/", d.ToolsHandler())
 
 	mux := http.NewServeMux()
 	mux.Handle("/agent/", g.Agent(agentLog(log, d, agentMux)))
+	mux.Handle("/api/", g.UI(ui.routes()))
+	mux.Handle("/ws/", g.UIWebSocket(ui.wsRoutes()))
 	mux.Handle("/", g.Static(staticFiles(static)))
 	return logx.Middleware(log, mux)
 }

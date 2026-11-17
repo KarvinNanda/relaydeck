@@ -33,11 +33,21 @@ const (
 )
 
 type Message struct {
-	ID, Workspace, From, To, Body string
-	Hop                           int
-	Created                       time.Time
-	State                         State
+	ID        string    `json:"id"`
+	Workspace string    `json:"workspace"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Body      string    `json:"body"`
+	Hop       int       `json:"hop"`
+	Created   time.Time `json:"created"`
+	State     State     `json:"state"`
 }
+
+// Errors of Approve and Reject, so the HTTP layer can tell 404 from 409.
+var (
+	ErrUnknownMessage      = errors.New("unknown message")
+	ErrNotAwaitingApproval = errors.New("not awaiting_approval")
+)
 
 // Directory lists the valid folder names of a workspace.
 type Directory interface{ Folders(ws string) []string }
@@ -246,10 +256,10 @@ func (r *Router) resolve(id string, to State) error {
 	defer r.mu.Unlock()
 	m, ok := r.byID[id]
 	if !ok {
-		return fmt.Errorf("unknown message %q", id)
+		return fmt.Errorf("%w %q", ErrUnknownMessage, id)
 	}
 	if m.State != StateAwaitingApproval {
-		return fmt.Errorf("message %q is %s, not awaiting_approval", id, m.State)
+		return fmt.Errorf("message %q is %s, %w", id, m.State, ErrNotAwaitingApproval)
 	}
 	m.State = to
 	r.publish(*m)

@@ -29,8 +29,10 @@ type hub struct {
 }
 
 // Subscribe returns a channel of events and a cancel func (safe to call
-// twice; it closes the channel). Sends never block: a slow consumer misses
-// events and should re-read State (ruling 11 is handled in 13b).
+// twice; it closes the channel). Sends never block: a consumer whose buffer
+// is full is dropped and its channel closed, so it knows it missed events
+// and can start again from a State snapshot (ruling 11). Run closes every
+// channel when it returns.
 func (d *Daemon) Subscribe() (<-chan Event, func()) {
 	ch := make(chan Event, eventBuffer)
 	d.hub.mu.Lock()
@@ -56,6 +58,17 @@ func (h *hub) publish(e Event) {
 		select {
 		case ch <- e:
 		default:
+			delete(h.subs, ch)
+			close(ch)
 		}
+	}
+}
+
+func (h *hub) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subs {
+		delete(h.subs, ch)
+		close(ch)
 	}
 }

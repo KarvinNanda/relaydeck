@@ -82,7 +82,7 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	guard := &auth.Guard{Port: port, UIToken: uiToken, Agents: d.Tokens(), Tickets: auth.NewTicketStore(time.Now)}
 	srv := &http.Server{
-		Handler:           server.New(d, guard, webui.FS(), log),
+		Handler:           server.New(d, guard, webui.FS(), server.ZenityPicker{}, log),
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}

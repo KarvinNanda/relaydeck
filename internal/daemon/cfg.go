@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"slices"
 
@@ -104,7 +105,8 @@ func (d *Daemon) AddWorkspace(name string) error {
 
 // AddFolder adds a folder to ws and saves the config. The path is stored in
 // canonical form and must be an existing directory. The account is dropped
-// on windows. It returns the folder as stored.
+// on windows. Without an account, the account cswap maps to the path is
+// used, if any (spec 7.7). It returns the folder as stored.
 func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 	p, err := paths.Canonicalize(f.Path)
 	if err != nil {
@@ -113,6 +115,9 @@ func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 	f.Path = p
 	if d.opts.GOOS == "windows" {
 		f.Account = ""
+	}
+	if f.Account == "" && d.opts.CswapPath != "" { // CswapPath is "" on windows
+		f.Account = d.mappedAccount(p)
 	}
 
 	d.cfgMu.Lock()
@@ -151,4 +156,19 @@ func (d *Daemon) setSessionID(ws, folder, sid string) {
 		return
 	}
 	d.log.Info("session id updated", "ws", ws, "folder", folder)
+}
+
+// mappedAccount asks `cswap map` for the account of dir, outside cfgMu (it
+// runs a command). An error gives no account; only the kind is logged, as
+// cswap output can hold account emails.
+func (d *Daemon) mappedAccount(dir string) string {
+	acc, ok, err := d.opts.CswapMapped(context.Background(), d.opts.CswapPath, dir)
+	if err != nil {
+		d.log.Warn("cswap map failed, folder added without an account", "error", "command failed")
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return acc
 }
