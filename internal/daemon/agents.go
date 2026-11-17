@@ -1,0 +1,278 @@
+package daemon
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+
+	"github.com/KarvinNanda/relaydeck/internal/agent"
+	"github.com/KarvinNanda/relaydeck/internal/delivery"
+	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/KarvinNanda/relaydeck/internal/screen"
+	"github.com/shirou/gopsutil/v4/process"
+)
+
+var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// StartAgent starts the folder's agent. With newSession it starts a new
+// session; with a sessionID it resumes that session; with neither it resumes
+// the folder's current session, or starts a new one when there is none. A
+// session that is open in a terminal outside relaydeck is never resumed.
+// The session used becomes the folder's current session in config.
+func (d *Daemon) StartAgent(ws, folder, sessionID string, newSession bool) error {
+	return d.start(ws, folder, sessionID, newSession, true)
+}
+
+func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal bool) error {
+	d.runMu.RLock()
+	defer d.runMu.RUnlock()
+	if d.closing {
+		return ErrShuttingDown
+	}
+	if sessionID != "" && (newSession || !sessionIDRe.MatchString(sessionID)) {
+		return fmt.Errorf("%w: session id must be a lowercase UUID and cannot be combined with new", ErrInvalid)
+	}
+	w, f, err := d.folderSnapshot(ws, folder)
+	if err != nil {
+		return err
+	}
+	t := delivery.Target{WS: ws, Folder: folder}
+	if d.running(t) != nil {
+		return ErrRunning
+	}
+	switch {
+	case newSession:
+		f.SessionID = ""
+	case sessionID != "":
+		f.SessionID = sessionID
+	}
+	if checkExternal && f.SessionID != "" {
+		open, err := d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, d.opts.OwnPIDs())
+		if err != nil {
+			// Same safe direction as delivery: if we cannot tell, do not resume.
+			return fmt.Errorf("check for a session open outside relaydeck: %w", err)
+		}
+		if open {
+			return ErrExternalOpen
+		}
+	}
+	newSID := ""
+	if f.SessionID == "" {
+		if newSID, err = newUUID(); err != nil {
+			return err
+		}
+	}
+
+	id, token, err := d.reg.issue(t)
+	if err != nil {
+		return err
+	}
+	runtimeDir := filepath.Join(d.opts.RuntimeRoot, id)
+	cmd, err := launch.Build(launch.Input{
+		RelaydeckExe: d.opts.RelaydeckExe,
+		Workspace:    w,
+		Folder:       f,
+		AgentID:      id,
+		AgentToken:   token,
+		DaemonURL:    "http://127.0.0.1:" + strconv.Itoa(d.opts.Port),
+		NewSessionID: newSID,
+		GOOS:         d.opts.GOOS,
+		CswapPath:    d.opts.CswapPath,
+		RuntimeDir:   runtimeDir,
+		BaseEnv:      d.opts.BaseEnv,
+	})
+	if err != nil {
+		d.reg.forget(id)
+		return err
+	}
+	a, err := d.mgr.Start(id, cmd)
+	if err != nil {
+		d.reg.forget(id)
+		os.RemoveAll(runtimeDir)
+		if errors.Is(err, agent.ErrAlreadyRunning) {
+			return fmt.Errorf("%w: another agent uses the same folder path", ErrRunning)
+		}
+		return err
+	}
+	if prev := d.reg.setLatest(t, id); prev != "" {
+		d.mgr.Remove(prev)
+		d.reg.forget(prev)
+	}
+	sid := f.SessionID
+	if sid == "" {
+		sid = newSID
+	}
+	d.setSessionID(ws, folder, sid)
+	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
+	go d.watch(a, runtimeDir)
+	return nil
+}
+
+// watch revokes the token and removes the runtime dir once the process is
+// gone, whatever made it exit.
+func (d *Daemon) watch(a *agent.Agent, runtimeDir string) {
+	<-a.Done()
+	d.reg.revoke(a.ID())
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
+	}
+}
+
+// StopAgent stops the folder's agent: /exit, then a kill after StopGrace. A
+// draft in the input box refuses a normal stop (ErrDraft), because /exit
+// would be appended to the draft and submitted. force kills at once without
+// typing anything.
+func (d *Daemon) StopAgent(ws, folder string, force bool) error {
+	if _, _, err := d.folderSnapshot(ws, folder); err != nil {
+		return err
+	}
+	a := d.running(delivery.Target{WS: ws, Folder: folder})
+	if a == nil {
+		return ErrNotRunning
+	}
+	var err error
+	switch {
+	case force:
+		err = a.Kill() // no /exit: it could join a draft and be submitted
+	case a.HasDraft():
+		return ErrDraft
+	default:
+		err = a.Stop(d.opts.StopGrace)
+	}
+	d.reg.revoke(a.ID())
+	d.log.Info("agent stop", "agent_id", a.ID(), "ws", ws, "folder", folder, "force", force)
+	return err
+}
+
+// Agent returns the folder's newest agent, running or stopped (a stopped one
+// still has its scrollback for the terminal view).
+func (d *Daemon) Agent(ws, folder string) (*agent.Agent, bool) {
+	id, ok := d.reg.latest(delivery.Target{WS: ws, Folder: folder})
+	if !ok {
+		return nil, false
+	}
+	return d.mgr.Get(id)
+}
+
+// running returns the folder's agent if its process is alive.
+func (d *Daemon) running(t delivery.Target) *agent.Agent {
+	a, ok := d.Agent(t.WS, t.Folder)
+	if !ok {
+		return nil
+	}
+	select {
+	case <-a.Done():
+		return nil
+	default:
+		return a
+	}
+}
+
+func (d *Daemon) statusOf(t delivery.Target) agent.Status {
+	if a := d.running(t); a != nil {
+		return a.Status()
+	}
+	return agent.StatusStopped
+}
+
+func (d *Daemon) statusName(ws, folder string) string {
+	return string(d.statusOf(delivery.Target{WS: ws, Folder: folder}))
+}
+
+func (d *Daemon) onUserEnter(agentID string) {
+	if t, ok := d.reg.owner(agentID); ok {
+		d.router.UserPrompt(t.WS, t.Folder)
+	}
+}
+
+// agentsAdapter is what the delivery loop sees (delivery.Agents).
+type agentsAdapter struct{ d *Daemon }
+
+var _ delivery.Agents = agentsAdapter{}
+
+func (x agentsAdapter) Running(ws, folder string) bool {
+	return x.d.running(delivery.Target{WS: ws, Folder: folder}) != nil
+}
+
+func (x agentsAdapter) Status(ws, folder string) agent.Status {
+	return x.d.statusOf(delivery.Target{WS: ws, Folder: folder})
+}
+
+func (x agentsAdapter) Screen(ws, folder string) screen.State {
+	if a := x.d.running(delivery.Target{WS: ws, Folder: folder}); a != nil {
+		return a.ScreenState()
+	}
+	return screen.State{}
+}
+
+// Start is called by Tick right after ExternalOpen said no, so it does not
+// check again.
+func (x agentsAdapter) Start(ws, folder string) error {
+	return x.d.start(ws, folder, "", false, false)
+}
+
+// ExternalOpen never checks a folder that runs in relaydeck (ruling 6).
+func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
+	if x.Running(ws, folder) {
+		return false, nil
+	}
+	_, f, err := x.d.folderSnapshot(ws, folder)
+	if err != nil {
+		return false, err
+	}
+	return x.d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, x.d.opts.OwnPIDs())
+}
+
+func (x agentsAdapter) Inject(ws, folder string, p []byte) error {
+	a := x.d.running(delivery.Target{WS: ws, Folder: folder})
+	if a == nil {
+		return agent.ErrStopped
+	}
+	return a.Inject(p)
+}
+
+// ownDescendants lists every process below this one (agents, and the claude
+// that cswap starts under them), so the external session check never
+// mistakes relaydeck's own agents for a terminal session. On error it
+// returns what it found; the check then errs toward "open" (hold).
+func ownDescendants() map[int]bool {
+	out := map[int]bool{}
+	procs, err := process.Processes()
+	if err != nil {
+		return out
+	}
+	children := map[int32][]int32{}
+	for _, p := range procs {
+		if pp, err := p.Ppid(); err == nil {
+			children[pp] = append(children[pp], p.Pid)
+		}
+	}
+	queue := []int32{int32(os.Getpid())}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		for _, c := range children[pid] {
+			if !out[int(c)] {
+				out[int(c)] = true
+				queue = append(queue, c)
+			}
+		}
+	}
+	return out
+}
+
+// newUUID returns a random lowercase UUID v4.
+func newUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}

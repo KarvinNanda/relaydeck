@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"github.com/KarvinNanda/relaydeck/internal/hook"
 	"github.com/KarvinNanda/relaydeck/internal/logx"
@@ -44,8 +47,8 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) int {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	cmd := "serve"
-	if len(args) > 0 {
-		cmd = args[0]
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
 	}
 	switch cmd {
 	case "version":
@@ -58,10 +61,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "hook":
-		return runHook(args[1:], os.Stdin, stderr)
+		return runHook(args, os.Stdin, stderr)
 	case "serve":
-		fmt.Fprintf(stderr, "relaydeck %s: not implemented\n", cmd)
-		return 1
+		// SIGINT and SIGTERM end ctx; serve then stops every agent and exits.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return serve(ctx, args, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "relaydeck: unknown command %q\n\n%s", cmd, usage)
 		return 2
