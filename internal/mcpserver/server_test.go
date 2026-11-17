@@ -2,12 +2,14 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -228,8 +230,8 @@ func TestHandlerAuthAndErrors(t *testing.T) {
 		t.Fatalf("bad json: %d", code)
 	}
 	big := `{"target":"be","message":"` + strings.Repeat("a", 70<<10) + `"}`
-	if code, _ := post(t, d, "/agent/tools/notify", "tok-fe", big); code != 400 {
-		t.Fatalf("oversize: %d", code)
+	if code, b := post(t, d, "/agent/tools/notify", "tok-fe", big); code != 400 || !strings.Contains(b, "request body over 64 KiB") {
+		t.Fatalf("oversize: %d %s", code, b)
 	}
 }
 
@@ -251,8 +253,8 @@ func TestRunConfigErrors(t *testing.T) {
 }
 
 func TestNoRedirectAndTokenNotLeaked(t *testing.T) {
-	var hits int
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	var hits atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
 	defer other.Close()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL, http.StatusFound)
@@ -261,15 +263,114 @@ func TestNoRedirectAndTokenNotLeaked(t *testing.T) {
 	env := map[string]string{"RELAYDECK_URL": srv.URL, "RELAYDECK_AGENT_TOKEN": "secret-tok"}
 	s, _ := NewServer(func(k string) string { return env[k] }, nil)
 	ct, st := mcp.NewInMemoryTransports()
-	ctx := context.Background()
-	go s.Run(ctx, st)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Run(ctx, st) }()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "v"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { cs.Close(); cancel(); <-done }()
 	res := call(t, cs, "list_folders", nil)
-	if !res.IsError || hits != 0 || strings.Contains(text(res), "secret-tok") {
-		t.Fatalf("err=%v hits=%d text=%q", res.IsError, hits, text(res))
+	if !res.IsError || hits.Load() != 0 || strings.Contains(text(res), "secret-tok") {
+		t.Fatalf("err=%v hits=%d text=%q", res.IsError, hits.Load(), text(res))
+	}
+}
+
+func TestNotifyOtherWorkspaceRejected(t *testing.T) {
+	d := newDaemon(t)
+	cs := connect(t, d, "tok-fe")
+	res := call(t, cs, "notify", map[string]any{"target": "other", "message": "hi"})
+	if !res.IsError || !strings.Contains(text(res), `unknown folder "other"`) {
+		t.Fatalf("got %q err=%v", text(res), res.IsError)
+	}
+	if len(d.router.Pending("w2", "other")) != 0 {
+		t.Fatal("message crossed workspaces")
+	}
+}
+
+func TestReadMessagesOnlyOwn(t *testing.T) {
+	d := newDaemon(t)
+	fe := connect(t, d, "tok-fe")
+	if _, err := d.router.Send("w1", "fe", "db", "for db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.router.Send("w1", "db", "be", "for be"); err != nil {
+		t.Fatal(err)
+	}
+	if s := text(call(t, fe, "read_messages", nil)); s != "No messages." {
+		t.Fatalf("fe read %q", s)
+	}
+	if len(d.router.Pending("w1", "db")) != 1 || len(d.router.Pending("w1", "be")) != 1 {
+		t.Fatal("another agent's messages were consumed")
+	}
+}
+
+func TestReadMessagesLargeBacklogNoLoss(t *testing.T) {
+	d := newDaemon(t)
+	fe := connect(t, d, "tok-fe")
+	be := connect(t, d, "tok-be")
+	const total, size = 80, 16 << 10
+	sent, seen, bytes := 0, map[int]int{}, 0
+	for len(seen) < total {
+		for sent < total { // refill up to the pending cap
+			body := fmt.Sprintf("msg-%03d-", sent) + strings.Repeat("z", size-8)
+			res := call(t, fe, "notify", map[string]any{"target": "be", "message": body})
+			if res.IsError {
+				break
+			}
+			sent++
+		}
+		res := call(t, be, "read_messages", nil)
+		if res.IsError {
+			t.Fatalf("read error %q", text(res))
+		}
+		s := text(res)
+		if len(s) > 300<<10 {
+			t.Fatalf("answer too large: %d", len(s))
+		}
+		bytes += len(s)
+		for i := 0; i < total; i++ {
+			seen[i] += strings.Count(s, fmt.Sprintf("---\nmsg-%03d-", i))
+		}
+		delete(seen, -1)
+		for k, v := range seen {
+			if v == 0 {
+				delete(seen, k)
+			}
+		}
+	}
+	for i := 0; i < total; i++ {
+		if seen[i] != 1 {
+			t.Fatalf("message %d seen %d times", i, seen[i])
+		}
+	}
+	if bytes <= 1<<20 {
+		t.Fatalf("test did not exceed 1 MiB: %d", bytes)
+	}
+	if s := text(call(t, be, "read_messages", nil)); s != "No messages." {
+		t.Fatalf("leftover %q", s)
+	}
+}
+
+func TestClientRejectsOversizeAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"text":"` + strings.Repeat("a", 2<<20) + `"}`))
+	}))
+	defer srv.Close()
+	env := map[string]string{"RELAYDECK_URL": srv.URL, "RELAYDECK_AGENT_TOKEN": "t"}
+	s, _ := NewServer(func(k string) string { return env[k] }, nil)
+	ct, st := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Run(ctx, st) }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "v"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cs.Close(); cancel(); <-done }()
+	res := call(t, cs, "read_messages", nil)
+	if !res.IsError || text(res) != "daemon response unreadable or too large" {
+		t.Fatalf("got %q err=%v", text(res), res.IsError)
 	}
 }

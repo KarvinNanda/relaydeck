@@ -104,12 +104,17 @@ func (c *client) call(ctx context.Context, name string, body any) (*mcp.CallTool
 		return nil, nil, errors.New("cannot reach the relaydeck daemon")
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxRespSize+1))
 	var out struct {
 		Text  string `json:"text"`
 		Error string `json:"error"`
 	}
-	_ = json.Unmarshal(raw, &out)
+	if err != nil || len(raw) > maxRespSize || json.Unmarshal(raw, &out) != nil {
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return nil, nil, errors.New("daemon response unreadable or too large")
+		}
+		out.Error = ""
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if out.Error == "" {
 			out.Error = fmt.Sprintf("daemon returned status %d", resp.StatusCode)

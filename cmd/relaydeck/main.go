@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/KarvinNanda/relaydeck/internal/mcpserver"
 	"github.com/KarvinNanda/relaydeck/internal/hook"
 	"github.com/KarvinNanda/relaydeck/internal/logx"
+	"github.com/KarvinNanda/relaydeck/internal/mcpserver"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

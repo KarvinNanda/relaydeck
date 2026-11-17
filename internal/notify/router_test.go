@@ -293,6 +293,7 @@ func TestSubscribeFullDoesNotBlock(t *testing.T) {
 		if _, err := r.Send("ws", "be", "fe", "x"); err != nil {
 			t.Fatal(err)
 		}
+		r.Read("ws", "fe") // keep under the pending cap
 	}
 }
 
@@ -396,4 +397,43 @@ func TestConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestReadNBoundsBytesAndKeepsRest(t *testing.T) {
+	r := newTestRouter()
+	body := strings.Repeat("a", 1000)
+	for i := 0; i < 5; i++ {
+		if _, err := r.Send("ws", "fe", "be", body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one := len(Envelope(r.Pending("ws", "be")[0]))
+	got, rest := r.ReadN("ws", "be", one*2+10)
+	if len(got) != 2 || rest != 3 {
+		t.Fatalf("got %d rest %d", len(got), rest)
+	}
+	if p := r.Pending("ws", "be"); len(p) != 3 {
+		t.Fatalf("pending %d", len(p))
+	}
+	got, rest = r.ReadN("ws", "be", 1) // always at least one
+	if len(got) != 1 || rest != 2 {
+		t.Fatalf("got %d rest %d", len(got), rest)
+	}
+}
+
+func TestSendPendingCap(t *testing.T) {
+	r := newTestRouter()
+	for i := 0; i < MaxPendingPerTarget; i++ {
+		if _, err := r.Send("ws", "fe", "be", "x"); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	_, err := r.Send("ws", "fe", "be", "x")
+	if err == nil || err.Error() != `"be" has 50 unread messages; wait until it reads them` {
+		t.Fatalf("err = %v", err)
+	}
+	r.Read("ws", "be")
+	if _, err := r.Send("ws", "fe", "be", "x"); err != nil {
+		t.Fatalf("after read: %v", err)
+	}
 }

@@ -4,6 +4,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,7 +14,11 @@ import (
 	"github.com/KarvinNanda/relaydeck/internal/notify"
 )
 
-const maxBody = 64 << 10
+const (
+	maxBody     = 64 << 10
+	readBudget  = 256 << 10 // bytes of envelopes per read_messages answer
+	maxRespSize = 1 << 20   // the client refuses answers above this
+)
 
 type notifyArgs struct {
 	Target  string `json:"target"`
@@ -46,6 +51,11 @@ func Handlers(r *notify.Router, dir notify.Directory, status func(ws, folder str
 		case "notify":
 			var a notifyArgs
 			if derr := json.NewDecoder(req.Body).Decode(&a); derr != nil {
+				var mbe *http.MaxBytesError
+				if errors.As(derr, &mbe) {
+					writeErr(w, http.StatusBadRequest, "request body over 64 KiB")
+					return
+				}
 				writeErr(w, http.StatusBadRequest, "invalid request body")
 				return
 			}
@@ -91,7 +101,7 @@ func sendNotify(r *notify.Router, ws, from string, a notifyArgs) (string, error)
 }
 
 func readMessages(r *notify.Router, ws, agent string) string {
-	msgs := r.Read(ws, agent)
+	msgs, remaining := r.ReadN(ws, agent, readBudget)
 	if len(msgs) == 0 {
 		return "No messages."
 	}
@@ -99,7 +109,11 @@ func readMessages(r *notify.Router, ws, agent string) string {
 	for i, m := range msgs {
 		parts[i] = notify.Envelope(m)
 	}
-	return strings.Join(parts, "\n\n")
+	out := strings.Join(parts, "\n\n")
+	if remaining > 0 {
+		out += fmt.Sprintf("\n\n[relaydeck] %d more messages waiting. Call read_messages again.", remaining)
+	}
+	return out
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
