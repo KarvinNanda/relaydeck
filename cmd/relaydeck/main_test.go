@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestHookAlwaysExitsZero(t *testing.T) {
+	t.Setenv("RELAYDECK_URL", "")
+	var errb bytes.Buffer
+	if code := runHook([]string{"Stop"}, strings.NewReader("{}"), &errb); code != 0 || errb.Len() != 0 {
+		t.Errorf("no env: code %d stderr %q", code, errb.String())
+	}
+	errb.Reset()
+	if code := runHook([]string{"Bogus"}, strings.NewReader("{}"), &errb); code != 0 {
+		t.Errorf("bad event: code %d", code)
+	}
+	if !strings.HasPrefix(errb.String(), "{") || strings.Count(errb.String(), "\n") != 1 || !strings.Contains(errb.String(), "Bogus") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+	errb.Reset()
+	t.Setenv("RELAYDECK_URL", "http://127.0.0.1:1")
+	t.Setenv("RELAYDECK_AGENT_TOKEN", "supersecrettoken")
+	if code := runHook([]string{"Stop"}, strings.NewReader("{}"), &errb); code != 0 || strings.Contains(errb.String(), "supersecrettoken") || errb.Len() == 0 {
+		t.Errorf("unreachable daemon: code %d stderr %q", code, errb.String())
+	}
+}
+
 func TestRunDispatch(t *testing.T) {
 	tests := []struct {
 		args   []string
