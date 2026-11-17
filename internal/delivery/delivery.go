@@ -19,6 +19,8 @@ const (
 	startBackoff  = 10 * time.Second
 	deliverNowTTL = 5 * time.Second
 	warnEvery     = 30 * time.Second
+	pollEvery     = 25 * time.Millisecond
+	pollMax       = 20 // 500 ms
 	tickEvery     = time.Second
 )
 
@@ -47,6 +49,7 @@ type Deliverer struct {
 	a          Agents
 	enterDelay time.Duration
 	now        func() time.Time
+	sleep      func(time.Duration) // injected so tests stay fast
 	log        *slog.Logger
 	targets    func() []Target
 	kick       chan struct{}
@@ -65,7 +68,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		return nil, errors.New("delivery: targets func is required")
 	}
 	return &Deliverer{
-		r: r, a: a, enterDelay: enterDelay, now: now, targets: targets,
+		r: r, a: a, enterDelay: enterDelay, now: now, sleep: time.Sleep, targets: targets,
 		log:        slog.Default(),
 		kick:       make(chan struct{}, 1),
 		nudges:     map[Target]nudge{},
@@ -178,6 +181,9 @@ func (d *Deliverer) tickTarget(t Target) {
 	if len(cand) == 0 {
 		return // only nudged messages: the agent was told, never nudge again
 	}
+	if _, waiting := d.nudges[t]; waiting {
+		return // a nudge awaits its prompt confirmation: one nudge per idle cycle
+	}
 
 	switch d.a.Status(t.WS, t.Folder) {
 	case agent.StatusIdle:
@@ -206,8 +212,9 @@ func (d *Deliverer) tickTarget(t Target) {
 	if !draft && !scr.Ready() {
 		return
 	}
-	d.sendNudge(t, cand)
-	delete(d.deliverNow, t)
+	if d.sendNudge(t, cand) {
+		delete(d.deliverNow, t)
+	}
 }
 
 func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
@@ -246,22 +253,35 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 	delete(d.noStart, t)
 }
 
-func (d *Deliverer) sendNudge(t Target, cand []notify.Message) {
+// sendNudge pastes the nudge, waits for the paste to show on screen, then
+// sends Enter. It reports whether Enter was sent.
+func (d *Deliverer) sendNudge(t Target, cand []notify.Message) bool {
 	text := "\x1b[200~" + notify.Nudge(cand) + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
-		return
+		return false
 	}
-	time.Sleep(d.enterDelay)
-	// An overlay or user typing may have appeared during the delay. Enter is
-	// only safe when the box is visible, not busy, and holds the paste.
-	if scr := d.a.Screen(t.WS, t.Folder); !scr.InputVisible || scr.Trust || scr.Busy || scr.InputEmpty {
-		d.log.Warn("delivery: screen changed after paste, not sending Enter", "ws", t.WS, "agent", t.Folder)
-		return
+	d.sleep(d.enterDelay)
+	// The PTY reader feeds the screen asynchronously, so poll until the box
+	// shows the paste. If an overlay or dialog shows instead, or the paste never
+	// appears, Enter could pick an option or submit nothing: leave the messages
+	// queued. (This does not detect user typing during the wait.)
+	ready := false
+	for i := 0; i < pollMax; i++ {
+		scr := d.a.Screen(t.WS, t.Folder)
+		if scr.InputVisible && !scr.InputEmpty && !scr.Busy && !scr.Trust {
+			ready = true
+			break
+		}
+		d.sleep(pollEvery)
+	}
+	if !ready {
+		d.log.Warn("delivery: paste not confirmed on screen, not sending Enter", "ws", t.WS, "agent", t.Folder)
+		return false
 	}
 	if err := d.a.Inject(t.WS, t.Folder, []byte("\r")); err != nil {
 		d.log.Error("delivery: inject enter failed", "ws", t.WS, "agent", t.Folder, "err", err)
-		return
+		return false
 	}
 	ids := make([]string, 0, len(cand))
 	for _, m := range cand {
@@ -269,4 +289,5 @@ func (d *Deliverer) sendNudge(t Target, cand []notify.Message) {
 		ids = append(ids, m.ID)
 	}
 	d.nudges[t] = nudge{at: d.now(), ids: ids}
+	return true
 }

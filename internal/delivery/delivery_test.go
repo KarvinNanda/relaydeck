@@ -116,6 +116,7 @@ func newRig() *rig {
 		panic(err)
 	}
 	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	d.sleep = func(time.Duration) {}
 	return &rig{r, fa, d, c}
 }
 
@@ -460,7 +461,7 @@ func TestEnterSkippedWhenScreenChanges(t *testing.T) {
 	for name, after := range cases {
 		g := newRig()
 		m := g.send(t, "x")
-		g.fa.set(func(f *fakeAgents) { f.scrSeq = []screen.State{readyScreen, after} })
+		g.fa.set(func(f *fakeAgents) { f.scrSeq = append([]screen.State{readyScreen}, repeat(after, 40)...) })
 		g.tick()
 		if g.fa.nInjected() != 1 || g.state(m.ID) != notify.StateQueued {
 			t.Fatalf("%s: injected %d state %s", name, g.fa.nInjected(), g.state(m.ID))
@@ -500,6 +501,7 @@ func TestSetStateErrorSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	d.sleep = func(time.Duration) {}
 	g.fa.set(func(f *fakeAgents) {
 		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
 	})
@@ -516,5 +518,69 @@ func TestSetStateErrorSkipped(t *testing.T) {
 func TestNewRequiresTargets(t *testing.T) {
 	if _, err := New(nil, nil, 0, time.Now, nil); err == nil {
 		t.Fatal("nil targets must fail")
+	}
+}
+
+func repeat(s screen.State, n int) []screen.State {
+	out := make([]screen.State, n)
+	for i := range out {
+		out[i] = s
+	}
+	return out
+}
+
+func TestNoSecondNudgeInsideWindow(t *testing.T) {
+	g := newRig()
+	m1 := g.send(t, "x")
+	g.tick()
+	m2 := g.send(t, "y")
+	g.tick()
+	if g.fa.nInjected() != 2 || g.state(m2.ID) != notify.StateQueued {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m2.ID))
+	}
+	g.d.PromptSubmitted("ws", "fe")
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
+	g.tick()
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusIdle })
+	g.tick()
+	if g.fa.nInjected() != 4 || g.state(m2.ID) != notify.StateNudged || g.state(m1.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m2.ID))
+	}
+}
+
+func TestEnterWaitsForPasteEcho(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		// poll 0 is the pre-check; the paste shows up on the 3rd poll after it
+		f.scrSeq = []screen.State{readyScreen, readyScreen, readyScreen, {InputVisible: true, InputEmpty: false}}
+	})
+	g.tick()
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestPasteNeverShownNoEnter(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.scrSeq = repeat(readyScreen, 60) })
+	g.tick()
+	if g.fa.nInjected() != 1 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestDeliverNowKeptWhenEnterSkipped(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false}
+		f.scrSeq = append([]screen.State{f.scr}, repeat(screen.State{InputVisible: false}, 60)...)
+	})
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	if _, ok := g.d.deliverNow[Target{"ws", "fe"}]; !ok {
+		t.Fatal("ask must survive a skipped Enter")
 	}
 }

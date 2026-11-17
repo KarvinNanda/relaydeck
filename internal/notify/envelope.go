@@ -2,7 +2,6 @@ package notify
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -15,23 +14,11 @@ func Envelope(m Message) string {
 		m.From, m.Workspace, m.Created.Format(time.RFC3339), m.Hop, m.Body)
 }
 
-// Nudge is the fixed text typed into an idle agent. It never contains a message body.
+// Nudge is the fixed text typed into an idle agent. It never contains a message
+// body or a sender name, and it stays short so it never wraps the input box.
 func Nudge(msgs []Message) string {
-	var names []string
-	seen := map[string]bool{}
-	for _, m := range msgs {
-		if !seen[m.From] {
-			seen[m.From] = true
-			names = append(names, fmt.Sprintf("%q", m.From))
-		}
-	}
-	noun, agent := "messages", "agent"
 	if len(msgs) == 1 {
-		noun = "message"
+		return "[relaydeck] 1 new message. Call read_messages."
 	}
-	if len(names) > 1 {
-		agent = "agents"
-	}
-	return fmt.Sprintf("[relaydeck] You have %d %s from %s %s. Call read_messages.",
-		len(msgs), noun, agent, strings.Join(names, ", "))
+	return fmt.Sprintf("[relaydeck] %d new messages. Call read_messages.", len(msgs))
 }
