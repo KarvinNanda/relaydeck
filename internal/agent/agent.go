@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -165,10 +166,13 @@ func (a *Agent) waitLoop() {
 	for s := range a.subs {
 		a.dropLocked(s)
 	}
-	a.mu.Unlock()
-	close(a.done)
-	a.log.Info("agent stopped", "agent_id", a.id, "exit_code", code)
+	// Emit under a.mu, before done closes: SetStatus does the same, so no
+	// status event for this agent can follow "stopped", and a restart (which
+	// needs done closed) cannot be overtaken by this event.
 	a.emit(Event{AgentID: a.id, Status: StatusStopped, ExitCode: &code})
+	close(a.done)
+	a.mu.Unlock()
+	a.log.Info("agent stopped", "agent_id", a.id, "exit_code", code)
 }
 
 // ErrStopped is returned when writing to an agent whose process is gone.
@@ -255,16 +259,24 @@ func (a *Agent) Stop(grace time.Duration) error {
 	if a.isStopped() {
 		return nil
 	}
-	a.Inject([]byte("/exit"))
-	a.Inject([]byte("\r"))
+	// The writes can block (full input buffer), so they must not delay the
+	// grace timer. Once the process is killed, waitLoop closes the PTY, which
+	// releases a blocked write.
+	go func() {
+		a.Inject([]byte("/exit"))
+		a.Inject([]byte("\r"))
+	}()
 	select {
 	case <-a.done:
 		return nil
 	case <-time.After(grace):
 	}
+	var err error
 	if p := a.cmd.Process; p != nil {
-		p.Kill()
+		if err = killTree(p); errors.Is(err, os.ErrProcessDone) {
+			err = nil
+		}
 	}
 	<-a.done
-	return nil
+	return err
 }

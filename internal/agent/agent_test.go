@@ -8,11 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/aymanbagabas/go-pty"
 )
 
 var fakeBin string
@@ -192,6 +194,9 @@ func TestSetStatusEmitsEvent(t *testing.T) {
 	ev, cancel := m.Events()
 	defer cancel()
 	start(t, m, "a")
+	if e := <-ev; e.Status != StatusStarting {
+		t.Fatalf("first event = %+v, want starting", e)
+	}
 	m.SetStatus("a", StatusBusy)
 	select {
 	case e := <-ev:
@@ -258,8 +263,18 @@ func TestSlowSubscriberDropped(t *testing.T) {
 		a.publish([]byte("x"))
 	}
 	n := 0
-	for range out { // the channel must be closed, so this ends
-		n++
+	timeout := time.After(3 * time.Second)
+drain:
+	for {
+		select {
+		case _, ok := <-out:
+			if !ok {
+				break drain
+			}
+			n++
+		case <-timeout:
+			t.Fatal("slow subscriber was not dropped (channel still open)")
+		}
 	}
 	if n > subBuffer {
 		t.Fatalf("read %d chunks, buffer is %d", n, subBuffer)
@@ -283,8 +298,12 @@ func TestStartWritesFiles(t *testing.T) {
 	m := newMgr(t, nil)
 	dir := t.TempDir()
 	f := filepath.Join(dir, "sub", "settings.json")
-	os.MkdirAll(filepath.Dir(f), 0o755)
-	os.WriteFile(f, []byte("old"), 0o644)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	a, err := m.Start("a", launch.Command{
 		Argv: []string{fakeBin}, Env: os.Environ(), Dir: t.TempDir(),
 		Files: map[string][]byte{f: []byte("new"), filepath.Join(dir, "deep", "x", "y"): []byte("y")},
@@ -335,6 +354,7 @@ func answered(t *testing.T, subscribed bool) bool {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
 	replay, out, cancel := a.Subscribe()
+	defer cancel()
 	collect(t, replay, out, "READY")
 	if !subscribed {
 		cancel()
@@ -363,5 +383,118 @@ func TestReplyOnlyWithoutSubscribers(t *testing.T) {
 	}
 	if answered(t, true) {
 		t.Fatal("reply reached the PTY while a subscriber was attached")
+	}
+}
+
+func TestRestartLastEventIsNotStopped(t *testing.T) {
+	m := newMgr(t, nil)
+	ev, cancel := m.Events()
+	defer cancel()
+	dir := t.TempDir()
+	cmd := launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: dir}
+	a, err := m.Start("a", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Inject([]byte("quit\r"))
+	<-a.Done()
+	b, err := m.Start("a", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Stop(time.Second)
+	time.Sleep(300 * time.Millisecond)
+	var last Status
+	for drained := false; !drained; {
+		select {
+		case e := <-ev:
+			if e.AgentID == "a" {
+				last = e.Status
+			}
+		default:
+			drained = true
+		}
+	}
+	if last != StatusStarting {
+		t.Fatalf("last event = %q, want %q", last, StatusStarting)
+	}
+}
+
+func TestStartRequiresEnv(t *testing.T) {
+	m := newMgr(t, nil)
+	_, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Dir: t.TempDir()})
+	if err == nil {
+		t.Fatal("nil Env must be rejected so the scrubbed env is never skipped")
+	}
+}
+
+// hungPty is a PTY whose Write blocks until Close, like a full input buffer.
+type hungPty struct {
+	pty.Pty
+	release chan struct{}
+}
+
+func (h hungPty) Write([]byte) (int, error) { <-h.release; return 0, io.ErrClosedPipe }
+
+func TestStopBoundedWhenWriteBlocks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sleep")
+	}
+	proc := exec.Command("sleep", "30")
+	if err := proc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{
+		pty:  hungPty{release: make(chan struct{})},
+		cmd:  &pty.Cmd{Process: proc.Process},
+		done: make(chan struct{}),
+	}
+	go func() { proc.Wait(); close(a.done) }()
+	stopped := make(chan error, 1)
+	go func() { stopped <- a.Stop(200 * time.Millisecond) }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		proc.Process.Kill()
+		t.Fatal("Stop hung on a blocked PTY write")
+	}
+}
+
+func TestWriteReachesPTY(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	acc := collect(t, replay, out, "READY")
+	if err := a.Write([]byte("typed\r")); err != nil {
+		t.Fatal(err)
+	}
+	collect(t, acc, out, "ECHO:typed")
+}
+
+func TestHasDraft(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	_, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, nil, out, "READY")
+	if a.HasDraft() {
+		t.Fatal("no input box yet, HasDraft must be false")
+	}
+	feed := func(typed string) {
+		rule := strings.Repeat("─", 120)
+		a.screen.Write([]byte("\x1b[2J\x1b[H"))
+		a.screen.Write([]byte("\x1b[37;1H" + rule + "\r\n❯ " + typed + "\r\n" + rule + "\r\n  ? for shortcuts"))
+	}
+	feed("hello")
+	if !a.HasDraft() {
+		t.Fatalf("typed text in the box, HasDraft must be true: %+v", a.ScreenState())
+	}
+	feed("")
+	if a.HasDraft() {
+		t.Fatal("empty box, HasDraft must be false")
 	}
 }

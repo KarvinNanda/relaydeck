@@ -66,6 +66,11 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 	if len(cmd.Argv) == 0 {
 		return nil, errors.New("agent: empty argv")
 	}
+	if cmd.Env == nil {
+		// A nil Env would make the child inherit everything, skipping the
+		// scrub of parent Claude Code session variables.
+		return nil, errors.New("agent: cmd.Env is nil, pass the scrubbed environment")
+	}
 	dir := filepath.Clean(cmd.Dir)
 
 	m.mu.Lock()
@@ -107,9 +112,6 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 	c := p.Command(path, cmd.Argv[1:]...)
 	c.Dir = cmd.Dir
 	c.Env = cmd.Env
-	if c.Env == nil {
-		c.Env = os.Environ()
-	}
 	if err := c.Start(); err != nil {
 		p.Close()
 		return nil, err
@@ -134,6 +136,7 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 	go a.replyLoop()
 	go a.readLoop()
 	go a.waitLoop()
+	m.emit(Event{AgentID: id, Status: StatusStarting})
 	m.log.Info("agent started", "agent_id", id)
 	return a, nil
 }
@@ -184,6 +187,6 @@ func (m *Manager) SetStatus(id string, s Status) {
 		return
 	}
 	a.status = s
-	a.mu.Unlock()
 	m.emit(Event{AgentID: id, Status: s})
+	a.mu.Unlock()
 }
