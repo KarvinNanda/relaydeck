@@ -4,6 +4,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -16,6 +17,8 @@ import (
 const (
 	confirmWindow = 3 * time.Second
 	startBackoff  = 10 * time.Second
+	deliverNowTTL = 5 * time.Second
+	warnEvery     = 30 * time.Second
 	tickEvery     = time.Second
 )
 
@@ -27,7 +30,6 @@ type Agents interface {
 	Start(ws, folder string) error // resume current session or new
 	ExternalOpen(ws, folder string) (bool, error)
 	Inject(ws, folder string, p []byte) error
-	MarkBusy(ws, folder string) // optimistic, until hooks report
 }
 
 // Target is one agent: a folder inside a workspace.
@@ -41,32 +43,36 @@ type nudge struct {
 // Deliverer moves pending messages toward their targets. All state is guarded
 // by one mutex, so Tick may be called from several goroutines.
 type Deliverer struct {
-	// Targets lists the agents to check on each Tick. The router has no
-	// index of targets, so the wiring code supplies one.
-	Targets func() []Target
-
 	r          *notify.Router
 	a          Agents
 	enterDelay time.Duration
 	now        func() time.Time
 	log        *slog.Logger
+	targets    func() []Target
 	kick       chan struct{}
 
 	mu         sync.Mutex
 	nudges     map[Target]nudge
-	deliverNow map[Target]bool
+	deliverNow map[Target]time.Time // when DeliverNow was asked
 	noStart    map[Target]time.Time // do not call Start before this time
+	extWarned  map[Target]time.Time // last ExternalOpen warning
 }
 
-func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.Time) *Deliverer {
+// New builds a Deliverer. targets lists the agents to check on each Tick (the
+// router has no index of targets, so the caller supplies one). It must not be nil.
+func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.Time, targets func() []Target) (*Deliverer, error) {
+	if targets == nil {
+		return nil, errors.New("delivery: targets func is required")
+	}
 	return &Deliverer{
-		r: r, a: a, enterDelay: enterDelay, now: now,
+		r: r, a: a, enterDelay: enterDelay, now: now, targets: targets,
 		log:        slog.Default(),
 		kick:       make(chan struct{}, 1),
 		nudges:     map[Target]nudge{},
-		deliverNow: map[Target]bool{},
+		deliverNow: map[Target]time.Time{},
 		noStart:    map[Target]time.Time{},
-	}
+		extWarned:  map[Target]time.Time{},
+	}, nil
 }
 
 // Kick asks Run for an immediate Tick. It never blocks and coalesces.
@@ -102,20 +108,17 @@ func (d *Deliverer) PromptSubmitted(ws, folder string) {
 // DeliverNow makes the next delivery to this target skip the draft check once.
 func (d *Deliverer) DeliverNow(ws, folder string) {
 	d.mu.Lock()
-	d.deliverNow[Target{ws, folder}] = true
+	d.deliverNow[Target{ws, folder}] = d.now()
 	d.mu.Unlock()
 	d.Kick()
 }
 
 // Tick checks every target once.
 func (d *Deliverer) Tick(ctx context.Context) {
-	if d.Targets == nil {
-		return
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	seen := map[Target]bool{}
-	for _, t := range d.Targets() {
+	for _, t := range d.targets() {
 		if seen[t] || ctx.Err() != nil {
 			continue
 		}
@@ -130,7 +133,7 @@ func (d *Deliverer) set(m notify.Message, s notify.State) {
 	}
 	if err := d.r.SetState(m.ID, s); err != nil {
 		// Someone else moved it (read, approval, reject). Skip, never retry.
-		d.log.Debug("delivery: message moved elsewhere", "message_id", m.ID, "err", err)
+		d.log.Debug("delivery: message moved elsewhere", "ws", m.Workspace, "agent", m.To, "message_id", m.ID, "err", err)
 	}
 }
 
@@ -185,8 +188,16 @@ func (d *Deliverer) tickTarget(t Target) {
 	if scr.Trust || !scr.InputVisible {
 		return // dialog or overlay: wait
 	}
+	if scr.Busy {
+		return
+	}
 	draft := !scr.InputEmpty
-	if draft && !d.deliverNow[t] {
+	asked, ok := d.deliverNow[t]
+	if ok && !d.now().Before(asked.Add(deliverNowTTL)) {
+		delete(d.deliverNow, t)
+		ok = false
+	}
+	if draft && !ok {
 		for _, m := range cand {
 			d.set(m, notify.StateHeldDraft)
 		}
@@ -202,19 +213,25 @@ func (d *Deliverer) tickTarget(t Target) {
 func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 	open, err := d.a.ExternalOpen(t.WS, t.Folder)
 	if err != nil {
-		d.log.Warn("delivery: external session check failed, holding", "folder", t.Folder, "err", err)
+		if last, ok := d.extWarned[t]; !ok || !d.now().Before(last.Add(warnEvery)) {
+			d.extWarned[t] = d.now()
+			d.log.Warn("delivery: external session check failed, holding", "ws", t.WS, "agent", t.Folder, "err", err)
+		}
 		open = true
 	}
 	if open {
 		for _, m := range pending {
-			if m.State != notify.StateHeldExternal && m.State != notify.StateAwaitingApproval {
+			if m.State != notify.StateHeldExternal {
 				d.set(m, notify.StateHeldExternal)
 			}
 		}
 		return
 	}
+	// The process that was nudged is gone, so a nudged message is unread
+	// and must be nudged again after the restart.
+	delete(d.nudges, t)
 	for _, m := range pending {
-		if m.State == notify.StateHeldExternal {
+		if m.State == notify.StateHeldExternal || m.State == notify.StateNudged {
 			d.set(m, notify.StateQueued)
 		}
 	}
@@ -223,7 +240,7 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 	}
 	if err := d.a.Start(t.WS, t.Folder); err != nil {
 		d.noStart[t] = d.now().Add(startBackoff)
-		d.log.Error("delivery: start failed", "folder", t.Folder, "err", err)
+		d.log.Error("delivery: start failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return
 	}
 	delete(d.noStart, t)
@@ -232,12 +249,18 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 func (d *Deliverer) sendNudge(t Target, cand []notify.Message) {
 	text := "\x1b[200~" + notify.Nudge(cand) + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
-		d.log.Error("delivery: inject failed", "folder", t.Folder, "err", err)
+		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return
 	}
 	time.Sleep(d.enterDelay)
+	// An overlay or user typing may have appeared during the delay. Enter is
+	// only safe when the box is visible, not busy, and holds the paste.
+	if scr := d.a.Screen(t.WS, t.Folder); !scr.InputVisible || scr.Trust || scr.Busy || scr.InputEmpty {
+		d.log.Warn("delivery: screen changed after paste, not sending Enter", "ws", t.WS, "agent", t.Folder)
+		return
+	}
 	if err := d.a.Inject(t.WS, t.Folder, []byte("\r")); err != nil {
-		d.log.Error("delivery: inject enter failed", "folder", t.Folder, "err", err)
+		d.log.Error("delivery: inject enter failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return
 	}
 	ids := make([]string, 0, len(cand))
@@ -245,6 +268,5 @@ func (d *Deliverer) sendNudge(t Target, cand []notify.Message) {
 		d.set(m, notify.StateNudged)
 		ids = append(ids, m.ID)
 	}
-	d.a.MarkBusy(t.WS, t.Folder)
 	d.nudges[t] = nudge{at: d.now(), ids: ids}
 }

@@ -25,12 +25,13 @@ type fakeAgents struct {
 	running     bool
 	status      agent.Status
 	scr         screen.State
+	pasted      bool
+	scrSeq      []screen.State // consumed first, one per Screen call
 	external    bool
 	externalErr error
 	startErr    error
 	injectErr   error
 	starts      int
-	busy        int
 	injected    [][]byte
 }
 
@@ -47,6 +48,16 @@ func (f *fakeAgents) Status(ws, folder string) agent.Status {
 func (f *fakeAgents) Screen(ws, folder string) screen.State {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.scrSeq) > 0 {
+		s := f.scrSeq[0]
+		f.scrSeq = f.scrSeq[1:]
+		return s
+	}
+	if f.pasted {
+		s := f.scr
+		s.InputEmpty = false // the box holds the paste until Enter
+		return s
+	}
 	return f.scr
 }
 func (f *fakeAgents) Start(ws, folder string) error {
@@ -66,10 +77,10 @@ func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 	if f.injectErr != nil {
 		return f.injectErr
 	}
+	f.pasted = string(p) != "\r"
 	f.injected = append(f.injected, append([]byte(nil), p...))
 	return nil
 }
-func (f *fakeAgents) MarkBusy(ws, folder string) { f.mu.Lock(); defer f.mu.Unlock(); f.busy++ }
 
 func (f *fakeAgents) set(fn func(f *fakeAgents)) { f.mu.Lock(); defer f.mu.Unlock(); fn(f) }
 func (f *fakeAgents) nInjected() int             { f.mu.Lock(); defer f.mu.Unlock(); return len(f.injected) }
@@ -100,9 +111,11 @@ func newRig() *rig {
 	c := &clock{t: time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)}
 	r := notify.NewRouter(dir{"ws": {"be", "fe"}}, c.now, func() string { n++; return fmt.Sprintf("m%d", n) })
 	fa := &fakeAgents{running: true, status: agent.StatusIdle, scr: readyScreen}
-	d := New(r, fa, 0, c.now)
+	d, err := New(r, fa, 0, c.now, func() []Target { return []Target{{"ws", "fe"}} })
+	if err != nil {
+		panic(err)
+	}
 	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	d.Targets = func() []Target { return []Target{{"ws", "fe"}} }
 	return &rig{r, fa, d, c}
 }
 
@@ -136,9 +149,6 @@ func TestIdleTargetGetsOneNudge(t *testing.T) {
 	}
 	if got := g.state(m.ID); got != notify.StateNudged {
 		t.Fatalf("state %s", got)
-	}
-	if g.fa.busy != 1 {
-		t.Fatalf("busy %d", g.fa.busy)
 	}
 	if strings.Contains(string(g.fa.injected[0]), "secret body") {
 		t.Fatal("body typed")
@@ -255,7 +265,6 @@ func TestSwallowedNudgeRequeued(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
 	g.tick()
-	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
 	g.c.add(2 * time.Second)
 	g.tick()
 	if g.state(m.ID) != notify.StateNudged {
@@ -263,11 +272,10 @@ func TestSwallowedNudgeRequeued(t *testing.T) {
 	}
 	g.c.add(2 * time.Second)
 	g.tick()
-	if g.state(m.ID) != notify.StateQueued {
-		t.Fatalf("state %s", g.state(m.ID))
+	if g.state(m.ID) != notify.StateNudged || g.fa.nInjected() != 4 {
+		// requeued and nudged again in the same tick, status never left idle
+		t.Fatalf("state %s injected %d", g.state(m.ID), g.fa.nInjected())
 	}
-	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusIdle })
-	g.tick()
 	if g.fa.nInjected() != 4 || g.state(m.ID) != notify.StateNudged {
 		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
 	}
@@ -307,7 +315,7 @@ func TestDeliverNowSkipsDraftOnce(t *testing.T) {
 	if g.fa.nInjected() != 2 {
 		t.Fatalf("injected %d", g.fa.nInjected())
 	}
-	// Second message, draft still there: held again.
+	// Second message, draft still there: held again (the ask was used up).
 	m2 := g.send(t, "y")
 	g.d.PromptSubmitted("ws", "fe")
 	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusIdle })
@@ -373,7 +381,7 @@ func TestInjectErrorKeepsQueued(t *testing.T) {
 	m := g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) { f.injectErr = errors.New("pty closed") })
 	g.tick()
-	if g.state(m.ID) != notify.StateQueued || g.fa.busy != 0 {
+	if g.state(m.ID) != notify.StateQueued {
 		t.Fatalf("state %s", g.state(m.ID))
 	}
 }
@@ -394,5 +402,119 @@ func TestRunTicksOnKick(t *testing.T) {
 	<-done
 	if g.state(m.ID) != notify.StateNudged {
 		t.Fatal("Run did not deliver")
+	}
+}
+
+func TestNudgedTargetCrashesRequeued(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.d.PromptSubmitted("ws", "fe")
+	g.fa.set(func(f *fakeAgents) { f.running = false; f.status = agent.StatusStopped })
+	g.tick()
+	if g.state(m.ID) != notify.StateQueued || g.fa.starts != 1 {
+		t.Fatalf("state %s starts %d", g.state(m.ID), g.fa.starts)
+	}
+	g.fa.set(func(f *fakeAgents) { f.running = true; f.status = agent.StatusIdle })
+	g.tick()
+	if g.state(m.ID) != notify.StateNudged || g.fa.nInjected() != 4 {
+		t.Fatalf("state %s injected %d", g.state(m.ID), g.fa.nInjected())
+	}
+}
+
+func TestDeliverNowBusyScreenWaits(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false, Busy: true} })
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestDeliverNowExpires(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	g.c.add(6 * time.Second)
+	g.fa.set(func(f *fakeAgents) {
+		f.status = agent.StatusIdle
+		f.scr = screen.State{InputVisible: true, InputEmpty: false}
+	})
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestEnterSkippedWhenScreenChanges(t *testing.T) {
+	cases := map[string]screen.State{
+		"overlay": {InputVisible: false},
+		"trust":   {InputVisible: true, InputEmpty: false, Trust: true},
+		"busy":    {InputVisible: true, InputEmpty: false, Busy: true},
+		"emptied": {InputVisible: true, InputEmpty: true},
+	}
+	for name, after := range cases {
+		g := newRig()
+		m := g.send(t, "x")
+		g.fa.set(func(f *fakeAgents) { f.scrSeq = []screen.State{readyScreen, after} })
+		g.tick()
+		if g.fa.nInjected() != 1 || g.state(m.ID) != notify.StateQueued {
+			t.Fatalf("%s: injected %d state %s", name, g.fa.nInjected(), g.state(m.ID))
+		}
+	}
+}
+
+func TestEnterSentWhenBoxHoldsPaste(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
+	})
+	g.tick()
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+// readerAgents reads the messages while the paste is injected, like an agent
+// that calls read_messages by itself.
+type readerAgents struct {
+	*fakeAgents
+	r *notify.Router
+}
+
+func (a readerAgents) Inject(ws, folder string, p []byte) error {
+	a.r.Read(ws, folder)
+	return a.fakeAgents.Inject(ws, folder, p)
+}
+
+func TestSetStateErrorSkipped(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	d, err := New(g.r, readerAgents{g.fa, g.r}, 0, g.c.now, func() []Target { return []Target{{"ws", "fe"}} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	g.fa.set(func(f *fakeAgents) {
+		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
+	})
+	d.Tick(context.Background())
+	if g.state(m.ID) != notify.StateDelivered {
+		t.Fatalf("state %s", g.state(m.ID))
+	}
+	d.Tick(context.Background())
+	if g.fa.nInjected() != 2 {
+		t.Fatalf("injected %d", g.fa.nInjected())
+	}
+}
+
+func TestNewRequiresTargets(t *testing.T) {
+	if _, err := New(nil, nil, 0, time.Now, nil); err == nil {
+		t.Fatal("nil targets must fail")
 	}
 }
