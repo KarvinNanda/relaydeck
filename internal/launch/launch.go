@@ -59,8 +59,23 @@ var hookEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "Notificat
 func Build(in Input) (Command, error) {
 	windows := in.GOOS == "windows"
 
-	if strings.Contains(in.RelaydeckExe, `"`) {
-		return Command{}, errors.New("relaydeck executable path contains a double quote")
+	if in.RelaydeckExe == "" {
+		return Command{}, errors.New("relaydeck executable path is empty")
+	}
+	if in.Folder.Path == "" {
+		return Command{}, errors.New("folder path is empty")
+	}
+	if !filepath.IsAbs(in.RuntimeDir) {
+		return Command{}, fmt.Errorf("runtime dir %q is not an absolute path", in.RuntimeDir)
+	}
+	// The hook command is run by a shell. Inside double quotes, sh still
+	// interprets $, backtick and backslash, so refuse them on unix.
+	bad := `"`
+	if !windows {
+		bad = "\"$`\\"
+	}
+	if strings.ContainsAny(in.RelaydeckExe, bad) {
+		return Command{}, errors.New("relaydeck executable path contains a character that cannot be quoted safely")
 	}
 
 	// The session id goes into argv, so it must be a plain UUID.

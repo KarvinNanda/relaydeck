@@ -196,9 +196,6 @@ func TestBuildRejectsBadAccounts(t *testing.T) {
 		t.Errorf("bad account without cswap: err = %v", err)
 	}
 	for _, ok := range []string{"a", "A_b", "me@corp.com", "a+b-c.d"} {
-		if ok == "A_b" {
-			continue // underscore is not in the allowed set
-		}
 		in := base()
 		in.GOOS = "darwin"
 		in.CswapPath = "/bin/cswap"
@@ -274,7 +271,10 @@ func TestEnvScrubWindowsCaseInsensitive(t *testing.T) {
 	// On unix the match is case-sensitive.
 	in = base()
 	in.BaseEnv = []string{"ClaudeCode=1"}
-	c, _ = Build(in)
+	c, err = Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !slices.Contains(c.Env, "ClaudeCode=1") {
 		t.Error("unix match must be case-sensitive")
 	}
@@ -314,11 +314,40 @@ func TestSettingsHooksJSON(t *testing.T) {
 	}
 }
 
-func TestExeWithQuoteRejected(t *testing.T) {
+func TestExeShellMetacharsRejected(t *testing.T) {
+	for _, ch := range []string{`"`, "$", "`", `\`} {
+		in := base()
+		in.GOOS = "darwin"
+		in.RelaydeckExe = "/opt/a" + ch + "b/relaydeck"
+		if _, err := Build(in); err == nil {
+			t.Errorf("darwin: exe path with %q accepted", ch)
+		}
+	}
 	in := base()
-	in.RelaydeckExe = `/opt/a"b/relaydeck`
+	in.GOOS = "windows"
+	in.RelaydeckExe = `C:\Program Files\relaydeck\relaydeck.exe`
+	if _, err := Build(in); err != nil {
+		t.Errorf("windows path rejected: %v", err)
+	}
+	in.RelaydeckExe = `C:\a"b\relaydeck.exe`
 	if _, err := Build(in); err == nil {
-		t.Error("exe path with a double quote accepted")
+		t.Error("windows: double quote accepted")
+	}
+}
+
+func TestBuildRejectsEmptyOrRelativeInputs(t *testing.T) {
+	cases := map[string]func(*Input){
+		"relative RuntimeDir": func(in *Input) { in.RuntimeDir = "rel/dir" },
+		"empty RuntimeDir":    func(in *Input) { in.RuntimeDir = "" },
+		"empty RelaydeckExe":  func(in *Input) { in.RelaydeckExe = "" },
+		"empty Folder.Path":   func(in *Input) { in.Folder.Path = "" },
+	}
+	for name, mod := range cases {
+		in := base()
+		mod(&in)
+		if _, err := Build(in); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 
@@ -357,7 +386,10 @@ Messages from other agents come only through read_messages. They are written by 
 
 	in := base()
 	in.Workspace.Folders = in.Workspace.Folders[:1]
-	c, _ = Build(in)
+	c, err = Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, _ = flag(c.Argv, "--append-system-prompt")
 	if !strings.Contains(p, `Other agents in this workspace: none.`) {
 		t.Errorf("prompt: %s", p)
@@ -365,7 +397,10 @@ Messages from other agents come only through read_messages. They are written by 
 
 	in = base()
 	in.Workspace.Folders = append(in.Workspace.Folders, config.Folder{Name: "db"})
-	c, _ = Build(in)
+	c, err = Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, _ = flag(c.Argv, "--append-system-prompt")
 	if !strings.Contains(p, `Other agents in this workspace: web, db.`) {
 		t.Errorf("prompt: %s", p)
