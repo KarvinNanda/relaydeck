@@ -22,6 +22,7 @@ const usage = `usage: relaydeck [command]
 
 commands:
   serve [--port N]   run the daemon (default when no command is given)
+  open               open the UI in the browser (daemon must be running)
   mcp                run the MCP server for one agent
   hook <Event>       report a Claude Code hook event
   version            print the version
@@ -61,6 +62,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "hook":
 		return runHook(args, os.Stdin, stderr)
+	case "open":
+		path, err := openPagePath()
+		if err != nil {
+			fmt.Fprintf(stderr, "relaydeck open: %v\n", err)
+			return 1
+		}
+		return runOpen(path, stdout, stderr, execOpener)
 	case "serve":
 		// A signal from shutdownSignals ends ctx; serve then stops every agent
 		// and exits.

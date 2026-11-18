@@ -32,6 +32,40 @@ go build -o relaydeck ./cmd/relaydeck
 
 `relaydeck serve` listens on `127.0.0.1:7341` (change it with `--port N` or `port` in the config file) and prints a link like `http://127.0.0.1:7341/#token=...`. Open that link in a browser. The token is new on every start, so an old link or a bookmark stops working. The workspace and folder list is stored in `config.yaml` in your user config directory.
 
+While the daemon runs, it also writes a page with that link to `open.html` in your user cache directory (mode 0600). `relaydeck open` checks that the daemon answers, then opens that file in your default browser, so you do not have to copy the link:
+
+```sh
+./relaydeck open
+```
+
+The daemon removes the page on a clean shutdown. Any process that runs as your user can read the page and get the token.
+
+## Start at login (macOS)
+
+A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist` and replace `USER_HOME` with your home directory (launchd does not expand `~` in these keys). Create `~/Library/Logs/relaydeck` first.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.karvinnanda.relaydeck</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lc</string><string>exec "$HOME/KV/relaydeck/relaydeck" serve</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>USER_HOME/Library/Logs/relaydeck/serve.out</string>
+  <key>StandardErrorPath</key><string>USER_HOME/Library/Logs/relaydeck/relaydeck.log</string>
+</dict></plist>
+```
+
+It runs through `zsh -lc` because launchd starts jobs with a minimal PATH. The agents need your login PATH to find `claude`, `node` and `docker`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
+
+`serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) makes launchd create both log files readable by your user only. Use `relaydeck open` to get into the UI.
+
+- Load: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist`
+- Restart after a rebuild: `launchctl kickstart -k gui/$(id -u)/com.karvinnanda.relaydeck`
+- Remove: `launchctl bootout gui/$(id -u)/com.karvinnanda.relaydeck`, then delete the plist.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the processes and ports, the auth boundary, the data model, the rules the schema does not enforce, the known limits and where to change things.

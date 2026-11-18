@@ -95,6 +95,16 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "relaydeck running: http://127.0.0.1:%d/#token=%s\n", port, uiToken)
 	log.Info("relaydeck started", "port", port)
+	// The open page lets "relaydeck open" reach the current token. It is a
+	// convenience, so a failure is a warning, not a reason to stop.
+	if pagePath, err := openPagePath(); err != nil {
+		log.Warn("open page not written", "error", err.Error())
+	} else if err := writeOpenPage(pagePath, port, uiToken); err != nil {
+		log.Warn("open page not written", "error", err.Error())
+	} else {
+		log.Info("open page written", "path", pagePath)
+		defer removeOpenPage(pagePath, uiToken)
+	}
 
 	// The daemon runs until ctx ends or the HTTP server fails. Run then stops
 	// every agent while the server is still up, so their last hooks land.
