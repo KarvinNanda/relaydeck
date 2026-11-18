@@ -22,6 +22,7 @@ interface FakeTerm {
   write: ReturnType<typeof vi.fn>
   resize: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn>
+  focus: ReturnType<typeof vi.fn>
   dispose: ReturnType<typeof vi.fn>
   dataCb: ((d: string) => void) | null
 }
@@ -40,6 +41,7 @@ vi.mock('@xterm/xterm', () => {
       this.rows = r
     })
     reset = vi.fn()
+    focus = vi.fn()
     dispose = vi.fn()
     dataCb: ((d: string) => void) | null = null
     constructor(opts: Record<string, unknown>) {
@@ -261,6 +263,7 @@ describe('TerminalPanel header', () => {
   })
 
   it('stop calls the stop route; a draft refusal offers Stop anyway with force', async () => {
+    setFolder({ status: 'idle' })
     await mountPanel()
     apiMock.mockImplementation(async (_m: string, path: string) => {
       if (path === '/api/agents/game-lounge/fe-admin/stop') throw new ApiError(409, 'agent has an unsent draft; clear it or use force')
@@ -268,6 +271,8 @@ describe('TerminalPanel header', () => {
       if (path.endsWith('/messages')) return { messages: [] }
       return undefined
     })
+    setFolder({ status: 'idle' })
+    await flushPromises()
     await w!.find('button[aria-label="Stop agent"]').trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/stop')
@@ -280,6 +285,7 @@ describe('TerminalPanel header', () => {
   })
 
   it('offers Stop anyway only for the draft refusal, not for another 409', async () => {
+    setFolder({ status: 'idle' })
     await mountPanel()
     apiMock.mockImplementation(async (_m: string, path: string) => {
       if (path.endsWith('/stop')) throw new ApiError(409, 'folder is not running')
@@ -771,5 +777,124 @@ describe('TerminalPanel stopped state', () => {
     s.drop()
     await vi.advanceTimersByTimeAsync(20000)
     expect(openMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TerminalPanel final review fixes', () => {
+  const stopBtn = () => w!.find('button.stop-btn')
+  const draftRefusal = () =>
+    apiMock.mockImplementation(async (_m: string, path: string) => {
+      if (path.endsWith('/stop') && !path.includes('force')) throw new ApiError(409, 'agent has an unsent draft; clear it or use force')
+      if (path.endsWith('/sessions')) return { sessions: [] }
+      if (path.endsWith('/messages')) return { messages: [] }
+      return undefined
+    })
+  const stopCalls = () => apiMock.mock.calls.filter((c) => String(c[1]).includes('/stop'))
+
+  it('clears a stale Stop anyway when the status changes, so it cannot force-kill a newer agent', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    draftRefusal()
+    await stopBtn().trigger('click')
+    await flushPromises()
+    expect(w!.find('button.force').exists()).toBe(true)
+    setFolder({ status: 'busy' })
+    await flushPromises()
+    expect(w!.find('[role="alert"]').exists()).toBe(false)
+    expect(w!.find('button.force').exists()).toBe(false)
+  })
+
+  it('clears a stale Stop anyway when the agent stops and a new session starts', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    draftRefusal()
+    await stopBtn().trigger('click')
+    await flushPromises()
+    setFolder({ status: 'idle', session_id: 'aaaaaaaa-0000-4000-8000-000000000002' })
+    await flushPromises()
+    expect(w!.find('button.force').exists()).toBe(false)
+    expect(w!.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('stopped agent clears the alert too', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    draftRefusal()
+    await stopBtn().trigger('click')
+    await flushPromises()
+    setFolder({ status: 'stopped' })
+    await flushPromises()
+    expect(w!.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('busy agent: first click only asks, second click stops', async () => {
+    await mountPanel()
+    expect(stopBtn().text()).toBe('')
+    await stopBtn().trigger('click')
+    expect(stopCalls()).toHaveLength(0)
+    expect(stopBtn().text()).toBe('Stop? It is working')
+    expect(stopBtn().classes()).toContain('confirm')
+    expect(stopBtn().attributes('aria-label')).toBe('Stop? It is working')
+    await stopBtn().trigger('click')
+    await flushPromises()
+    expect(stopCalls()).toEqual([['POST', '/api/agents/game-lounge/fe-admin/stop']])
+    expect(stopBtn().text()).toBe('')
+  })
+
+  it('busy confirm resets by itself after 4 s', async () => {
+    await mountPanel()
+    await stopBtn().trigger('click')
+    await vi.advanceTimersByTimeAsync(3900)
+    expect(stopBtn().classes()).toContain('confirm')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(stopBtn().classes()).not.toContain('confirm')
+    await stopBtn().trigger('click')
+    expect(stopCalls()).toHaveLength(0)
+  })
+
+  it('busy confirm resets when the status changes', async () => {
+    await mountPanel()
+    await stopBtn().trigger('click')
+    setFolder({ status: 'idle' })
+    await flushPromises()
+    expect(stopBtn().classes()).not.toContain('confirm')
+  })
+
+  it('idle agent stops on the first click', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    await stopBtn().trigger('click')
+    await flushPromises()
+    expect(stopCalls()).toHaveLength(1)
+  })
+
+  it('focuses xterm after attach when the panel is focused', async () => {
+    await mountPanel({ focused: true })
+    await flushPromises()
+    expect(term().focus).toHaveBeenCalled()
+  })
+
+  it('does not focus xterm after attach when the panel is not focused', async () => {
+    await mountPanel({ focused: false })
+    await flushPromises()
+    expect(term().focus).not.toHaveBeenCalled()
+  })
+
+  it('focuses xterm when the panel becomes focused (sidebar click)', async () => {
+    await mountPanel({ focused: false })
+    await flushPromises()
+    await w!.setProps({ focused: true })
+    await flushPromises()
+    expect(term().focus).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not pull focus from a header button of the same panel', async () => {
+    await mountPanel({ focused: false })
+    await flushPromises()
+    const b = w!.find('button.stop-btn').element as HTMLButtonElement
+    b.focus()
+    await w!.setProps({ focused: true })
+    await flushPromises()
+    expect(term().focus).not.toHaveBeenCalled()
   })
 })
