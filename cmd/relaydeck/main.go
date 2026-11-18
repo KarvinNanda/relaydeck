@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/KarvinNanda/relaydeck/internal/hook"
 	"github.com/KarvinNanda/relaydeck/internal/logx"
@@ -63,12 +62,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "hook":
 		return runHook(args, os.Stdin, stderr)
 	case "serve":
-		// SIGINT and SIGTERM end ctx; serve then stops every agent and exits.
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		// A signal from shutdownSignals ends ctx; serve then stops every agent
+		// and exits.
+		ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 		defer stop()
+		releaseOnFirstSignal(ctx, stop)
 		return serve(ctx, args, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "relaydeck: unknown command %q\n\n%s", cmd, usage)
 		return 2
 	}
+}
+
+// releaseOnFirstSignal calls stop once ctx ends. After stop, the next signal
+// has its default action, so a second Ctrl-C force quits when the graceful
+// shutdown hangs. It returns after the goroutine is started.
+func releaseOnFirstSignal(ctx context.Context, stop func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		stop()
+		close(done)
+	}()
+	return done
 }
