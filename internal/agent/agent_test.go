@@ -349,9 +349,9 @@ func TestStartWritesFiles(t *testing.T) {
 func TestScreenFedFromOutput(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	acc := collect(t, nil, out, "READY")
+	acc := collect(t, replay, out, "READY") // READY may already be in the replay
 	if a.ScreenState().Busy {
 		t.Fatal("Busy before any output of the busy marker")
 	}
