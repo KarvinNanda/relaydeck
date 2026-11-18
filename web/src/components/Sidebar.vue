@@ -34,6 +34,10 @@ function attentionCount(ws: WorkspaceState): number {
   return ws.folders.filter((f) => f.status === 'attention').length
 }
 
+function attentionText(n: number): string {
+  return `${n} ${n === 1 ? 'needs' : 'need'} attention`
+}
+
 function isFocused(ws: string, f: FolderState): boolean {
   const p = panelStore.focused
   return p !== null && p.ws === ws && p.folder === f.name
@@ -92,49 +96,55 @@ async function addWorkspace(): Promise<void> {
       </button>
     </div>
 
-    <p v-if="workspaces.length === 0" class="empty">No workspaces yet. Add one below.</p>
+    <!-- Only this part scrolls; the footer stays at the bottom. -->
+    <div class="sb-tree">
+      <p v-if="workspaces.length === 0" class="empty">No workspaces yet. Add one below.</p>
 
-    <div v-for="ws in workspaces" :key="ws.name" class="ws">
-      <button
-        class="ws-row"
-        type="button"
-        :aria-expanded="!collapsed.has(ws.name)"
-        :aria-controls="`ws-tree-${ws.name}`"
-        @click="toggle(ws.name)"
-      >
-        <Icon :name="collapsed.has(ws.name) ? 'right' : 'down'" />
-        <span class="name">{{ ws.name }}</span>
-        <span v-if="collapsed.has(ws.name) && attentionCount(ws) > 0" class="meta c-attn">
-          <Icon name="attn" />{{ attentionCount(ws) }} needs attention
-        </span>
-        <span v-else class="meta">{{ plural(ws.folders.length, 'folder', 'folders') }}</span>
-      </button>
+      <div v-for="ws in workspaces" :key="ws.name" class="ws">
+        <button
+          class="ws-row"
+          type="button"
+          :aria-expanded="!collapsed.has(ws.name)"
+          :aria-controls="`ws-tree-${ws.name}`"
+          @click="toggle(ws.name)"
+        >
+          <Icon :name="collapsed.has(ws.name) ? 'right' : 'down'" />
+          <span class="name">{{ ws.name }}</span>
+          <!-- Read as "4 folders · 1 needs attention". The attention part is
+               too wide for the name line, so it gets its own line under the
+               name and the "·" is only for screen readers. -->
+          <span class="meta"><span class="cnt">{{ plural(ws.folders.length, 'folder', 'folders') }}</span><template v-if="collapsed.has(ws.name) && attentionCount(ws) > 0"><span class="sr-only"> · </span><span class="ws-attn c-attn"><Icon name="attn" />{{ attentionText(attentionCount(ws)) }}</span></template></span>
+        </button>
 
-      <div v-if="!collapsed.has(ws.name)" :id="`ws-tree-${ws.name}`">
-        <ul v-if="ws.folders.length" class="tree">
-          <li v-for="f in ws.folders" :key="f.name" class="node">
-            <button
-              class="node-btn"
-              :class="{ sel: isFocused(ws.name, f) }"
-              type="button"
-              :aria-current="isFocused(ws.name, f) ? 'true' : undefined"
-              :title="f.path"
-              @click="open(ws.name, f)"
-            >
-              <span class="node-name"><Icon :name="statusInfo(f.status).icon" :class="statusInfo(f.status).cls" />{{ f.name }}</span>
-              <span class="node-meta"><span class="st" :class="statusInfo(f.status).cls">{{ statusInfo(f.status).word }}</span><template v-if="!windows">{{ ' ' }}<span class="acct">· {{ f.account || 'no account' }}</span></template></span>
-              <span v-if="f.pending > 0 || f.awaiting_approval > 0" class="chips">
-                <span v-if="f.pending > 0" class="chip"><Icon name="msg" />{{ plural(f.pending, 'message', 'messages') }} waiting</span>
-                <span v-if="f.awaiting_approval > 0" class="chip amber"><Icon name="shield" />{{ f.awaiting_approval }} awaiting approval</span>
-              </span>
-              <span v-if="f.on_default_login" class="note"><Icon name="attn" /><span>On default login: a cswap switch will move it</span></span>
+        <div v-if="!collapsed.has(ws.name)" :id="`ws-tree-${ws.name}`">
+          <ul v-if="ws.folders.length" class="tree">
+            <li v-for="f in ws.folders" :key="f.name" class="node">
+              <button
+                class="node-btn"
+                :class="{ sel: isFocused(ws.name, f) }"
+                type="button"
+                :aria-current="isFocused(ws.name, f) ? 'true' : undefined"
+                :title="f.path"
+                @click="open(ws.name, f)"
+              >
+                <span class="node-name"><Icon :name="statusInfo(f.status).icon" :class="statusInfo(f.status).cls" />{{ f.name }}</span>
+                <span class="node-meta"><span class="meta-in">
+                  <span class="st" :class="statusInfo(f.status).cls">{{ statusInfo(f.status).word }}</span>
+                  <span v-if="!windows" class="acct">{{ f.account || 'no account' }}</span>
+                </span></span>
+                <span v-if="f.pending > 0 || f.awaiting_approval > 0" class="chips">
+                  <span v-if="f.pending > 0" class="chip"><Icon name="msg" />{{ plural(f.pending, 'message', 'messages') }} waiting</span>
+                  <span v-if="f.awaiting_approval > 0" class="chip amber"><Icon name="shield" />{{ f.awaiting_approval }} awaiting approval</span>
+                </span>
+                <span v-if="f.on_default_login && !windows" class="note"><Icon name="attn" /><span>On default login: a cswap switch will move it</span></span>
+              </button>
+            </li>
+          </ul>
+          <div class="add-row">
+            <button class="btn add-folder" type="button" @click="dialogWs = ws.name">
+              <Icon name="fplus" />Add folder
             </button>
-          </li>
-        </ul>
-        <div class="add-row">
-          <button class="btn add-folder" type="button" @click="dialogWs = ws.name">
-            <Icon name="fplus" />Add folder
-          </button>
+          </div>
         </div>
       </div>
     </div>
@@ -149,7 +159,7 @@ async function addWorkspace(): Promise<void> {
           type="text"
           autocomplete="off"
           spellcheck="false"
-          placeholder="game-lounge"
+          placeholder="e.g. game-lounge"
           :aria-invalid="wsNameError ? 'true' : undefined"
           :aria-describedby="wsNameError ? 'new-ws-err' : undefined"
           @blur="wsForm.touched = true"
@@ -175,7 +185,11 @@ async function addWorkspace(): Promise<void> {
 </template>
 
 <style scoped>
-.sb { display: flex; flex-direction: column; flex: 1 0 auto; min-width: 0; }
+.sb { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* the tree scrolls inside the sidebar; the footer below it stays put */
+.sb-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* focus rings drawn inside, so the scroll box does not cut them off */
+.sb-tree :focus-visible { outline-offset: -2px; }
 .side-title { padding: 0 var(--s-5) var(--s-3); color: var(--text-muted); font-weight: 400; }
 
 .side-alert {
@@ -189,13 +203,15 @@ async function addWorkspace(): Promise<void> {
 
 /* workspace row */
 .ws-row {
-  width: 100%; display: flex; align-items: center; gap: var(--s-3);
-  min-height: var(--row-h); padding: 0 var(--s-5); border: 0; background: none; cursor: pointer; text-align: left;
+  width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s-3);
+  min-height: var(--row-h); padding: var(--s-1) var(--s-5); border: 0; background: none; cursor: pointer; text-align: left;
 }
 .ws-row:hover { background: var(--muted); }
 .ws-row .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-row .meta { margin-left: auto; color: var(--text-muted); white-space: nowrap; display: flex; align-items: center; gap: var(--s-2); }
-.ws-row .meta.c-attn { color: var(--amber); }
+.ws-row .meta { display: contents; }
+.ws-row .cnt { margin-left: auto; color: var(--text-muted); white-space: nowrap; }
+/* own line, lined up with the workspace name (icon 14px + gap 6px) */
+.ws-row .ws-attn { flex-basis: 100%; display: flex; align-items: center; gap: var(--s-2); padding-left: 20px; }
 
 /* folder tree */
 .tree { list-style: none; margin: 0 0 var(--s-2); padding: 0 var(--s-3) 0 22px; position: relative; }
@@ -208,10 +224,15 @@ async function addWorkspace(): Promise<void> {
 .node-btn:hover { background: var(--muted); }
 .node-btn.sel { background: var(--muted); border-color: var(--border-strong); }
 .node-name { display: flex; align-items: center; gap: var(--s-3); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
-.node-meta { color: var(--text-muted); padding-left: 20px; overflow-wrap: anywhere; }
-.node-meta .st { font-weight: 500; }
-/* the dot wraps together with the account, never alone at a line end */
-.node-meta .acct { white-space: nowrap; }
+/* "status · account". Each part has a 3ch left margin that holds the "·";
+   .meta-in is pulled 3ch left and .node-meta clips it, so the part that
+   starts a line has its margin and dot cut off. A wrapped account then sits
+   on its own line without a dot, as personal-1 does in mockup A. */
+.node-meta { display: block; margin-left: 20px; overflow: hidden; color: var(--text-muted); }
+.meta-in { display: flex; flex-wrap: wrap; margin-left: -3ch; }
+.meta-in > span { margin-left: 3ch; min-width: 0; overflow-wrap: anywhere; }
+.meta-in .st { font-weight: 500; }
+.acct::before { content: "·"; display: inline-block; width: 3ch; margin-left: -3ch; text-align: center; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--s-2); margin: var(--s-2) 0 0 20px; }
 .chip.amber { border-color: var(--amber-line); background: var(--amber-tint); color: var(--amber); }
 .note { display: flex; gap: var(--s-3); align-items: flex-start; margin: var(--s-3) 0 0 20px; }
@@ -222,7 +243,7 @@ async function addWorkspace(): Promise<void> {
 
 /* footer: add workspace and the status key */
 .side-foot {
-  margin-top: auto; padding: var(--s-4) var(--s-5) 0; border-top: 1px solid var(--border);
+  flex: none; padding: var(--s-4) var(--s-5) 0; border-top: 1px solid var(--border);
   display: grid; gap: var(--s-4);
 }
 .add-ws { justify-content: center; }

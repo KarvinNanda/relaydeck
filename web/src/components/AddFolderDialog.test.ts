@@ -4,7 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError } from '../api'
 import { store } from '../stores/state'
-import AddFolderDialog, { accountError, nameError, nameRule, pathError, permissionModes } from './AddFolderDialog.vue'
+import AddFolderDialog, { accountError, accountRule, nameError, nameRule, pathError, permissionModes } from './AddFolderDialog.vue'
 import type { State } from '../types'
 
 vi.mock('../api', async (importOriginal) => {
@@ -68,7 +68,7 @@ describe('shared rules', () => {
 
   it('the account rule is the one in internal/launch', () => {
     const m = goSource('launch/launch.go').match(/accountRe = regexp\.MustCompile\(`([^`]+)`\)/)
-    expect(m?.[1]).toBe('^[A-Za-z0-9@._+-]+$')
+    expect(m?.[1]).toBe(accountRule.source)
     expect(accountError('')).toBe('')
     expect(accountError('work-2')).toBe('')
     expect(accountError('me+x@example.com')).toBe('')
@@ -77,15 +77,29 @@ describe('shared rules', () => {
     expect(accountError('a;b')).not.toBe('')
   })
 
-  it('a path must be absolute or start with ~, as the server requires', () => {
-    expect(pathError('/Users/x/app')).toBe('')
-    expect(pathError('~')).toBe('')
-    expect(pathError('~/code/app')).toBe('')
-    expect(pathError('C:\\code\\app')).toBe('')
-    expect(pathError('\\\\server\\share')).toBe('')
-    expect(pathError('')).not.toBe('')
-    expect(pathError('code/app')).not.toBe('')
-    expect(pathError('~other/app')).not.toBe('')
+  it('a path must be absolute for the platform or start with ~, as the server requires', () => {
+    for (const p of ['darwin', 'linux', 'windows']) {
+      expect(pathError('~', p)).toBe('')
+      expect(pathError('~/code/app', p)).toBe('')
+      expect(pathError('~\\code\\app', p)).toBe('')
+      expect(pathError('', p)).not.toBe('')
+      expect(pathError('code/app', p)).not.toBe('')
+      expect(pathError('~other/app', p)).not.toBe('')
+    }
+    // darwin and linux: POSIX absolute paths only
+    for (const p of ['darwin', 'linux']) {
+      expect(pathError('/Users/x/app', p)).toBe('')
+      expect(pathError('C:\\code\\app', p)).not.toBe('')
+      expect(pathError('\\\\server\\share', p)).not.toBe('')
+    }
+    // windows: a drive path or a UNC path; a POSIX path is not absolute there
+    expect(pathError('C:\\code\\app', 'windows')).toBe('')
+    expect(pathError('d:/code/app', 'windows')).toBe('')
+    expect(pathError('\\\\server\\share', 'windows')).toBe('')
+    expect(pathError('//server/share', 'windows')).toBe('')
+    expect(pathError('/Users/x/app', 'windows')).not.toBe('')
+    expect(pathError('C:code', 'windows')).not.toBe('')
+    expect(pathError('/Users/x/app', 'windows')).toContain('C:\\')
   })
 })
 
@@ -203,6 +217,49 @@ describe('AddFolderDialog', () => {
     await w.find('button.pick').trigger('click')
     await flushPromises()
     expect((w.find('input#af-name').element as HTMLInputElement).value).toBe('admin')
+    w.unmount()
+  })
+
+  it('checks the path with the rule of the server platform', async () => {
+    store.state.data = snapshot('windows')
+    apiMock.mockImplementation(async (method: string) => (method === 'GET' ? snapshot('windows') : { name: 'be' }))
+    const w = mountDialog()
+    await w.find('input#af-name').setValue('be')
+    await w.find('input#af-path').setValue('/srv/be')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).not.toHaveBeenCalled()
+    expect(w.find('input#af-path').attributes('aria-invalid')).toBe('true')
+    await w.find('input#af-path').setValue('C:\\code\\be')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('POST', '/api/workspaces/game-lounge/folders', {
+      name: 'be',
+      path: 'C:\\code\\be',
+      permission_mode: 'auto',
+    })
+    w.unmount()
+  })
+
+  it('a cancelled Choose folder keeps an earlier server error; a picked path clears it', async () => {
+    let pick: { cancelled: true } | { path: string } = { cancelled: true }
+    apiMock.mockImplementation(async (_m: string, path: string) => {
+      if (path === '/api/pick-folder') return pick
+      throw new ApiError(409, 'already exists: folder "be" in workspace "game-lounge"')
+    })
+    const w = mountDialog()
+    await w.find('input#af-name').setValue('be')
+    await w.find('input#af-path').setValue('/srv/be')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(w.find('[role="alert"]').text()).toContain('already exists')
+    await w.find('button.pick').trigger('click')
+    await flushPromises()
+    expect(w.find('[role="alert"]').text()).toContain('already exists')
+    pick = { path: '/srv/other' }
+    await w.find('button.pick').trigger('click')
+    await flushPromises()
+    expect(w.find('[role="alert"]').exists()).toBe(false)
     w.unmount()
   })
 

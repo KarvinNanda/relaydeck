@@ -101,22 +101,45 @@ describe('Sidebar', () => {
     expect(w.text()).toContain('fe-admin')
   })
 
-  it('a collapsed workspace still shows when a folder needs attention', async () => {
+  it('a collapsed workspace shows the folder count and how many need attention', async () => {
     const w = mount(Sidebar)
     const head = w.findAll('button.ws-row')[1]
     await head.trigger('click')
     expect(head.attributes('aria-expanded')).toBe('false')
-    expect(head.find('.meta').text()).toContain('1 needs attention')
+    expect(head.find('.meta').text()).toBe('2 folders · 1 needs attention')
+  })
+
+  it('says "need attention" for more than one folder', async () => {
+    const s = snapshot()
+    s.workspaces[1].folders[0].status = 'attention'
+    store.state.data = s
+    const w = mount(Sidebar)
+    const head = w.findAll('button.ws-row')[1]
+    await head.trigger('click')
+    expect(head.find('.meta').text()).toBe('2 folders · 2 need attention')
+  })
+
+  it('a collapsed workspace with no folder needing attention shows only the count', async () => {
+    const w = mount(Sidebar)
+    const head = w.findAll('button.ws-row')[0]
+    store.state.data!.workspaces[0].folders[2].status = 'idle'
+    await head.trigger('click')
+    expect(head.find('.meta').text()).toBe('4 folders')
   })
 
   it('shows each folder with status icon, name, status word and account', () => {
     const w = mount(Sidebar)
     const be = row(w, 'be')
     expect(be.find('.node-name svg.i').classes()).toContain('c-busy')
-    expect(be.find('.node-meta').text()).toBe('busy · work-2')
+    expect(be.find('.node-meta .st').text()).toBe('busy')
     expect(be.find('.node-meta .st').classes()).toContain('c-busy')
-    expect(row(w, 'fe-customer').find('.node-meta').text()).toBe('needs attention · personal-1')
-    expect(row(w, 'worker').find('.node-meta').text()).toBe('stopped · no account')
+    // The "·" before the account is drawn by CSS, so a wrapped account
+    // starts its own line without it (mockup A, personal-1).
+    expect(be.find('.node-meta .acct').text()).toBe('work-2')
+    expect(row(w, 'fe-customer').find('.node-meta .st').text()).toBe('needs attention')
+    expect(row(w, 'fe-customer').find('.node-meta .acct').text()).toBe('personal-1')
+    expect(row(w, 'worker').find('.node-meta .acct').text()).toBe('no account')
+    expect(w.find('.node-meta').text()).not.toContain('·')
   })
 
   it('never shows the account on windows', () => {
@@ -126,8 +149,18 @@ describe('Sidebar', () => {
     const w = mount(Sidebar)
     expect(row(w, 'be').find('.node-meta').text()).toBe('busy')
     expect(row(w, 'worker').find('.node-meta').text()).toBe('stopped')
+    expect(w.find('.node-meta .acct').exists()).toBe(false)
     expect(w.text()).not.toContain('no account')
     expect(w.text()).not.toContain('work-2')
+  })
+
+  it('never shows the default login note on windows', () => {
+    const s = snapshot('windows')
+    s.workspaces[0].folders[2].on_default_login = true // even if the server sent it
+    store.state.data = s
+    const w = mount(Sidebar)
+    expect(w.find('.note').exists()).toBe(false)
+    expect(w.text()).not.toContain('On default login')
   })
 
   it('shows the default login note only when on_default_login is set', () => {
@@ -185,6 +218,7 @@ describe('Sidebar', () => {
   it('Add workspace checks the name in the client', async () => {
     const w = mount(Sidebar)
     await w.find('button.add-ws').trigger('click')
+    expect(w.find('input#new-ws').attributes('placeholder')).toBe('e.g. game-lounge')
     await w.find('input#new-ws').setValue('Bad Name')
     await w.find('form.ws-form').trigger('submit')
     await flushPromises()

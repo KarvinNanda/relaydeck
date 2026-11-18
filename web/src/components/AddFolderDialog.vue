@@ -6,7 +6,7 @@
 // internal/config nameRe: workspace and folder names.
 export const nameRule = /^[a-z0-9][a-z0-9-]{0,31}$/
 // internal/launch accountRe, plus "must not start with a dash".
-const accountRule = /^[A-Za-z0-9@._+-]+$/
+export const accountRule = /^[A-Za-z0-9@._+-]+$/
 
 // internal/config permissionModes without "" (empty means auto). Auto is
 // first because it is the default.
@@ -16,11 +16,18 @@ export function nameError(s: string): string {
   return nameRule.test(s) ? '' : 'Use 1 to 32 lowercase letters, digits or dashes, starting with a letter or digit.'
 }
 
-// pathError mirrors the server: "~", "~/x", "~\x" or an absolute path
-// (POSIX, a Windows drive, or a UNC share).
-export function pathError(s: string): string {
-  const ok = s === '~' || /^~[/\\]/.test(s) || s.startsWith('/') || /^[A-Za-z]:[/\\]/.test(s) || s.startsWith('\\\\')
-  return ok ? '' : 'Enter the full path of an existing folder, starting with / or ~.'
+// pathError mirrors the server for its platform: "~", "~/x" or "~\x" on
+// every platform, else an absolute path as Go filepath.IsAbs sees it there.
+// On darwin and linux that is a POSIX path. On windows it is a drive path
+// (C:\x or C:/x) or a UNC path (\\host\share or //host/share).
+export function pathError(s: string, platform: string): string {
+  if (s === '~' || /^~[/\\]/.test(s)) return ''
+  if (platform === 'windows') {
+    return /^[A-Za-z]:[/\\]/.test(s) || /^[/\\]{2}[^/\\]/.test(s)
+      ? ''
+      : 'Enter the full path of an existing folder, starting with a drive like C:\\ or with ~.'
+  }
+  return s.startsWith('/') ? '' : 'Enter the full path of an existing folder, starting with / or ~.'
 }
 
 export function accountError(s: string): string {
@@ -58,7 +65,7 @@ const windows = computed(() => store.state.data?.platform === 'windows')
 
 const errors = computed(() => ({
   name: nameError(form.name),
-  path: pathError(form.path),
+  path: pathError(form.path, store.state.data?.platform ?? ''),
   account: windows.value ? '' : accountError(form.account),
 }))
 
@@ -78,11 +85,11 @@ function suggestName(path: string): string {
 }
 
 async function choose(): Promise<void> {
-  serverError.value = ''
   picking.value = true
   try {
     const r = await api<{ path?: string; cancelled?: boolean }>('POST', '/api/pick-folder')
-    if (r?.cancelled || !r?.path) return
+    if (r?.cancelled || !r?.path) return // a cancel keeps any earlier error
+    serverError.value = ''
     form.path = r.path
     touched.path = true
     if (form.name === '') form.name = suggestName(r.path)

@@ -22,7 +22,7 @@ export function relTime(iso: string, now: Date = new Date()): string {
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, ApiError } from '../api'
 import { store } from '../stores/state'
-import { panelStore } from '../stores/panels'
+import { MAX_PANELS, panelStore, tooManyPanels } from '../stores/panels'
 import Icon from './Icon.vue'
 import type { Session } from '../types'
 
@@ -63,7 +63,18 @@ async function load(): Promise<void> {
   }
 }
 
+// The panel can open when it is open already or the grid has room.
+function panelFits(): boolean {
+  const open = panelStore.panels.some((p) => p.ws === props.ws && p.folder === props.folder)
+  return open || panelStore.panels.length < MAX_PANELS
+}
+
 async function start(body: { session_id: string } | { new: true }): Promise<void> {
+  // Do not start an agent whose panel cannot be shown.
+  if (!panelFits()) {
+    error.value = tooManyPanels
+    return
+  }
   error.value = ''
   starting.value = true
   try {
@@ -74,6 +85,7 @@ async function start(body: { session_id: string } | { new: true }): Promise<void
   } finally {
     starting.value = false
   }
+  // Checked again: another panel may have opened while start ran.
   const r = panelStore.openPanel(props.ws, props.folder)
   if (!r.ok) {
     error.value = r.reason

@@ -54,8 +54,9 @@ export function createPanels() {
 
   return {
     panels,
+    // A read-only view, so a caller cannot change focus or the list through it.
     get focused(): Readonly<PanelKey> | null {
-      return state.focused
+      return state.focused ? readonly(state.focused) : null
     },
     openPanel,
     closePanel,

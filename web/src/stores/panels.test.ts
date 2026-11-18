@@ -91,4 +91,13 @@ describe('panels store', () => {
     ;(p.panels as { ws: string; folder: string }[]).push({ ws: 'x', folder: 'y' })
     expect(p.panels).toHaveLength(1)
   })
+
+  it('focused is a read-only view: changing it changes neither focus nor the list', () => {
+    const p = createPanels()
+    p.openPanel('w', 'a')
+    const f = p.focused as { ws: string; folder: string }
+    f.folder = 'changed'
+    expect(p.focused).toEqual({ ws: 'w', folder: 'a' })
+    expect(p.panels).toEqual([{ ws: 'w', folder: 'a' }])
+  })
 })

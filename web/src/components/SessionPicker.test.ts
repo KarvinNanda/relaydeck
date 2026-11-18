@@ -144,15 +144,30 @@ describe('SessionPicker', () => {
     w.unmount()
   })
 
-  it('shows the reason inline when the panel cannot open', async () => {
+  it('refuses before starting when 4 other panels are open', async () => {
     for (const f of ['a', 'b', 'c', 'd']) panelStore.openPanel('other', f)
     const w = mountPicker()
     await flushPromises()
     await w.findAll('li.sess button')[0].trigger('click')
+    await w.find('button.new').trigger('click')
     await flushPromises()
-    expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/start', { session_id: ids.a })
+    // the agent is not started for a panel that cannot be shown
+    expect(apiMock).not.toHaveBeenCalledWith('POST', expect.anything(), expect.anything())
     expect(w.find('[role="alert"]').text()).toContain('At most 4 terminals can be open. Close one first.')
     expect(w.emitted('close')).toBeFalsy()
+    w.unmount()
+  })
+
+  it('starts when the grid is full but this folder already has a panel', async () => {
+    for (const f of ['a', 'b', 'c']) panelStore.openPanel('other', f)
+    panelStore.openPanel('game-lounge', 'fe-admin')
+    const w = mountPicker()
+    await flushPromises()
+    await w.find('button.new').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/start', { new: true })
+    expect(panelStore.focused).toEqual({ ws: 'game-lounge', folder: 'fe-admin' })
+    expect(w.emitted('close')).toHaveLength(1)
     w.unmount()
   })
 
