@@ -576,3 +576,23 @@ func TestRemovedAgentIsCollected(t *testing.T) {
 		t.Fatal("removed agent is still reachable after GC")
 	}
 }
+
+// The screen must already have the new size when the PTY resize (and so the
+// SIGWINCH redraw) happens.
+func TestResizeScreenBeforePTY(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	colsAtPTY, called := 0, false
+	real := a.ptyResize
+	a.ptyResize = func(cols, rows int) error {
+		colsAtPTY, _ = a.screen.Size()
+		called = true
+		return real(cols, rows)
+	}
+	if err := a.Resize(90, 30); err != nil {
+		t.Fatal(err)
+	}
+	if !called || colsAtPTY != 90 {
+		t.Fatalf("screen cols at PTY resize = %d (called %v), want 90", colsAtPTY, called)
+	}
+}

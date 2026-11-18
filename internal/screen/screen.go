@@ -131,6 +131,13 @@ func (s *Screen) Resize(cols, rows int) {
 	s.em.Resize(cols, rows)
 }
 
+// Size returns the size last given to New or Resize.
+func (s *Screen) Size() (cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cols, s.rows
+}
+
 // State reads the current screen. Like Write, it never panics: on a panic it
 // returns the zero State (no input box, so delivery waits) and replaces the
 // emulator by a blank one.

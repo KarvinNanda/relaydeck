@@ -131,6 +131,7 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 		done:        make(chan struct{}),
 		readDone:    make(chan struct{}),
 	}
+	a.ptyResize = p.Resize
 	a.reply = &replyWriter{}
 	a.reply.a.Store(a)
 	a.screen = screen.New(defaultCols, defaultRows, a.reply)
