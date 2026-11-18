@@ -15,6 +15,7 @@ const origin = window.location.origin
         The link starts with <code>{{ origin }}/#token=</code> and ends with a long code. That code changes
         every time relaydeck starts, so an old link or a bookmark stops working.
       </p>
+      <p>Run <code>relaydeck open</code> in a terminal to get a fresh link.</p>
     </section>
   </main>
 </template>
