@@ -2,6 +2,7 @@ package screen
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -352,9 +353,75 @@ func TestPlainTextAndASCIIOSCStillReachEmulator(t *testing.T) {
 func TestUnterminatedOSCIsBounded(t *testing.T) {
 	s := New(40, 10, nil)
 	s.Write([]byte("\x1b]0;✳ " + strings.Repeat("x", 10000)))
-	// After the cap the filter gives up on the sequence; later output shows.
+	// After the cap the filter stops holding the sequence, so its rest flows
+	// on as text (the emulator's own behaviour) and later output still shows.
 	s.Write([]byte("\x07\x1b[5;1Hafter"))
-	if got := strings.TrimSpace(rowText(s.em, 4, 40)); got != "after" {
-		t.Fatalf("row 5 = %q, want %q", got, "after")
+	if got := rowText(s.em, 4, 40); !strings.HasPrefix(got, "after") {
+		t.Fatalf("row 5 = %q, want it to start with %q", got, "after")
+	}
+}
+
+// The filter must follow the emulator's parser: an OSC also ends at ESC that
+// is not followed by "\", at CAN or SUB, and a sequence that never ends must
+// not hide later output.
+func TestOSCFilterEndsLikeTheParser(t *testing.T) {
+	tests := map[string]struct{ in, want string }{
+		"never ends":       {"\x1b]0;✳ " + strings.Repeat("x", 5000), ""},
+		"ESC then BEL":     {"\x1b]0;✳ t\x1b\x07tail", "\x1b\x07tail"},
+		"ESC then CSI":     {"\x1b]0;✳ t\x1b[31mred", "\x1b[31mred"},
+		"nested OSC":       {"\x1b]0;a\x1b]0;✳ b\x07z", "\x1b]0;a\x07z"},
+		"CAN aborts":       {"\x1b]0;✳ t\x18hello", "\x18hello"},
+		"SUB aborts":       {"\x1b]0;✳ t\x1ahello", "\x1ahello"},
+		"long ascii kept":  {"\x1b]0;" + strings.Repeat("a", 5000) + "\x07", "\x1b]0;" + strings.Repeat("a", 5000) + "\x07"},
+		"plain CSI intact": {"\x1b[31mhi\x1b[0m", "\x1b[31mhi\x1b[0m"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var f oscFilter
+			got := string(f.filter([]byte(tc.in)))
+			if name == "never ends" {
+				// After the cap the rest passes through, so later output is
+				// not lost (the old, visible behaviour).
+				got = string(f.filter([]byte("after")))
+				if !strings.HasSuffix(got, "after") {
+					t.Fatalf("later output lost: %q", got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("filter(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Two properties over random input: without "ESC ]" the filter changes
+// nothing (a trailing ESC is held for the next write), and the output does
+// not depend on how the input is split into writes.
+func TestOSCFilterProperties(t *testing.T) {
+	alphabet := []string{"\x1b", "]", "\\", "\x07", "[", "1", "a", "✳", "\x18"}
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 20000; i++ {
+		var b strings.Builder
+		for n := rng.IntN(40); n > 0; n-- {
+			b.WriteString(alphabet[rng.IntN(len(alphabet))])
+		}
+		in := b.String()
+		var whole oscFilter
+		want := string(whole.filter([]byte(in))) + string(whole.filter([]byte("\x00")))
+		if !strings.Contains(in, "\x1b]") && want != in+"\x00" {
+			t.Fatalf("no OSC, but filter(%q) = %q", in, want)
+		}
+		var parts oscFilter
+		got := ""
+		for rest := []byte(in); len(rest) > 0; {
+			k := 1 + rng.IntN(len(rest))
+			got += string(parts.filter(rest[:k]))
+			rest = rest[k:]
+		}
+		got += string(parts.filter([]byte("\x00")))
+		if got != want {
+			t.Fatalf("split changes output for %q: %q vs %q", in, got, want)
+		}
 	}
 }
