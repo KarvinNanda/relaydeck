@@ -117,7 +117,7 @@ What an agent receives (`internal/launch/launch.go:Build`):
 - argv flags: `--permission-mode <mode>` (default `auto`), `--mcp-config <runtime dir>/mcp.json`, `--settings <runtime dir>/settings.json`, `--append-system-prompt <text>`, `--resume <id>` or `--session-id <new uuid>`, `--name <workspace>/<folder>`.
 - `settings.json` holds only the five hooks, each running `"<relaydeck exe>" hook <Event>`. relaydeck never edits `~/.claude/settings.json`.
 - `mcp.json` holds one stdio server: `<relaydeck exe> mcp`.
-- environment: the daemon environment minus the Claude Code session markers (exactly these 10 names: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID`, `CLAUDE_EFFORT`, from `sessionMarkers` in `internal/launch/launch.go`; other `CLAUDE_*` variables pass through) and minus any `RELAYDECK_*`, plus `RELAYDECK_URL`, `RELAYDECK_AGENT_ID` and `RELAYDECK_AGENT_TOKEN`. The agent token is never in argv, because argv is visible to other local users through `ps`. The UI token is never given to an agent.
+- environment: the daemon environment minus the Claude Code session markers (exactly these 12 names: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION`, plus any name starting with `CLAUDE_CODE_IDE_`, from `sessionMarkers` and `sessionMarkerPrefixes` in `internal/launch/launch.go`. The last three groups are IDE integration: with them an agent could attach to the IDE session of the terminal that started the daemon. Other `CLAUDE_*` variables pass through on purpose, because they are user settings: for example `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK` and the other provider switches) and minus any `RELAYDECK_*`, plus `RELAYDECK_URL`, `RELAYDECK_AGENT_ID` and `RELAYDECK_AGENT_TOKEN`. The agent token is never in argv, because argv is visible to other local users through `ps`. The UI token is never given to an agent.
 
 ### 2.3 Shutdown order
 
@@ -255,7 +255,7 @@ sequenceDiagram
   B->>MB: tool call read_messages
   MB->>D: POST /agent/tools/read_messages with Bearer token of fe
   D-->>MB: envelope text with sender, hop and the body, up to 128 KiB per call
-  Note over D: Router.ReadN marks the messages delivered and sets the hop of fe
+  Note over D: Router.ReadN marks the messages delivered (until the turn ends, see section 4.3) and sets the hop of fe
   MB-->>B: tool result
 ```
 
@@ -348,7 +348,7 @@ erDiagram
 | MESSAGE `from` | not checked against config (it comes from the token) | |
 | AGENT to AGENT_TOKEN | required while the process lives | revoked when the process exits or the user stops it |
 
-Messages live only in the `notify.Router` slice for the life of the daemon. They are never written to disk and never pruned.
+Messages live only in the `notify.Router` slice for the life of the daemon. They are never written to disk. Delivered and rejected messages are pruned: each `Send` keeps at most 500 of them per workspace (`MaxFinishedPerWorkspace`) and drops the oldest. Pending states are never pruned, and neither is a message that is still being read (next section).
 
 ### 4.3 Message states
 
@@ -378,6 +378,7 @@ stateDiagram-v2
   held_draft --> delivered: read_messages
   nudged --> delivered: read_messages
 
+  delivered --> queued: agent exited before its turn ended (Stop hook)
   delivered --> [*]
   rejected --> [*]
 ```
@@ -391,6 +392,8 @@ stateDiagram-v2
 | `awaiting_approval` | held at the hop limit until the user approves or rejects | no, but it counts toward the per-target cap |
 | `delivered` | set only by `Read` or `ReadN`, when the agent really pulled it | no |
 | `rejected` | the user rejected it | no |
+
+A `delivered` message is not final until the agent's turn ends. The router remembers what each agent read since its last turn start (`Router.reads`). The Stop hook and a new UserPromptSubmit hook call `Router.Confirm`, which makes them final. If the agent process exits first (crash, user stop, lost MCP response with a dead agent), `daemon.watch` calls `Router.Requeue` and the messages go back to `queued`, unless they were rejected meanwhile. The hop count is not rolled back.
 
 `delivered` is reachable only through `read_messages`, never by typing a nudge. `SetState` refuses any other path, so a stale snapshot in the delivery loop cannot revive a delivered message or skip the user's approval.
 
@@ -410,13 +413,13 @@ Each rule is listed with the function that enforces it. "UI only" means the serv
 | 8 | Workspace and folder name regex `^[a-z0-9][a-z0-9-]{0,31}$` | server: `config.Config.Validate`. client: `web/src/components/AddFolderDialog.vue:nameRule`. | Same pattern on both sides. The server check also runs on load and on every save, so a bad hand edit is reported. |
 | 9 | Account name: plain characters, no leading `-`, refused on windows | `launch.ValidateAccount`, called from `Daemon.AddFolder`, `daemon.mappedAccount` (value from `cswap map`) and `launch.Build` (hand-edited config). client: `AddFolderDialog.vue:accountRule`. | The name goes into argv for `cswap run`. A folder with an account and no cswap fails with `ErrCswapMissing`, never a silent fallback to the default login. |
 | 10 | Session id must be a lowercase UUID | `daemon.start` (`sessionIDRe`), `launch.Build` (`uuidRe`), `hook.Handler` (`uuidRE`, otherwise the id is dropped) | The id goes into `--resume` argv. |
-| 11 | Paths are stored canonical: absolute, symlinks resolved, on-disk letter case, an existing directory | `paths.Canonicalize` in `Daemon.AddFolder`. `api.addFolder` first rejects a relative path. | Only at add time. Load checks "absolute" only. |
+| 11 | Paths are stored canonical: absolute, symlinks resolved, on-disk letter case, an existing directory | `paths.Canonicalize` in `Daemon.AddFolder`. `api.addFolder` first rejects a relative path. | Only at add time. Load checks "absolute" only. A refused path gets the fixed 400 text "path must be an existing directory"; the full error (resolved path, file system text) goes to the log only. |
 | 12 | Nudge only when hooks say idle AND the screen shows an empty input box with no overlay | `delivery.Deliverer.tickTarget` (status must be `idle`, no trust dialog, input visible, not busy, input empty) with `screen.State.Ready` and `screen.Screen.State` (reads the emulator) | `sendNudge` checks the screen again after the paste and sends Enter only when the pasted text shows in the box. Verified end to end (Task 19). |
 | 13 | A message body is never typed into a PTY. Only the fixed nudge is. | `notify.Nudge` builds the text from a count only. `delivery.Deliverer.sendNudge` is the only caller of `Agent.Inject` for it. | |
 | 14 | Re-nudge at most once per message | `delivery.Deliverer.tickTarget` (the `renudged` map) and `sendNudge` (marks it). `pruneRenudged` forgets delivered messages. | The "Deliver now" request ignores the limit. The mark survives an agent restart. |
 | 15 | A nudge that was swallowed (no `UserPromptSubmit` within 3 s) goes back to `queued`, but one message is nudged at most 3 times this way (`maxNudges`) | `delivery.Deliverer.tickTarget` (`confirmWindow`, the `swallowed` map) | After the third swallowed nudge the message stays `nudged` and is not nudged again. The count resets when the agent is restarted or the message is gone. "Deliver now" still nudges it. |
 | 16 | The PTY is never smaller than 60 columns by 10 rows (so the nudge fits on one input line) | `server.termInput` (`clamp` with `minCols`, `minRows`; maximum 1000 by 1000). UI side: `web/src/components/TerminalPanel.vue` (`MIN_COLS`, `MIN_ROWS`). | |
-| 17 | After a replay, input frames that are only terminal query replies are dropped for 1 s | `server.termInput` with `queryReplyWindow` and `queryReplyRe` | Stops xterm.js answers to old queries in the replay from reaching the agent as typed input. |
+| 17 | After a replay, input frames that are only terminal query replies are dropped for 1 s. At any time, such frames from a socket that is not the newest one of that agent are dropped too. | `server.termInput` with `queryReplyWindow`, `queryReplyRe` and `termSeats` | Stops xterm.js answers to old queries in the replay from reaching the agent as typed input, and stops two tabs on one agent from sending every reply twice. Typed input from any tab passes. When the newest tab closes, the previous one becomes the newest. |
 | 18 | Terminal query replies from the screen emulator reach the PTY only while no browser is attached | `agent.replyWriter.Write` | An attached xterm.js answers instead, so the agent never gets two answers. |
 | 19 | The agent environment has no parent Claude Code session markers and no stale `RELAYDECK_*` | `launch.buildEnv` (`sessionMarkers`). `agent.Manager.Start` refuses a nil `Env`. | With the markers set, transcripts are not saved and a messaging token leaks. |
 | 20 | No token in argv | `launch.Build` (argv has no token). `launch.buildEnv` puts the agent token in the environment. | |
@@ -450,8 +453,8 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 
 ### Messages and agents
 
-- **The message queue is lost when the daemon restarts** (confirmed in the Task 19 run). Messages, hop counts, holds and nudge marks are in memory only. Only `config.yaml` (including each folder's current session id) survives.
-- **Messages are kept in memory forever** while the daemon runs. They are never pruned. The timeline grows with use.
+- **The message queue is lost when the daemon restarts** (confirmed in the Task 19 run). Messages, hop counts, holds and nudge marks are in memory only. Only `config.yaml` (including each folder's current session id) survives. Persisting pending messages is planned for the next development phase.
+- **Only the newest 500 delivered or rejected messages per workspace are kept.** The timeline shows the most recent ones. Pending messages are never dropped.
 - **A message the agent ignores gets one re-nudge.** After that it stays `nudged` and shows in the UI until the agent reads it or the user uses "Deliver now". A nudge that was swallowed (no prompt in 3 s) is queued again and does not use the re-nudge, but after 3 swallowed nudges the message stays `nudged` too (rule 15).
 - **A multi-agent chain needs a user instruction in each agent.** Agents treat another agent's request as data. They refuse an agent-driven loop unless their own user authorized it. This is the intended behavior (a message has no user authority), and it means a chain such as `be` to `fe` to a third agent works only when each agent's user has said so.
 - **The hop of an agent becomes the highest hop it has read** (it can go down when a later read has lower hops). A turn started by the user resets it to 0. A chain fed by fresh chains can therefore run longer than 3 hops in total.
@@ -473,7 +476,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 
 ### Terminal behavior
 
-- **Shift+F3 and Ctrl+F3 are dropped in the 1 s replay window.** They send `ESC [ 1 ; 2 R` (or `5 R`), which looks like a cursor position reply, so `queryReplyRe` drops them for 1 s after a terminal attaches. Later they work.
+- **Shift+F3 and Ctrl+F3 are dropped in the 1 s replay window.** They send `ESC [ 1 ; 2 R` (or `5 R`), which looks like a cursor position reply, so `queryReplyRe` drops them for 1 s after a terminal attaches. Later they work, except in a tab that is not the newest one for that agent, where they are always dropped.
 - A query sent at the exact moment a browser attaches may get no answer or two answers.
 - The screen emulator has one drain goroutine per agent for the life of the process (the library has no safe close). A stopped agent stays pinned by it until replaced (about 1 MiB).
 - The scrollback replay is the last 1 MiB of output, not a rendered screen.
