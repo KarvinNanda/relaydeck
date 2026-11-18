@@ -17,6 +17,11 @@ func (d *Daemon) onHook(agentID string, r hook.Report) {
 	if !ok {
 		return
 	}
+	if r.Event == "Stop" || r.Event == "UserPromptSubmit" {
+		// The turn that read the messages ended, or the agent moved on to a
+		// new turn: the messages it read are final.
+		d.router.Confirm(agentID)
+	}
 	if r.Event == "UserPromptSubmit" {
 		// Busy first, so a Tick between the two calls cannot see "idle"
 		// and nudge again while the prompt that confirms the nudge runs.
