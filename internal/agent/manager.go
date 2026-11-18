@@ -73,6 +73,11 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 		return nil, errors.New("agent: cmd.Env is nil, pass the scrubbed environment")
 	}
 	dir := filepath.Clean(cmd.Dir)
+	// Compare canonical forms, so a symlink, a case difference or an NFC/NFD
+	// spelling of one folder hits the guard below.
+	if c, err := paths.Canonicalize(dir); err == nil {
+		dir = c
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

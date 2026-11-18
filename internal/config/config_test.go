@@ -339,7 +339,7 @@ func TestSaveWritesHeader(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsDuplicateSessionAndPath(t *testing.T) {
+func TestValidateDuplicateSessionAndSharedPath(t *testing.T) {
 	c := sample()
 	c.Workspaces = append(c.Workspaces, Workspace{Name: "blog", Folders: []Folder{
 		{Name: "x", Path: filepath.Join(t0(), "other"), SessionID: "abc"},
@@ -347,12 +347,14 @@ func TestValidateRejectsDuplicateSessionAndPath(t *testing.T) {
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "session_id") {
 		t.Fatalf("duplicate session_id across folders: %v", err)
 	}
+	// The same folder in two workspaces is allowed (spec 7.2). Only one
+	// running agent per path is enforced, by agent.Manager.Start.
 	c = sample()
 	c.Workspaces = append(c.Workspaces, Workspace{Name: "blog", Folders: []Folder{
 		{Name: "x", Path: filepath.Join(t0(), "api")},
 	}})
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "path") {
-		t.Fatalf("duplicate path across workspaces: %v", err)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("same path in two workspaces must be allowed: %v", err)
 	}
 	c = sample()
 	c.Workspaces[0].Folders[1].SessionID = "" // empty session ids never clash

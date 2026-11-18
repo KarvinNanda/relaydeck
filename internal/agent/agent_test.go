@@ -618,3 +618,24 @@ func TestSameDirNFCvsNFDRejected(t *testing.T) {
 		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
 	}
 }
+
+// A symlink spelling and the real path of one directory cannot both run.
+func TestSameDirSymlinkRejected(t *testing.T) {
+	m := newMgr(t, nil)
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks not available")
+	}
+	a, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: real})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(time.Second)
+	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: link}); err != ErrAlreadyRunning {
+		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}

@@ -196,8 +196,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("port %d out of range 1024-65535", c.Port)
 	}
 	seenWS := map[string]bool{}
-	seenPath := map[string]string{} // canonical path -> "ws/folder"
-	seenSID := map[string]string{}  // session_id -> "ws/folder"
+	seenSID := map[string]string{} // session_id -> "ws/folder"
 	for _, ws := range c.Workspaces {
 		if !nameRe.MatchString(ws.Name) {
 			return fmt.Errorf("workspace name %q must match %s", ws.Name, nameRe)
@@ -222,10 +221,6 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("folder %s/%s: unknown permission_mode %q", ws.Name, f.Name, f.PermissionMode)
 			}
 			id := ws.Name + "/" + f.Name
-			if other, dup := seenPath[f.Path]; dup {
-				return fmt.Errorf("folder %s: path %q is already used by folder %s", id, f.Path, other)
-			}
-			seenPath[f.Path] = id
 			if f.SessionID != "" {
 				if other, dup := seenSID[f.SessionID]; dup {
 					return fmt.Errorf("folder %s: session_id %q is already used by folder %s", id, f.SessionID, other)

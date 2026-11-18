@@ -297,14 +297,14 @@ erDiagram
 | `workspaces[].name` | yes | `^[a-z0-9][a-z0-9-]{0,31}$`, unique across the file | `Config.Validate` (also `Daemon.AddWorkspace`) |
 | `workspaces[].folders` | no (an empty workspace is valid) | list | |
 | `folders[].name` | yes | same regex, unique inside the workspace only (the same name may exist in two workspaces) | `Config.Validate`, `daemon.newFolderSlot` |
-| `folders[].path` | yes | must be absolute, and unique across all workspaces. Through the API it is also canonical (symlinks resolved, on-disk letter case, an existing directory). A hand-edited path is checked for "absolute" and for duplicates only. | `Config.Validate`, `paths.Canonicalize` in `Daemon.AddFolder` |
+| `folders[].path` | yes | must be absolute. Through the API it is also canonical (symlinks resolved, on-disk letter case, an existing directory). A hand-edited path is checked for "absolute" only. The same path may appear in several workspaces. | `Config.Validate`, `paths.Canonicalize` in `Daemon.AddFolder` |
 | `folders[].account` | no | letters, digits and `@ . _ + -`, not starting with `-`. Refused on windows. | `launch.ValidateAccount` |
 | `folders[].permission_mode` | no | one of empty, `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` | `Config.Validate` |
 | `folders[].session_id` | no | no format check in `Validate`, but unique across all folders when set. Must be a lowercase UUID when used. | `daemon.start`, `launch.Build` |
 
 Cardinality notes:
 
-- A path is unique across the file (`Config.Validate`, error `path ... is already used by folder ws/name`), and so is a non-empty `session_id`. A file that breaks either rule is refused at load.
+- A non-empty `session_id` is unique across the file (`Config.Validate`). A path is not: the same folder may be in several workspaces, and only one of them can run at a time (section 5, rule 1).
 - There is no API or UI to rename or remove a workspace or folder in v1. Stop the daemon and edit the file.
 
 Other files relaydeck touches:
@@ -400,7 +400,7 @@ Each rule is listed with the function that enforces it. "UI only" means the serv
 
 | # | Rule | Enforced by | Notes |
 |---|---|---|---|
-| 1 | One running agent per canonical folder path, across all workspaces | `config.Config.Validate` (no two folders share a path) and `internal/agent/manager.go:Manager.Start` (compares the cleaned directory, in NFC form, with every non-stopped agent, returns `ErrAlreadyRunning`). `daemon.start` turns it into `ErrRunning`. | `Start` is the second line: two spellings that `Validate` cannot see as equal are caught there. |
+| 1 | One running agent per canonical folder path, across all workspaces | `internal/agent/manager.go:Manager.Start` (canonicalizes the directory with `paths.Canonicalize`, so a symlink, a case difference or an NFC/NFD spelling resolves to one path, then compares it in NFC form with every non-stopped agent, returns `ErrAlreadyRunning`). `daemon.start` turns it into `ErrRunning`. | Config allows two entries with one path (spec 7.2), so this check is the only guard. |
 | 2 | Max 4 terminal panels | `web/src/stores/panels.ts:openPanel` (`MAX_PANELS`). UI only. | The server does not limit WebSocket terminals or running agents. |
 | 3 | Hop limit 3: at hop 3 the daemon holds the message and asks the user | `notify.Router.Send` (`hop >= HopLimit` gives `awaiting_approval`), `Router.Approve` and `Router.Reject` | The hop of a sender is the highest hop it has read (`Read`, `ReadN`). Verified end to end (Task 19): the held message showed as awaiting approval, and Approve, Reject and Deliver now worked from the UI. `Router.UserPrompt` resets it to 0 when the user presses Enter in that panel (`agent.Write` calls `onUserEnter`). |
 | 4 | Message body 1 byte to 16 KiB, valid UTF-8, not empty | `notify.Router.Send` (`MaxBody`, `utf8.ValidString`) | The error text goes back to the calling agent. The HTTP request is capped at 128 KiB first (`mcpserver.Handlers`). |
@@ -458,8 +458,8 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 - **Draft detection reads the screen**, so it sees only what Claude Code draws. Placeholder text (faint style) is not a draft. relaydeck's own stranded paste (nudge text with no Enter) reads as a draft.
 - **External session detection is best effort.** `claude agents --json` is the main source. When it fails, a process scan matches by working directory only and cannot see the session id. A `claude` process whose directory cannot be read counts as "open". A session with an empty or unknown `kind` also counts as interactive (only `background` is skipped). Verified end to end (Task 19) for the `held_external` hold and release. The check runs for every not-running target on each delivery tick (about 1 s) while the delivery lock is held (deferred: cache the process list).
 - **No remove or rename for workspaces and folders.** Edit `config.yaml` by hand. A hand edit made while the daemon runs is kept at the next save (section 4.1), but the daemon does not see it before that, and a folder removed by hand is only noticed at the next restart. Comments in the file are lost at the next save.
-- **NFC and NFD path names.** `paths.walkCase` matches on-disk names after NFC normalization and returns the on-disk spelling, and the same-folder guard in `Manager.Start` and `extsession.samePath` compare in NFC form. Two paths that differ in more than normalization and case (a symlink, a hard link, a bind mount) are still two paths.
-- **Hand-edited paths are not canonicalized.** Only `Config.Validate` runs on load, so a symlink and its target, both written by hand, pass the duplicate-path check.
+- **NFC and NFD path names.** `paths.walkCase` matches on-disk names after NFC normalization and returns the on-disk spelling, and the same-folder guard in `Manager.Start` canonicalizes first and compares in NFC form, and `extsession.samePath` compares in NFC form. Two paths that differ in more than that (a hard link, a bind mount) are still two paths.
+- **Hand-edited paths are not canonicalized.** Only `Config.Validate` runs on load. `Manager.Start` canonicalizes at start, so a hand-written symlink path still hits the one-agent-per-folder guard.
 - **Session titles** come from scanning up to 8 MiB of each session file (`sessions.maxScan`). A very large session is slow to list.
 
 ### Security model limits
