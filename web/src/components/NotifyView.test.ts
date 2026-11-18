@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount as vtuMount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message, MessageState, State } from '../types'
 
@@ -26,6 +26,15 @@ function msg(state: MessageState, from = 'be', to = 'fe-admin'): Message {
 
 let list: Message[] = []
 
+// Every mounted view is unmounted after its test, even a failed one, so the
+// shared messages store never stays started into the next test.
+const mounted: VueWrapper[] = []
+const mount = (c: typeof NotifyView) => {
+  const w = vtuMount(c)
+  mounted.push(w)
+  return w
+}
+
 beforeEach(() => {
   list = []
   api.mockReset()
@@ -36,6 +45,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  for (const w of mounted.splice(0)) if (w.exists()) w.unmount()
   store.state.data = null
   store.state.connection = 'connecting'
 })
@@ -49,7 +59,6 @@ describe('NotifyView', () => {
     expect(w.findAll('.tl [role="row"]:not(.th)')).toHaveLength(2)
     expect(w.findAll('g.node')).toHaveLength(3)
     expect(w.find('.gr-h').text()).toContain('game-lounge')
-    w.unmount()
   })
 
   it('shows the counts in the header, each with an icon, and hides zero counts', async () => {
@@ -57,9 +66,15 @@ describe('NotifyView', () => {
     const w = mount(NotifyView)
     await flushPromises()
     const sum = w.findAll('.dh .sum > span')
-    expect(sum.map((s) => s.text())).toEqual(['2 awaiting approval', '1 held'])
+    // .wide is the desktop text, .narrow the phone text (CSS shows one)
+    const text = (s: (typeof sum)[number], hide: string) => {
+      const c = s.element.cloneNode(true) as HTMLElement
+      c.querySelectorAll(hide).forEach((x) => x.remove())
+      return c.textContent?.trim()
+    }
+    expect(sum.map((s) => text(s, '.narrow'))).toEqual(['2 awaiting approval', '1 held'])
+    expect(sum.map((s) => text(s, '.wide'))).toEqual(['2 to approve', '1 held'])
     for (const s of sum) expect(s.find('svg').exists()).toBe(true)
-    w.unmount()
   })
 
   it('Approve calls the approve endpoint', async () => {
@@ -69,7 +84,6 @@ describe('NotifyView', () => {
     await w.find('button.btn-primary').trigger('click')
     await flushPromises()
     expect(api).toHaveBeenCalledWith('POST', `/api/messages/${list[0].id}/approve`)
-    w.unmount()
   })
 
   it('keeps the collapse button, labelled and wired to the drawer', async () => {
@@ -79,7 +93,6 @@ describe('NotifyView', () => {
     expect(b.attributes('aria-expanded')).toBe('true')
     await b.trigger('click')
     expect(store.ui.messagesOpen).toBe(false)
-    w.unmount()
   })
 
   it('stops following events when unmounted', async () => {

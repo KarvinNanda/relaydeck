@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import { ApiError } from '../api'
 import { createMessages, type MessagesDeps } from '../stores/messages'
@@ -13,10 +13,14 @@ function msg(id: string, state: MessageState, extra: Partial<Message> = {}): Mes
   return { id, workspace: 'w', from: 'be', to: 'fe-admin', body: 'API is up on :8080', hop: 1, created, state, ...extra }
 }
 
-async function setup(list: Message[], post: (path: string, body?: unknown) => Promise<unknown> = async () => undefined) {
+async function setup(
+  list: Message[],
+  post: (path: string, body?: unknown) => Promise<unknown> = async () => undefined,
+  get: () => Promise<unknown> = () => Promise.resolve({ messages: list }),
+) {
   const listeners = new Set<(e: DaemonEvent) => void>()
   const api = vi.fn((method: string, path: string, body?: unknown) =>
-    method === 'GET' ? Promise.resolve({ messages: list }) : post(path, body),
+    method === 'GET' ? get() : post(path, body),
   )
   const store = {
     state: reactive({ connection: 'connected' }),
@@ -66,7 +70,7 @@ describe('Timeline', () => {
 
   it('newest first', async () => {
     const { w } = await setup([msg('1', 'queued', { body: 'first' }), msg('2', 'queued', { body: 'second' })])
-    expect(rows(w).map((r) => r.find('.msg').text())).toEqual([expect.stringContaining('second'), expect.stringContaining('first')])
+    expect(rows(w).map((r) => r.find('.cell-msg .body').text())).toEqual(['second', 'first'])
   })
 
   it('Approve and Reject call their endpoints', async () => {
@@ -81,17 +85,79 @@ describe('Timeline', () => {
     expect(api).toHaveBeenCalledWith('POST', '/api/messages/m1/reject')
   })
 
-  it('shows an action error inline on its row and disables the buttons while busy', async () => {
-    let fail!: (e: unknown) => void
-    const { w } = await setup([msg('m1', 'awaiting_approval'), msg('m2', 'awaiting_approval')], () => new Promise((_, rej) => (fail = rej)))
-    const [first, second] = rows(w)
-    await second.find('button.act').trigger('click')
-    expect(second.findAll('button.act').every((b) => b.attributes('disabled') !== undefined)).toBe(true)
-    fail(new ApiError(409, 'message "m1" is delivered, not awaiting_approval'))
-    await flushPromises()
-    expect(second.find('[role="alert"]').text()).toBe('message "m1" is delivered, not awaiting_approval')
-    expect(first.find('[role="alert"]').exists()).toBe(false)
-    expect(second.find('button.act').attributes('disabled')).toBeUndefined()
+  describe('action errors', () => {
+    let warn: ReturnType<typeof vi.spyOn>
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+    afterEach(() => warn.mockRestore())
+
+    it('shows plain words inline on its row, keeps the server text out of the UI, and disables the buttons while busy', async () => {
+      let fail!: (e: unknown) => void
+      const { w } = await setup([msg('m1', 'awaiting_approval'), msg('m2', 'awaiting_approval')], () => new Promise((_, rej) => (fail = rej)))
+      const [first, second] = rows(w)
+      await second.find('button.act').trigger('click')
+      expect(second.findAll('button.act').every((b) => b.attributes('disabled') !== undefined)).toBe(true)
+      const raw = 'message "m1" is delivered, not awaiting_approval'
+      fail(new ApiError(409, raw))
+      await flushPromises()
+      const alert = second.find('[role="alert"]')
+      expect(alert.text()).toBe('Already handled, nothing to approve.')
+      expect(w.text()).not.toContain(raw)
+      expect(warn).toHaveBeenCalledWith('relaydeck: approve failed', 409, raw)
+      // the buttons point at the error
+      expect(second.find('button.act').attributes('aria-describedby')).toBe(alert.attributes('id'))
+      expect(first.find('[role="alert"]').exists()).toBe(false)
+      expect(second.find('button.act').attributes('disabled')).toBeUndefined()
+    })
+
+    it.each([
+      ['awaiting_approval', 0, 409, 'Already handled, nothing to approve.'],
+      ['awaiting_approval', 1, 409, 'Already handled, nothing to reject.'],
+      ['awaiting_approval', 0, 404, 'This message no longer exists.'],
+      ['awaiting_approval', 1, 500, 'Could not reject. See the relaydeck log.'],
+      ['held_external', 0, 409, 'This folder already has a session running. Stop it first, then try again.'],
+      ['held_external', 0, 404, 'This folder is no longer in the workspace.'],
+      ['held_external', 0, 503, 'Could not start a new session. See the relaydeck log.'],
+      ['held_draft', 0, 404, 'This folder is no longer in the workspace.'],
+      ['held_draft', 0, 500, 'Could not deliver now. See the relaydeck log.'],
+    ] as const)('%s button %i, HTTP %i: "%s"', async (state, button, status, text) => {
+      const { w } = await setup([msg('m1', state)], () => Promise.reject(new ApiError(status, 'raw server text')))
+      await rows(w)[0].findAll('button.act')[button].trigger('click')
+      await flushPromises()
+      expect(rows(w)[0].find('[role="alert"]').text()).toBe(text)
+    })
+
+    it('says relaydeck is not reachable when the request never arrived', async () => {
+      const { w } = await setup([msg('m1', 'held_draft')], () => Promise.reject(new ApiError(0, 'relaydeck is not reachable. Is `relaydeck serve` still running?')))
+      await rows(w)[0].find('button.act').trigger('click')
+      await flushPromises()
+      expect(rows(w)[0].find('[role="alert"]').text()).toBe('relaydeck is not reachable. Is `relaydeck serve` still running?')
+    })
+
+    it('clears the error when the row changes state', async () => {
+      const { w, emit } = await setup([msg('m1', 'held_draft')], () => Promise.reject(new ApiError(500, 'x')))
+      await rows(w)[0].find('button.act').trigger('click')
+      await flushPromises()
+      expect(rows(w)[0].find('[role="alert"]').exists()).toBe(true)
+      emit(msg('m1', 'nudged'))
+      await flushPromises()
+      expect(rows(w)[0].find('[role="alert"]').exists()).toBe(false)
+      // back in the same state later: the old error does not come back
+      emit(msg('m1', 'held_draft'))
+      await flushPromises()
+      expect(rows(w)[0].find('[role="alert"]').exists()).toBe(false)
+    })
+
+    it('shows the error only while the row still has actions', async () => {
+      const { w } = await setup([msg('m1', 'held_external')], () => Promise.reject(new ApiError(409, 'x')))
+      const r = rows(w)[0]
+      await r.findAll('button.act')[0].trigger('click')
+      await flushPromises()
+      expect(r.find('[role="alert"]').exists()).toBe(true)
+      await r.findAll('button.act')[1].trigger('click') // Wait
+      expect(r.find('[role="alert"]').exists()).toBe(false)
+    })
   })
 
   it('held_external: Start new session posts new: true, Wait hides the actions', async () => {
@@ -128,29 +194,41 @@ describe('Timeline', () => {
   it('shows the first 120 characters of a long message and expands to the full text', async () => {
     const body = 'x'.repeat(119) + 'YZ' + ' tail'.repeat(40)
     const { w } = await setup([msg('m1', 'queued', { body })])
-    const t = rows(w)[0].find('button.msg')
-    expect(t.attributes('aria-expanded')).toBe('false')
-    expect(t.find('.body').text()).toBe('x'.repeat(119) + 'Y…')
-    await t.trigger('click')
-    expect(t.attributes('aria-expanded')).toBe('true')
-    expect(t.find('.body').text()).toBe(body)
-    await t.trigger('click')
-    expect(t.find('.body').text()).toBe('x'.repeat(119) + 'Y…')
+    const cell = rows(w)[0].find('.cell-msg')
+    const b = cell.find('button.exp')
+    expect(b.attributes('aria-label')).toBe('Full message')
+    expect(b.attributes('aria-expanded')).toBe('false')
+    // the button holds only the chevron; the text is outside it
+    expect(b.text()).toBe('')
+    expect(b.find('.body').exists()).toBe(false)
+    expect(cell.find('.body').text()).toBe('x'.repeat(119) + 'Y…')
+    await b.trigger('click')
+    expect(b.attributes('aria-expanded')).toBe('true')
+    expect(cell.find('.body').text()).toBe(body)
+    await b.trigger('click')
+    expect(cell.find('.body').text()).toBe('x'.repeat(119) + 'Y…')
+  })
+
+  it('a click on the message text also expands it', async () => {
+    const { w } = await setup([msg('m1', 'queued', { body: 'x'.repeat(200) })])
+    const cell = rows(w)[0].find('.cell-msg')
+    await cell.find('.body').trigger('click')
+    expect(cell.find('button.exp').attributes('aria-expanded')).toBe('true')
   })
 
   it('keeps a short message whole and shows line breaks as spaces until expanded', async () => {
     const { w } = await setup([msg('m1', 'queued', { body: 'line one\nline two' })])
-    const t = rows(w)[0].find('button.msg')
-    expect(t.find('.body').text()).toBe('line one line two')
-    await t.trigger('click')
-    expect(t.find('.body').element.textContent).toBe('line one\nline two')
+    const cell = rows(w)[0].find('.cell-msg')
+    expect(cell.find('.body').text()).toBe('line one line two')
+    await cell.find('button.exp').trigger('click')
+    expect(cell.find('.body').element.textContent).toBe('line one\nline two')
   })
 
   it('renders agent text as text, never as HTML', async () => {
     const { w } = await setup([msg('m1', 'queued', { body: '<img src=x onerror=alert(1)>', from: '<b>x</b>' })])
     expect(w.find('img').exists()).toBe(false)
     expect(w.find('b').exists()).toBe(false)
-    expect(rows(w)[0].find('.msg .body').text()).toBe('<img src=x onerror=alert(1)>')
+    expect(rows(w)[0].find('.cell-msg .body').text()).toBe('<img src=x onerror=alert(1)>')
   })
 
   it('marks a row that just changed', async () => {
@@ -161,9 +239,30 @@ describe('Timeline', () => {
     expect(rows(w)[0].classes()).toContain('hot')
   })
 
-  it('says so when there are no messages', async () => {
+  it('says so when there are no messages, outside the table', async () => {
     const { w } = await setup([])
-    expect(w.text()).toContain('No messages yet.')
     expect(rows(w)).toHaveLength(0)
+    const p = w.find('p.empty')
+    expect(p.text()).toBe('No messages yet.')
+    expect(p.element.closest('[role="table"]')).toBeNull()
+    // no header row without rows: the column widths come from the rows
+    expect(w.find('[role="columnheader"]').exists()).toBe(false)
+  })
+
+  it('has only rows inside the table', async () => {
+    const { w } = await setup([msg('m1', 'queued')])
+    const kids = [...w.find('[role="table"]').element.children]
+    expect(kids.length).toBe(2)
+    for (const c of kids) expect(c.getAttribute('role')).toBe('row')
+  })
+
+  it('shows a load error in plain words outside the table, with Retry', async () => {
+    const { w, api } = await setup([], undefined, () => Promise.reject(new ApiError(500, 'internal error; see the relaydeck log')))
+    const alert = w.find('[role="alert"]')
+    expect(alert.text()).toContain('Could not load the messages.')
+    expect(alert.element.closest('[role="table"]')).toBeNull()
+    api.mockClear()
+    await alert.find('button').trigger('click')
+    expect(api).toHaveBeenCalledWith('GET', '/api/workspaces/w/messages')
   })
 })

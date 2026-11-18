@@ -171,10 +171,15 @@ describe('messages store', () => {
     expect(m.lit.has('1')).toBe(false)
   })
 
-  it('stop removes the listener and the watchers', async () => {
-    const { m, gets, state, listeners } = rig()
+  it('stop removes the listener, the watchers and the light timers', async () => {
+    const { m, gets, state, listeners, emit } = rig()
     m.start()
+    emit(msg('1', 'queued'))
+    expect(m.lit.size).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
     m.stop()
+    expect(m.lit.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
     expect(listeners.size).toBe(0)
     state.connection = 'disconnected'
     await nextTick()
