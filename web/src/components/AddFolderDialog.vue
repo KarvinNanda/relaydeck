@@ -60,6 +60,9 @@ const serverError = ref('')
 const box = ref<HTMLElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 let returnFocus: HTMLElement | null = null
+// The page behind the dialog must not scroll on a phone, where the page is
+// taller than the screen. The old value is put back on close.
+let bodyOverflow: string | null = null
 
 const windows = computed(() => store.state.data?.platform === 'windows')
 
@@ -142,9 +145,14 @@ function trap(ev: KeyboardEvent): void {
 
 onMounted(() => {
   returnFocus = document.activeElement as HTMLElement | null
+  bodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
   nameInput.value?.focus()
 })
-onBeforeUnmount(() => returnFocus?.focus?.())
+onBeforeUnmount(() => {
+  if (bodyOverflow !== null) document.body.style.overflow = bodyOverflow
+  returnFocus?.focus?.()
+})
 </script>
 
 <template>
@@ -248,6 +256,7 @@ onBeforeUnmount(() => returnFocus?.focus?.())
   position: fixed; inset: 0; z-index: 20;
   display: grid; place-items: center; padding: var(--s-8);
   background: color-mix(in srgb, var(--bg) 75%, transparent);
+  overscroll-behavior: contain;
 }
 .dlg {
   width: min(440px, 100%); max-height: calc(100vh - 32px); overflow-y: auto;
