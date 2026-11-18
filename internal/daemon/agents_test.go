@@ -229,6 +229,66 @@ func TestStopAgentDraft(t *testing.T) {
 	}
 }
 
+// Claude Code draws a prompt suggestion in the empty box as plain text. The
+// user never typed it, so a normal stop is not refused and /exit is typed over
+// it (verified on Claude Code 2.1.327: typing replaces a suggestion).
+func TestStopAgentSuggestionIsNotDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	if err := a.Inject([]byte("suggest\r")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "suggestion on screen", func() bool { return a.ScreenState().Draft == "run" })
+	if a.UserTyped() {
+		t.Fatal("UserTyped set by Inject")
+	}
+	if err := e.d.StopAgent("w", "a", false); err != nil {
+		t.Fatalf("stop with a suggestion on screen: %v", err)
+	}
+	select {
+	case <-a.Done():
+	default:
+		t.Fatal("agent still running after a normal stop")
+	}
+	// Graceful: /exit was typed over the suggestion and the process exited 0
+	// by itself (a kill gives -1).
+	if l := e.lines(id); !strings.Contains(l, "/exit") || strings.Contains(l, "run") {
+		t.Fatalf("lines %q: want /exit typed over the suggestion", l)
+	}
+	if a.ExitCode() != 0 {
+		t.Fatalf("exit code %d: the agent was killed, not stopped with /exit", a.ExitCode())
+	}
+}
+
+// The same text typed by the user is a draft and refuses a normal stop.
+func TestStopAgentTypedTextIsDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	if err := a.Write([]byte("cek pesan dari api lagi")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "draft", a.HasDraft)
+	if err := e.d.StopAgent("w", "a", false); !errors.Is(err, ErrDraft) {
+		t.Fatalf("stop with typed text: %v, want ErrDraft", err)
+	}
+	select {
+	case <-a.Done():
+		t.Fatal("agent stopped despite the draft")
+	default:
+	}
+}
+
 // Ruling 2: token revoked on any exit; runtime dir removed; a restart drops
 // the old agent from the manager.
 func TestStopRevokesAndRestartReplaces(t *testing.T) {
@@ -718,5 +778,23 @@ func TestStartExternalCheckFails(t *testing.T) {
 	want := "could not check for an open Claude Code session in this folder: ps failed"
 	if !errors.Is(err, ErrExternalCheck) || err.Error() != want {
 		t.Fatalf("start = %v, want %q", err, want)
+	}
+}
+
+// An Up-arrow brings history text into the box without the user typing a
+// character. Any key counts as touching the input, so the text is a draft.
+func TestStopAgentTouchedBoxIsDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	a.Inject([]byte("suggest\r")) // stands in for the history text Claude Code puts in the box
+	eventually(t, "text on screen", func() bool { return a.ScreenState().Draft == "run" })
+	a.Write([]byte("\x1b[A"))
+	if err := e.d.StopAgent("w", "a", false); !errors.Is(err, ErrDraft) {
+		t.Fatalf("stop after an Up-arrow: %v, want ErrDraft", err)
 	}
 }

@@ -26,6 +26,11 @@ func (d *Daemon) onHook(agentID string, r hook.Report) {
 		// Busy first, so a Tick between the two calls cannot see "idle"
 		// and nudge again while the prompt that confirms the nudge runs.
 		d.mgr.SetStatus(agentID, agent.StatusBusy)
+		// A prompt was really submitted: whatever the user touched before it
+		// is no longer a draft.
+		if a, ok := d.mgr.Get(agentID); ok {
+			a.ResetTyped()
+		}
 		d.deliv.PromptSubmitted(t.WS, t.Folder)
 	} else {
 		d.mgr.SetStatus(agentID, agent.Status(st))

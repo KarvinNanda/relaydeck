@@ -155,9 +155,10 @@ func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, sta
 	}
 }
 
-// StopAgent stops the folder's agent. A draft in the input box refuses a
-// normal stop (ErrDraft), because /exit would be appended to the draft and
-// submitted. force kills at once without typing anything. Otherwise see
+// StopAgent stops the folder's agent. A draft the user typed in the input box
+// refuses a normal stop (ErrDraft), because /exit would be appended to the
+// draft and submitted. Text the user never typed (a prompt suggestion) is not
+// a draft. force kills at once without typing anything. Otherwise see
 // stopAgent. After a user stop, delivery does not start the folder again
 // for messages that were already waiting.
 func (d *Daemon) StopAgent(ws, folder string, force bool) error {
@@ -169,7 +170,7 @@ func (d *Daemon) StopAgent(ws, folder string, force bool) error {
 	if a == nil {
 		return ErrNotRunning
 	}
-	if !force && a.HasDraft() {
+	if !force && a.HasDraft() && a.UserTyped() {
 		return ErrDraft
 	}
 	// Before the stop, so no Tick can restart it in between: delivery does
@@ -188,12 +189,16 @@ func (d *Daemon) StopAgent(ws, folder string, force bool) error {
 	return err
 }
 
-// stopAgent types /exit only into the plain input box (busy is fine).
+// stopAgent types /exit only into the plain input box (busy is fine), empty
+// or showing a suggestion.
 // With an overlay, a dialog or a permission prompt on screen, Enter would
 // pick the highlighted option (trust the folder, approve a tool call), so
 // the agent is killed instead.
 func (d *Daemon) stopAgent(a *agent.Agent) error {
-	if st := a.ScreenState(); st.InputVisible && st.InputEmpty && !st.Trust {
+	// Text the user did not type is a prompt suggestion: typing /exit replaces
+	// it (verified on Claude Code 2.1.327), and Stop checks the box shows
+	// exactly "/exit" before Enter. Text the user typed would take /exit.
+	if st := a.ScreenState(); st.InputVisible && !st.Trust && (st.InputEmpty || !a.UserTyped()) {
 		return a.Stop(d.opts.StopGrace)
 	}
 	return a.Kill()
@@ -280,6 +285,20 @@ func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
 		return false, err
 	}
 	return x.d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, x.d.opts.OwnPIDs())
+}
+
+func (x agentsAdapter) UserTyped(ws, folder string) (bool, time.Time) {
+	a := x.d.running(delivery.Target{WS: ws, Folder: folder})
+	if a == nil {
+		return false, time.Time{}
+	}
+	return a.TypedState()
+}
+
+func (x agentsAdapter) ClearTyped(ws, folder string, last time.Time) {
+	if a := x.d.running(delivery.Target{WS: ws, Folder: folder}); a != nil {
+		a.ClearTypedIf(last)
+	}
 }
 
 func (x agentsAdapter) Inject(ws, folder string, p []byte) error {

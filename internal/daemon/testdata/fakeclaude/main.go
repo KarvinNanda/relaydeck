@@ -7,14 +7,16 @@
 //   - Every input line is appended to <FAKECLAUDE_DIR>/<id>.lines and the box
 //     is drawn again. "/exit" exits 0, unless FAKECLAUDE_IGNORE_EXIT is set.
 //     "noprompt" clears the screen and leaves the box away (an overlay).
-//     "trust" draws the box plus the trust dialog text. "busy" draws the box
+//     "trust" draws the box plus the trust dialog text. "suggest" draws the box with the suggestion "run" in it. "busy" draws the box
 //     with "esc to interrupt" in the footer. "size" prints "SIZE:<cols>x<rows>"
 //     of its terminal on the top row.
 //   - FAKECLAUDE_EXIT_AT_ONCE set: exit 1 right after writing the info file
 //     (a session that cannot be resumed, a crash on start).
 //
 // The PTY stays in canonical mode, so typed or pasted text is echoed into the
-// input box by the terminal itself, which the detector reads as a draft.
+// input box by the terminal itself, which the detector reads as a draft. The
+// echo of control characters is off, so a bracketed paste shows only its text,
+// like in Claude Code.
 package main
 
 import (
@@ -51,6 +53,7 @@ func main() {
 	if os.Getenv("FAKECLAUDE_EXIT_AT_ONCE") != "" {
 		os.Exit(1)
 	}
+	rawControlEcho()
 	draw()
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
@@ -71,6 +74,13 @@ func main() {
 		case "trust":
 			draw()
 			fmt.Print("\x1b[4;1H   2. No, exit\x1b[5;1H > 1. Yes, I trust this folder\x1b[38;3H")
+			continue
+		case "suggest":
+			// A prompt suggestion: text in the box that the terminal did not
+			// echo. It is short, so the echo of "/exit" covers it, like Claude
+			// Code replacing a suggestion when the user types.
+			draw()
+			fmt.Print("\x1b[38;3Hrun\x1b[38;3H")
 			continue
 		case "size":
 			draw()
