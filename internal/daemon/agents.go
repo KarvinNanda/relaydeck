@@ -108,6 +108,7 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 		d.reg.forget(id)
 		return err
 	}
+	cmd.Files[filepath.Join(runtimeDir, ownerFile)] = []byte(strconv.Itoa(os.Getpid()))
 	a, err := d.mgr.Start(id, cmd)
 	if err != nil {
 		d.reg.forget(id)
@@ -130,11 +131,11 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	}
 	d.setSessionID(ws, folder, sid)
 	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
-	go d.watch(a, t, runtimeDir, time.Now())
+	safeGo(d.log, "watch", func() { d.watch(a, t, runtimeDir, time.Now()) })
 	if d.opts.CswapPath != "" {
 		// Read the default login now, so the "on default login" flag of
 		// this agent is not up to 30 s old.
-		go d.refreshAccount(context.Background())
+		safeGo(d.log, "refresh-account", func() { d.refreshAccount(context.Background()) })
 	}
 	return nil
 }

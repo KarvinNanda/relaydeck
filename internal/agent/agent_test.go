@@ -576,3 +576,66 @@ func TestRemovedAgentIsCollected(t *testing.T) {
 		t.Fatal("removed agent is still reachable after GC")
 	}
 }
+
+// The screen must already have the new size when the PTY resize (and so the
+// SIGWINCH redraw) happens.
+func TestResizeScreenBeforePTY(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	colsAtPTY, called := 0, false
+	real := a.ptyResize
+	a.ptyResize = func(cols, rows int) error {
+		colsAtPTY, _ = a.screen.Size()
+		called = true
+		return real(cols, rows)
+	}
+	if err := a.Resize(90, 30); err != nil {
+		t.Fatal(err)
+	}
+	if !called || colsAtPTY != 90 {
+		t.Fatalf("screen cols at PTY resize = %d (called %v), want 90", colsAtPTY, called)
+	}
+}
+
+// The same-folder guard treats NFC and NFD spellings of one folder as the
+// same. Only darwin has a file system that opens a folder by either form.
+func TestSameDirNFCvsNFDRejected(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs APFS, which finds a folder by NFC or NFD name")
+	}
+	m := newMgr(t, nil)
+	base := t.TempDir()
+	nfd, nfc := base+"/café", base+"/café"
+	if err := os.Mkdir(nfd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: nfd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(time.Second)
+	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: nfc}); err != ErrAlreadyRunning {
+		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+// A symlink spelling and the real path of one directory cannot both run.
+func TestSameDirSymlinkRejected(t *testing.T) {
+	m := newMgr(t, nil)
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks not available")
+	}
+	a, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: real})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(time.Second)
+	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: link}); err != ErrAlreadyRunning {
+		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}

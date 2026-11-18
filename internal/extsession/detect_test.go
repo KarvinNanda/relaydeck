@@ -243,3 +243,25 @@ func TestClassifyClaude(t *testing.T) {
 		}
 	}
 }
+
+// An empty or unknown Kind counts as interactive: unknown means open.
+func TestOpenTreatsUnknownKindAsInteractive(t *testing.T) {
+	for _, kind := range []string{"", "something-new"} {
+		d := Detector{Agents: agents(Session{PID: 16, Cwd: "/work/a", SessionID: "s1", Kind: kind})}
+		pid, open, err := d.Open(context.Background(), "/work/a", "s1", nil)
+		if err != nil || !open || pid != 16 {
+			t.Fatalf("kind %q: pid=%d open=%v err=%v", kind, pid, open, err)
+		}
+	}
+}
+
+// The same folder spelled NFC and NFD is the same folder.
+func TestSamePathNFCvsNFD(t *testing.T) {
+	nfc, nfd := "/work/caf\u00e9", "/work/cafe\u0301"
+	if !samePath(nfc, nfd) {
+		t.Fatal("NFC and NFD spellings of one folder must match")
+	}
+	if samePath(nfc, "/work/cafx") {
+		t.Fatal("different folders matched")
+	}
+}

@@ -94,9 +94,10 @@ There is no container, no reverse proxy and no database. All persistent state is
 | 4 | Create the UI token (32 random bytes) | `auth.NewToken` |
 | 5 | Resolve the relaydeck executable (symlinks resolved), the cache dir, the Claude home and the cswap path (darwin and linux only) | `daemon.DefaultOptions` |
 | 6 | Build the daemon: router, agent manager, delivery loop, token registry. Nothing runs yet. | `daemon.New` |
-| 7 | Build the guard and the HTTP handler, start `Serve` in a goroutine | `auth.Guard`, `server.New` |
-| 8 | Print `relaydeck running: http://127.0.0.1:<port>/#token=<token>` on stdout | `serve` |
-| 9 | Start the delivery loop, the event fan-in and the cswap poll, and block | `Daemon.Run` |
+| 7 | Log one warning when the embedded UI has no `index.html` (`web UI not built: run "cd web && npm ci && npm run build" before go build`). Remove stale per-agent runtime dirs left by a killed daemon (section 4.2). The port is already bound here. | `warnIfNoUI`, `daemon.CleanStaleRuntime` |
+| 8 | Build the guard and the HTTP handler, start `Serve` in a goroutine | `auth.Guard`, `server.New` |
+| 9 | Print `relaydeck running: http://127.0.0.1:<port>/#token=<token>` on stdout | `serve` |
+| 10 | Start the delivery loop, the event fan-in and the cswap poll, and block | `Daemon.Run` |
 
 No agent starts at boot. An agent starts when the user presses Start in the UI (`POST /api/agents/{ws}/{name}/start`), or when the delivery loop has a message for a folder whose agent is not running.
 
@@ -120,7 +121,7 @@ What an agent receives (`internal/launch/launch.go:Build`):
 
 ### 2.3 Shutdown order
 
-SIGINT or SIGTERM ends the context. `Daemon.Run` waits for the delivery loop, the fan-in and the cswap poll, then `stopAll` refuses new starts and stops every agent in parallel. An agent that shows the plain empty input box gets `/exit` (5 s grace, then kill). Any other agent (draft, dialog, overlay) is killed at once. Tokens are revoked, the event streams are closed, and only then does `http.Server.Shutdown` run (5 s), so the last hook reports still land.
+SIGINT, SIGTERM or (on unix) SIGHUP ends the context (`shutdownSignals`). After the first signal the handler is released (`releaseOnFirstSignal`), so a second Ctrl-C uses the default action and force quits if the graceful stop hangs. `Daemon.Run` waits for the delivery loop, the fan-in and the cswap poll, then `stopAll` refuses new starts and stops every agent in parallel. An agent that shows the plain empty input box gets `/exit` (5 s grace, then kill). Any other agent (draft, dialog, overlay) is killed at once. Tokens are revoked, the event streams are closed, and only then does `http.Server.Shutdown` run (5 s), so the last hook reports still land.
 
 ## 3. Auth boundary
 
@@ -266,7 +267,9 @@ The agents treat another agent's request as data. They refuse an agent-driven lo
 
 ### 4.1 Persisted: `config.yaml`
 
-Location: `os.UserConfigDir()/relaydeck/config.yaml` (macOS: `~/Library/Application Support/relaydeck/config.yaml`, which follows `HOME`). It is human-editable. Saves are atomic (temp file 0600 in the same directory, fsync, rename; directory 0700). Unknown keys are an error at load (`KnownFields(true)`). The daemon reads the file once at start and rewrites it from memory on every change, so a hand edit made while the daemon runs is overwritten by the next save.
+Location: `os.UserConfigDir()/relaydeck/config.yaml` (macOS: `~/Library/Application Support/relaydeck/config.yaml`, which follows `HOME`). It is human-editable. Saves are atomic (temp file 0600 in the same directory, fsync, rename; directory 0700). A symlinked config path is resolved first, so the rename replaces the target and the symlink stays. Unknown keys are an error at load (`KnownFields(true)`).
+
+A hand edit made while the daemon runs is kept, not overwritten. `Config` remembers a hash of the file as of its last `Load` or `Save`. Every change goes through `Config.Update` (`daemon.commit`, `daemon.setSessionID`). If the file differs from that hash, `Update` loads the fresh file and applies only the pending change (the folder add, or the session id) on top of it. If the fresh file is invalid YAML or fails validation, nothing is written, and the error is returned and logged. Comments are not kept: the file is rewritten from memory, so every saved file starts with the line `# Managed by relaydeck. Edits made while relaydeck runs are merged on the next save.` The daemon takes a hand edit into its live config only at the next save, not when the file changes.
 
 ```mermaid
 erDiagram
@@ -294,21 +297,21 @@ erDiagram
 | `workspaces[].name` | yes | `^[a-z0-9][a-z0-9-]{0,31}$`, unique across the file | `Config.Validate` (also `Daemon.AddWorkspace`) |
 | `workspaces[].folders` | no (an empty workspace is valid) | list | |
 | `folders[].name` | yes | same regex, unique inside the workspace only (the same name may exist in two workspaces) | `Config.Validate`, `daemon.newFolderSlot` |
-| `folders[].path` | yes | must be absolute. Through the API it is also canonical (symlinks resolved, on-disk letter case, an existing directory). A hand-edited path is checked for "absolute" only. | `Config.Validate`, `paths.Canonicalize` in `Daemon.AddFolder` |
+| `folders[].path` | yes | must be absolute. Through the API it is also canonical (symlinks resolved, on-disk letter case, an existing directory). A hand-edited path is checked for "absolute" only. The same path may appear in several workspaces. | `Config.Validate`, `paths.Canonicalize` in `Daemon.AddFolder` |
 | `folders[].account` | no | letters, digits and `@ . _ + -`, not starting with `-`. Refused on windows. | `launch.ValidateAccount` |
 | `folders[].permission_mode` | no | one of empty, `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` | `Config.Validate` |
-| `folders[].session_id` | no | no format check in `Validate`. Must be a lowercase UUID when used. | `daemon.start`, `launch.Build` |
+| `folders[].session_id` | no | no format check in `Validate`, but unique across all folders when set. Must be a lowercase UUID when used. | `daemon.start`, `launch.Build` |
 
 Cardinality notes:
 
-- A path is not unique in the file. Two folder entries may point at the same directory. Only one of them can run at a time (section 5, rule 1).
+- A non-empty `session_id` is unique across the file (`Config.Validate`). A path is not: the same folder may be in several workspaces, and only one of them can run at a time (section 5, rule 1).
 - There is no API or UI to rename or remove a workspace or folder in v1. Stop the daemon and edit the file.
 
 Other files relaydeck touches:
 
 | File | Access | Purpose |
 |---|---|---|
-| `os.UserCacheDir()/relaydeck/agents/<agent id>/mcp.json`, `settings.json` | write (dir 0700, files 0600), removed when the process exits | per-agent MCP config and hooks, passed with `--mcp-config` and `--settings` |
+| `os.UserCacheDir()/relaydeck/agents/<agent id>/mcp.json`, `settings.json`, `owner.pid` | write (dir 0700, files 0600), removed when the process exits, and at the next serve start if the daemon was killed | per-agent MCP config and hooks, passed with `--mcp-config` and `--settings`. `owner.pid` holds the daemon pid. `daemon.CleanStaleRuntime` removes only real directories directly under that root whose name is a UUID, never follows a symlink, and keeps a dir whose `owner.pid` is another live process (a second relaydeck on another port). |
 | `<Claude home>/projects/<encoded cwd>/*.jsonl` (Claude home is `CLAUDE_CONFIG_DIR` or `~/.claude`) | read only | the session picker (title and time) and the "has a session file" check before `--resume` |
 
 ### 4.2 In memory: relations at run time
@@ -397,7 +400,7 @@ Each rule is listed with the function that enforces it. "UI only" means the serv
 
 | # | Rule | Enforced by | Notes |
 |---|---|---|---|
-| 1 | One running agent per canonical folder path, across all workspaces | `internal/agent/manager.go:Manager.Start` (compares the cleaned directory with every non-stopped agent, returns `ErrAlreadyRunning`). `daemon.start` turns it into `ErrRunning`. | Config allows two entries with one path, so this check is the only guard. |
+| 1 | One running agent per canonical folder path, across all workspaces | `internal/agent/manager.go:Manager.Start` (canonicalizes the directory with `paths.Canonicalize`, so a symlink, a case difference or an NFC/NFD spelling resolves to one path, then compares it in NFC form with every non-stopped agent, returns `ErrAlreadyRunning`). `daemon.start` turns it into `ErrRunning`. | Config allows two entries with one path (spec 7.2), so this check is the only guard. |
 | 2 | Max 4 terminal panels | `web/src/stores/panels.ts:openPanel` (`MAX_PANELS`). UI only. | The server does not limit WebSocket terminals or running agents. |
 | 3 | Hop limit 3: at hop 3 the daemon holds the message and asks the user | `notify.Router.Send` (`hop >= HopLimit` gives `awaiting_approval`), `Router.Approve` and `Router.Reject` | The hop of a sender is the highest hop it has read (`Read`, `ReadN`). Verified end to end (Task 19): the held message showed as awaiting approval, and Approve, Reject and Deliver now worked from the UI. `Router.UserPrompt` resets it to 0 when the user presses Enter in that panel (`agent.Write` calls `onUserEnter`). |
 | 4 | Message body 1 byte to 16 KiB, valid UTF-8, not empty | `notify.Router.Send` (`MaxBody`, `utf8.ValidString`) | The error text goes back to the calling agent. The HTTP request is capped at 128 KiB first (`mcpserver.Handlers`). |
@@ -411,7 +414,7 @@ Each rule is listed with the function that enforces it. "UI only" means the serv
 | 12 | Nudge only when hooks say idle AND the screen shows an empty input box with no overlay | `delivery.Deliverer.tickTarget` (status must be `idle`, no trust dialog, input visible, not busy, input empty) with `screen.State.Ready` and `screen.Screen.State` (reads the emulator) | `sendNudge` checks the screen again after the paste and sends Enter only when the pasted text shows in the box. Verified end to end (Task 19). |
 | 13 | A message body is never typed into a PTY. Only the fixed nudge is. | `notify.Nudge` builds the text from a count only. `delivery.Deliverer.sendNudge` is the only caller of `Agent.Inject` for it. | |
 | 14 | Re-nudge at most once per message | `delivery.Deliverer.tickTarget` (the `renudged` map) and `sendNudge` (marks it). `pruneRenudged` forgets delivered messages. | The "Deliver now" request ignores the limit. The mark survives an agent restart. |
-| 15 | A nudge that was swallowed (no `UserPromptSubmit` within 3 s) goes back to `queued` | `delivery.Deliverer.tickTarget` (`confirmWindow`) | |
+| 15 | A nudge that was swallowed (no `UserPromptSubmit` within 3 s) goes back to `queued`, but one message is nudged at most 3 times this way (`maxNudges`) | `delivery.Deliverer.tickTarget` (`confirmWindow`, the `swallowed` map) | After the third swallowed nudge the message stays `nudged` and is not nudged again. The count resets when the agent is restarted or the message is gone. "Deliver now" still nudges it. |
 | 16 | The PTY is never smaller than 60 columns by 10 rows (so the nudge fits on one input line) | `server.termInput` (`clamp` with `minCols`, `minRows`; maximum 1000 by 1000). UI side: `web/src/components/TerminalPanel.vue` (`MIN_COLS`, `MIN_ROWS`). | |
 | 17 | After a replay, input frames that are only terminal query replies are dropped for 1 s | `server.termInput` with `queryReplyWindow` and `queryReplyRe` | Stops xterm.js answers to old queries in the replay from reaching the agent as typed input. |
 | 18 | Terminal query replies from the screen emulator reach the PTY only while no browser is attached | `agent.replyWriter.Write` | An attached xterm.js answers instead, so the agent never gets two answers. |
@@ -427,8 +430,10 @@ Each rule is listed with the function that enforces it. "UI only" means the serv
 | 28 | Each request body is a JSON object with no unknown fields and no trailing data | `server.readBody` | |
 | 29 | A paste of the nudge is bracketed, and Enter is sent after a 50 ms delay once the box shows the text | `delivery.Deliverer.sendNudge` (`enterDelay`, poll 25 ms up to 500 ms) | |
 | 30 | The input box is found even though its top rule carries the `--name` label (`──── demo/be ───`) | `screen.isRule`. The row must start with the rule character and, ignoring trailing spaces, end with it. It must span at least 90% of the width (`ruleRatio`). It may hold one label run only, with no box-drawing character in it (`boxChars`). It needs at least 10 rule cells (`minRuleCells`), and rule cells must cover at least a third of the width. | relaydeck starts `claude` with `--name <workspace>/<folder>`, and Claude Code prints that name inside the rule. Without this a real prompt row never matched, so delivery waited. Found in the Task 19 run. |
-| 31 | A panic in the vt emulator never stops the PTY reader | `screen.Screen.Write` (`recover`, then `Screen.reset` builds a blank emulator of the same size). `Write` still reports the bytes as consumed. | Seen once as a late scroll region after a resize. The screen is blank until Claude Code redraws, so detection waits (safe direction). |
+| 31 | A panic in the vt emulator never stops the PTY reader or the delivery loop | `screen.Screen.Write`, `State` and `Resize` (`recover`, then `Screen.reset` builds a blank emulator of the size last asked for). `Write` still reports the bytes as consumed, `State` returns the zero State. | Seen once as a late scroll region after a resize. The screen is blank until Claude Code redraws, so detection waits (safe direction). |
 | 32 | A window title with non-ASCII bytes never reaches the emulator | `screen.oscFilter.filter` (in `internal/screen/osc.go`), called from `Screen.Write` | See below. |
+| 33 | A panic in a long-lived goroutine is logged with its stack and does not end the daemon | `delivery.Deliverer.safeTick` (per Tick, so the loop keeps running), and `daemon.safeGo` for the delivery, fan-in and cswap goroutines of `Run`, the `stopAll` workers, `watch` and `refreshAccount` | A goroutine that panicked is not restarted (the delivery loop recovers per Tick, so it is). The log line is `goroutine panic` or `delivery: tick panic`. |
+| 34 | The screen is resized before the PTY, so the SIGWINCH redraw lands on the new size | `agent.Agent.Resize` | |
 
 How `oscFilter` works. Claude Code sets the window title (OSC 0 or 2, text like `✳ ws/folder` with a UTF-8 spinner glyph) after every turn. The vt parser aborts an OSC at the first non-ASCII byte and prints the rest as text, so the title appeared on the prompt row and read as a draft. The filter holds each OSC sequence (`ESC ]` up to its end) in a buffer and decides at the end. A sequence with only ASCII is passed on unchanged. A sequence with any byte of 0x80 or above is dropped. It ends a sequence where the parser does: at BEL, at `ESC \`, at `ESC` followed by any other byte (that `ESC` starts the next sequence), and at CAN or SUB (an ASCII sequence is then passed on and the abort byte follows it, so the emulator sees the same abort). It keeps its state across writes, because a sequence can be split between PTY reads. An `ESC` at the very end of a write is held until the next write. Cap: a held sequence is limited to 4096 bytes (`maxOSC`). When it grows past that, the filter stops holding it. Held ASCII bytes are passed on, held non-ASCII bytes are dropped, and the rest of that sequence flows through unfiltered. So no output is hidden for longer than one capped sequence.
 
@@ -447,14 +452,14 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 
 - **The message queue is lost when the daemon restarts** (confirmed in the Task 19 run). Messages, hop counts, holds and nudge marks are in memory only. Only `config.yaml` (including each folder's current session id) survives.
 - **Messages are kept in memory forever** while the daemon runs. They are never pruned. The timeline grows with use.
-- **A message the agent ignores gets one re-nudge.** After that it stays `nudged` and shows in the UI until the agent reads it or the user uses "Deliver now". A nudge that was swallowed (no prompt in 3 s) is queued again and does not use the re-nudge.
+- **A message the agent ignores gets one re-nudge.** After that it stays `nudged` and shows in the UI until the agent reads it or the user uses "Deliver now". A nudge that was swallowed (no prompt in 3 s) is queued again and does not use the re-nudge, but after 3 swallowed nudges the message stays `nudged` too (rule 15).
 - **A multi-agent chain needs a user instruction in each agent.** Agents treat another agent's request as data. They refuse an agent-driven loop unless their own user authorized it. This is the intended behavior (a message has no user authority), and it means a chain such as `be` to `fe` to a third agent works only when each agent's user has said so.
 - **The hop of an agent becomes the highest hop it has read** (it can go down when a later read has lower hops). A turn started by the user resets it to 0. A chain fed by fresh chains can therefore run longer than 3 hops in total.
 - **Draft detection reads the screen**, so it sees only what Claude Code draws. Placeholder text (faint style) is not a draft. relaydeck's own stranded paste (nudge text with no Enter) reads as a draft.
-- **External session detection is best effort.** `claude agents --json` is the main source. When it fails, a process scan matches by working directory only and cannot see the session id. A `claude` process whose directory cannot be read counts as "open". Verified end to end (Task 19) for the `held_external` hold and release. The check runs for every not-running target on each delivery tick (about 1 s) while the delivery lock is held (deferred: cache the process list).
-- **No remove or rename for workspaces and folders.** Edit `config.yaml` with the daemon stopped. A hand edit made while it runs is overwritten.
-- **NFC and NFD path names.** The case fix in `paths.Canonicalize` and the same-folder guard in `internal/agent/manager.go:Manager.Start` compare names with plain string equality or `strings.EqualFold`, which does not treat the NFC and NFD spellings of one name as equal (macOS can hold either). Two spellings of one folder can therefore be stored as two paths, and both agents can run at once. The same holds for the external session check (`extsession.samePath`).
-- **Hand-edited paths are not canonicalized.** Only `Config.Validate` runs on load.
+- **External session detection is best effort.** `claude agents --json` is the main source. When it fails, a process scan matches by working directory only and cannot see the session id. A `claude` process whose directory cannot be read counts as "open". A session with an empty or unknown `kind` also counts as interactive (only `background` is skipped). Verified end to end (Task 19) for the `held_external` hold and release. The check runs for every not-running target on each delivery tick (about 1 s) while the delivery lock is held (deferred: cache the process list).
+- **No remove or rename for workspaces and folders.** Edit `config.yaml` by hand. A hand edit made while the daemon runs is kept at the next save (section 4.1), but the daemon does not see it before that, and a folder removed by hand is only noticed at the next restart. Comments in the file are lost at the next save.
+- **NFC and NFD path names.** `paths.walkCase` matches on-disk names after NFC normalization and returns the on-disk spelling, and the same-folder guard in `Manager.Start` canonicalizes first and compares in NFC form, and `extsession.samePath` compares in NFC form. Two paths that differ in more than that (a hard link, a bind mount) are still two paths.
+- **Hand-edited paths are not canonicalized.** Only `Config.Validate` runs on load. `Manager.Start` canonicalizes at start, so a hand-written symlink path still hits the one-agent-per-folder guard.
 - **Session titles** come from scanning up to 8 MiB of each session file (`sessions.maxScan`). A very large session is slow to list.
 
 ### Security model limits
@@ -488,7 +493,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 | Agent tokens (registry, revoke) | `internal/daemon/registry.go`, `internal/daemon/agents.go:watch` |
 | CSP and other headers | `internal/server/server.go` (`contentSecurityPolicy`, `securityHeaders`). Keep `web/scripts/check-dist.mjs` in step. |
 | Default port, `--port`, port-in-use message | `internal/config/config.go` (`DefaultPort`), `cmd/relaydeck/serve.go`, `internal/server/server.go:Listen` |
-| Config fields and validation | `internal/config/config.go`, `internal/daemon/cfg.go` (`AddFolder`), and the matching client rules in `web/src/components/AddFolderDialog.vue` |
+| Config fields, validation, keeping hand edits | `internal/config/config.go` (`Update`, `Save`, `Validate`), `internal/daemon/cfg.go` (`AddFolder`), and the matching client rules in `web/src/components/AddFolderDialog.vue` |
 | Agent launch: argv, environment scrub, hook and MCP files, system prompt | `internal/launch/launch.go`, `internal/launch/prompt.go` |
 | PTY and process lifecycle, kill, scrollback | `internal/agent/agent.go`, `internal/agent/manager.go`, `internal/agent/kill_unix.go`, `internal/agent/kill_other.go`, `internal/agent/ring.go` |
 | Start, stop, restart policy, holds, crash cooldown | `internal/daemon/agents.go`, `internal/daemon/lifecycle.go` |
@@ -497,6 +502,9 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 | Message states, caps, hop limit, envelope and nudge text | `internal/notify/router.go`, `internal/notify/envelope.go` |
 | MCP tools (add or change one) | `internal/mcpserver/server.go` (the stdio side and tool schema), `internal/mcpserver/tools.go` (the daemon side), `internal/launch/prompt.go` (what the agent is told) |
 | Hook events and the status mapping | `internal/launch/launch.go` (`hookEvents`), `internal/hook/client.go` (`Events`), `internal/hook/handler.go` (`StatusFor`), `internal/daemon/hooks.go` |
+| Static file content types, UI-not-built warning | `internal/server/server.go:staticFiles`, `cmd/relaydeck/serve.go:warnIfNoUI` |
+| Stale runtime dirs at start | `internal/daemon/runtimeclean.go` |
+| Shutdown signals | `cmd/relaydeck/main.go`, `cmd/relaydeck/signals_unix.go`, `cmd/relaydeck/signals_windows.go` |
 | External session detection | `internal/extsession/detect.go`. Wiring in `internal/daemon/daemon.go:New`. |
 | cswap (status, map, account display) | `internal/cswap/cswap.go`, `internal/daemon/cswappoll.go`, `internal/daemon/cfg.go:mappedAccount` |
 | Session list, titles, project directory name | `internal/sessions/sessions.go`, `internal/paths/paths.go:ProjectDirName` |

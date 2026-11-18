@@ -27,10 +27,13 @@ type Agent struct {
 	dir string
 	log *slog.Logger
 
-	pty    pty.Pty
-	cmd    *pty.Cmd
-	screen *screen.Screen
-	ring   *ring
+	pty pty.Pty
+	// ptyResize resizes the PTY. It is a field so a test can see the order of
+	// the two resizes in Resize without replacing a.pty under the reader.
+	ptyResize func(cols, rows int) error
+	cmd       *pty.Cmd
+	screen    *screen.Screen
+	ring      *ring
 
 	onUserEnter func(id string)
 	emit        func(Event)
@@ -234,11 +237,10 @@ func (a *Agent) HasDraft() bool {
 
 // Resize resizes the PTY and the screen emulator.
 func (a *Agent) Resize(cols, rows uint16) error {
-	if err := a.pty.Resize(int(cols), int(rows)); err != nil {
-		return err
-	}
+	// The screen goes first: the PTY resize sends SIGWINCH, Claude Code
+	// redraws at once, and that output must land on the new size.
 	a.screen.Resize(int(cols), int(rows))
-	return nil
+	return a.ptyResize(int(cols), int(rows))
 }
 
 // Subscribe returns the scrollback and a channel with later output. The

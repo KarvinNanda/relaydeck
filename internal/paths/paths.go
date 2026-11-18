@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // ErrNotDir is returned when a path does not exist or is not a directory.
@@ -67,14 +69,19 @@ func walkCase(p string) (string, error) {
 			cur = filepath.Join(cur, part)
 			continue
 		}
+		// Exact match first, then a match after NFC and case folding. The
+		// entry name is returned as the disk spells it: macOS keeps the form
+		// a name was created with (often NFD), and Claude Code names its
+		// project directory from the on-disk form.
 		name := part
 		folded := ""
+		want := norm.NFC.String(part)
 		for _, e := range entries {
 			if e.Name() == part {
 				folded = ""
 				break
 			}
-			if folded == "" && strings.EqualFold(e.Name(), part) {
+			if folded == "" && strings.EqualFold(norm.NFC.String(e.Name()), want) {
 				folded = e.Name()
 			}
 		}
@@ -84,6 +91,12 @@ func walkCase(p string) (string, error) {
 		cur = filepath.Join(cur, name)
 	}
 	return cur, nil
+}
+
+// EqualNFC reports whether a and b are the same string after Unicode NFC
+// normalization, so the same name typed as NFC and as NFD compares equal.
+func EqualNFC(a, b string) bool {
+	return a == b || norm.NFC.String(a) == norm.NFC.String(b)
 }
 
 // ProjectDirName returns the directory name Claude Code uses under

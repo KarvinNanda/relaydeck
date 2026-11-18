@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KarvinNanda/relaydeck/internal/paths"
 	"github.com/shirou/gopsutil/v4/process"
+	"golang.org/x/text/unicode/norm"
 )
 
 // commandTimeout bounds the `claude agents --json` call.
@@ -47,6 +49,11 @@ func Default() Detector {
 	return Detector{Agents: runAgents, Procs: ListProcs}
 }
 
+// nonInteractive lists the kinds `claude agents --json` reports for sessions
+// nobody can type into. Any other kind, including an empty or new one, counts
+// as interactive: an unknown kind cannot be ruled out, so it holds delivery.
+var nonInteractive = map[string]bool{"background": true}
+
 // Open reports whether an interactive claude session outside relaydeck has
 // sessionID or dir open. Processes in exclude (relaydeck's own children) are
 // ignored. If Agents fails, Procs is used, and it can only match by folder.
@@ -71,7 +78,7 @@ func (d Detector) Open(ctx context.Context, dir, sessionID string, exclude map[i
 		}
 	}
 	for _, s := range sessions {
-		if s.Kind != "interactive" || exclude[s.PID] {
+		if nonInteractive[s.Kind] || exclude[s.PID] {
 			continue
 		}
 		// An unknown cwd cannot be ruled out, so it counts as open.
@@ -102,9 +109,9 @@ func resolve(p string) string {
 
 func equalPath(a, b string) bool {
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
+		return strings.EqualFold(norm.NFC.String(a), norm.NFC.String(b))
 	}
-	return a == b
+	return paths.EqualNFC(a, b)
 }
 
 type agentJSON struct {

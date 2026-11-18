@@ -178,3 +178,35 @@ func TestCanonicalizeUnreadableParent(t *testing.T) {
 		t.Errorf("got %q, want %q", got, child)
 	}
 }
+
+func TestEqualNFC(t *testing.T) {
+	if !EqualNFC("/w/caf\u00e9", "/w/cafe\u0301") || EqualNFC("/w/a", "/w/b") {
+		t.Fatal("EqualNFC wrong")
+	}
+}
+
+// walkCase returns the on-disk spelling when the path uses another
+// normalization form. macOS (APFS) keeps the form a name was created with and
+// finds it with either form; other file systems may treat them as two names,
+// so the test only runs on darwin.
+func TestWalkCaseNFCvsNFD(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs a file system that matches NFC and NFD names (APFS)")
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nfd := "cafe\u0301-dir"
+	nfc := "caf\u00e9-dir"
+	if err := os.Mkdir(filepath.Join(base, nfd), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := walkCase(filepath.Join(base, nfc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(base, nfd); got != want {
+		t.Fatalf("walkCase = %q, want the on-disk form %q", got, want)
+	}
+}

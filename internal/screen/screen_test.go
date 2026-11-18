@@ -425,3 +425,25 @@ func TestOSCFilterProperties(t *testing.T) {
 		}
 	}
 }
+
+// State and Resize recover like Write: a broken emulator gives the zero
+// State, is replaced by a blank one of the right size, and later calls work.
+func TestStateAndResizeRecoverFromPanic(t *testing.T) {
+	s := New(80, 24, nil)
+	s.em = nil // any call on it now panics
+	if st := s.State(); st != (State{}) {
+		t.Fatalf("State after panic = %+v, want zero", st)
+	}
+	if s.em == nil || s.em.Width() != 80 || s.em.Height() != 24 {
+		t.Fatal("emulator was not replaced by a blank one of the same size")
+	}
+
+	s.em = nil
+	s.Resize(100, 30)
+	if s.em == nil || s.em.Width() != 100 || s.em.Height() != 30 {
+		t.Fatal("Resize did not rebuild the emulator at the new size")
+	}
+	if st := s.State(); st != (State{}) {
+		t.Fatalf("blank screen State = %+v", st)
+	}
+}

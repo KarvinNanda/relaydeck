@@ -68,6 +68,8 @@ type testEnv struct {
 	out     string // FAKECLAUDE_DIR
 	dirA    string
 	dirB    string
+	dirC    string // unused by the config, for tests that add a folder
+	dirD    string
 	logs    *syncBuf
 }
 
@@ -102,6 +104,8 @@ func newEnv(t *testing.T, mutate func(*Options)) *testEnv {
 		out:     canon(t, filepath.Join(base, "out")),
 		dirA:    canon(t, filepath.Join(base, "proj a")),
 		dirB:    canon(t, filepath.Join(base, "proj-b")),
+		dirC:    canon(t, filepath.Join(base, "proj-c")),
+		dirD:    canon(t, filepath.Join(base, "proj-d")),
 		logs:    &syncBuf{},
 	}
 	cfg := &config.Config{Port: 7341, Workspaces: []config.Workspace{{Name: "w", Folders: []config.Folder{

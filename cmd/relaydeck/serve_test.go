@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/config"
@@ -140,5 +142,20 @@ func TestBareRunIsServe(t *testing.T) {
 		if code := run(args, &out, &errb); code != 1 || !strings.HasPrefix(errb.String(), want) {
 			t.Fatalf("run(%q) = %d, stderr %q", args, code, errb.String())
 		}
+	}
+}
+
+func TestWarnIfNoUI(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	warnIfNoUI(log, fstest.MapFS{"assets/app.js": {Data: []byte("x")}})
+	out := buf.String()
+	if strings.Count(out, "\n") != 1 || !strings.Contains(out, `web UI not built: run \"cd web && npm ci && npm run build\" before go build`) {
+		t.Fatalf("log = %q", out)
+	}
+	buf.Reset()
+	warnIfNoUI(log, fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}})
+	if buf.Len() != 0 {
+		t.Fatalf("warned although index.html exists: %q", buf.String())
 	}
 }

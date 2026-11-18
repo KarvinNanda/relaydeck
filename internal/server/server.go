@@ -77,6 +77,15 @@ func staticFiles(fsys fs.FS) http.Handler {
 				return
 			}
 		}
+		// FileServer takes the type from the OS (the registry on Windows),
+		// which can be wrong for scripts and styles. A module script with the
+		// wrong type is blocked by the browser.
+		switch path.Ext(name) {
+		case ".js", ".mjs":
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		case ".css":
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		}
 		files.ServeHTTP(w, r)
 	})
 }

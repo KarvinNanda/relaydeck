@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,16 @@ var permissionModes = map[string]bool{
 type Config struct {
 	Port       int         `yaml:"port"`
 	Workspaces []Workspace `yaml:"workspaces"`
+
+	// seen is the hash of the file content at the last Load or Save (a missing
+	// file hashes as empty content). Nil means this Config never touched the
+	// file, so Update has nothing to compare against.
+	seen *[sha256.Size]byte
 }
+
+// header is the first line of every saved file. Comments are not kept: the
+// file is rewritten from the in-memory config.
+const header = "# Managed by relaydeck. Edits made while relaydeck runs are merged on the next save.\n"
 
 type Workspace struct {
 	Name    string   `yaml:"name"`
@@ -55,7 +65,7 @@ func DefaultPath() (string, error) {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &Config{Port: DefaultPort}, nil
+		return &Config{Port: DefaultPort, seen: hashOf(nil)}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -72,7 +82,59 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	c.seen = hashOf(data)
 	return &c, nil
+}
+
+func hashOf(data []byte) *[sha256.Size]byte {
+	h := sha256.Sum256(data)
+	return &h
+}
+
+// changedOnDisk reports whether the file differs from what this Config last
+// loaded or saved. An unreadable file counts as changed, so Update reloads it
+// and reports the error instead of overwriting it.
+func (c *Config) changedOnDisk(path string) bool {
+	if c.seen == nil {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		data, err = nil, nil
+	}
+	return err != nil || *hashOf(data) != *c.seen
+}
+
+func (c *Config) clone() *Config {
+	out := &Config{Port: c.Port, seen: c.seen, Workspaces: make([]Workspace, len(c.Workspaces))}
+	for i, w := range c.Workspaces {
+		out.Workspaces[i] = Workspace{Name: w.Name, Folders: append([]Folder(nil), w.Folders...)}
+	}
+	return out
+}
+
+// Update applies one pending change and saves. When the file changed since
+// the last Load or Save (a hand edit while the daemon runs), it loads the
+// fresh file first and applies the change on top of it, so the edit is not
+// lost. If the fresh file is invalid, nothing is written and the error says
+// so. On any error c is unchanged. On success c holds what was saved.
+func (c *Config) Update(path string, apply func(*Config) error) error {
+	work := c.clone()
+	if c.changedOnDisk(path) {
+		fresh, err := Load(path)
+		if err != nil {
+			return fmt.Errorf("config changed on disk and was not overwritten: %w", err)
+		}
+		work = fresh
+	}
+	if err := apply(work); err != nil {
+		return err
+	}
+	if err := work.Save(path); err != nil {
+		return err
+	}
+	*c = *work
+	return nil
 }
 
 // Save validates, then writes atomically: temp file in the same dir (0600),
@@ -81,9 +143,15 @@ func (c *Config) Save(path string) error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("refusing to save invalid config: %w", err)
 	}
-	data, err := yaml.Marshal(c)
+	body, err := yaml.Marshal(c)
 	if err != nil {
 		return err
+	}
+	data := append([]byte(header), body...)
+	// Write through a symlink: rename over the link itself would replace it
+	// with a regular file.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -113,7 +181,13 @@ func (c *Config) Save(path string) error {
 		cleanup()
 		return err
 	}
+	c.seen = hashOf(data)
 	return nil
+}
+
+// ValidateWith validates c with its workspaces replaced by next.
+func (c *Config) ValidateWith(next []Workspace) error {
+	return (&Config{Port: c.Port, Workspaces: next}).Validate()
 }
 
 // Validate checks names, paths, permission modes and the port range.
@@ -122,6 +196,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("port %d out of range 1024-65535", c.Port)
 	}
 	seenWS := map[string]bool{}
+	seenSID := map[string]string{} // session_id -> "ws/folder"
 	for _, ws := range c.Workspaces {
 		if !nameRe.MatchString(ws.Name) {
 			return fmt.Errorf("workspace name %q must match %s", ws.Name, nameRe)
@@ -144,6 +219,13 @@ func (c *Config) Validate() error {
 			}
 			if !permissionModes[f.PermissionMode] {
 				return fmt.Errorf("folder %s/%s: unknown permission_mode %q", ws.Name, f.Name, f.PermissionMode)
+			}
+			id := ws.Name + "/" + f.Name
+			if f.SessionID != "" {
+				if other, dup := seenSID[f.SessionID]; dup {
+					return fmt.Errorf("folder %s: session_id %q is already used by folder %s", id, f.SessionID, other)
+				}
+				seenSID[f.SessionID] = id
 			}
 		}
 	}
