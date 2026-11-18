@@ -265,6 +265,25 @@ function onOutside(ev: PointerEvent): void {
   pickerOpen.value = false
 }
 
+// ---- OSC 8 link confirm ----
+const linkUrl = ref('')
+const linkCancel = ref<HTMLButtonElement | null>(null)
+
+function askLink(href: string): void {
+  linkUrl.value = href
+  void nextTick(() => linkCancel.value?.focus())
+}
+function closeLink(): void {
+  linkUrl.value = ''
+  focusTerm()
+}
+function openLink(): void {
+  const href = linkUrl.value
+  linkUrl.value = ''
+  window.open(href, '_blank', 'noopener,noreferrer')
+  focusTerm()
+}
+
 // ---- terminal ----
 const host = ref<HTMLElement | null>(null)
 let term: Terminal | null = null
@@ -306,7 +325,8 @@ async function createTerm(el: HTMLElement): Promise<void> {
     fontSize: parseFloat(token('--fs-term') ?? '') || 12,
     lineHeight: 1, // more rows; the server needs at least MIN_ROWS
     cursorBlink: true,
-    // OSC 8 hyperlinks from the agent: http and https only, never an opener.
+    // OSC 8 hyperlinks from the agent: http and https only. The agent chose
+    // the link, so the user sees the real URL and confirms before it opens.
     linkHandler: {
       activate(_ev: MouseEvent, text: string) {
         let u: URL
@@ -315,7 +335,7 @@ async function createTerm(el: HTMLElement): Promise<void> {
         } catch {
           return
         }
-        if (u.protocol === 'http:' || u.protocol === 'https:') window.open(u.href, '_blank', 'noopener,noreferrer')
+        if (u.protocol === 'http:' || u.protocol === 'https:') askLink(u.href)
       },
     },
     scrollback: 5000,
@@ -627,6 +647,20 @@ onBeforeUnmount(() => {
     </div>
 
     <div
+      v-if="linkUrl"
+      class="link-ask"
+      role="dialog"
+      aria-label="Open link"
+      @keydown.esc.stop="closeLink"
+    >
+      <p class="link-url">Open <b>{{ linkUrl }}</b>?</p>
+      <div class="link-acts">
+        <button class="btn btn-primary" type="button" @click="openLink"><Icon name="right" />Open</button>
+        <button ref="linkCancel" class="btn" type="button" @click="closeLink">Cancel</button>
+      </div>
+    </div>
+
+    <div
       v-if="pickerOpen"
       ref="popWrap"
       class="pop-wrap"
@@ -743,6 +777,16 @@ onBeforeUnmount(() => {
 .stopped .big { display: flex; align-items: center; gap: var(--s-4); font-weight: 700; font-size: var(--fs-lg); }
 .stopped .acts { display: flex; flex-wrap: wrap; gap: var(--s-4); justify-content: center; margin-top: var(--s-2); }
 
+/* OSC 8 link confirm: over the bottom of the terminal, the whole URL wraps */
+.link-ask {
+  position: absolute; z-index: 6; left: var(--s-3); right: var(--s-3); bottom: var(--s-3);
+  display: grid; gap: var(--s-3); padding: var(--s-4) var(--s-5);
+  background: var(--muted); border: 1px solid var(--border-strong); border-radius: var(--r);
+}
+.link-url { margin: 0; overflow-wrap: anywhere; max-height: 6.5em; overflow-y: auto; }
+.link-url b { font-weight: 600; }
+.link-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-4); }
+
 /* session picker popover, under the Sessions button */
 .pop-wrap { position: absolute; z-index: 5; right: var(--s-3); max-width: calc(100% - 12px); }
 .pop-wrap::before {
@@ -766,5 +810,6 @@ onBeforeUnmount(() => {
   .stopped { padding: 20px var(--s-5); }
   .pop-wrap { left: var(--s-3); }
   .pop-wrap::before { display: none; }
+  .link-acts .btn { flex: 1; justify-content: center; min-height: var(--touch-h); }
 }
 </style>
