@@ -114,3 +114,29 @@ func TestReadMessagesStayDeliveredAfterStopHook(t *testing.T) {
 		t.Fatalf("%d messages requeued after Stop", n)
 	}
 }
+
+// Enter does not clear the "user touched the input" flag: the prompt may not
+// have been submitted (a slash menu, a backslash Enter). The agent's own
+// UserPromptSubmit hook says it really was, and clears it.
+func TestUserPromptSubmitClearsTypedFlag(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	a, _ := e.d.Agent("w", "a")
+	a.Write([]byte("abc\r"))
+	if !a.UserTyped() {
+		t.Fatal("Enter cleared the flag")
+	}
+	e.d.onHook(id, hook.Report{Event: "SessionStart"})
+	e.d.onHook(id, hook.Report{Event: "Stop"})
+	if !a.UserTyped() {
+		t.Fatal("other hooks cleared the flag")
+	}
+	e.d.onHook(id, hook.Report{Event: "UserPromptSubmit"})
+	if a.UserTyped() {
+		t.Fatal("UserPromptSubmit did not clear the flag")
+	}
+}

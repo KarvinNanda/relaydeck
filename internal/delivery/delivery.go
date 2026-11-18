@@ -42,6 +42,9 @@ const (
 	stuckStatusAfter = 15 * time.Second
 	// externalTTL is how long a "session open elsewhere" answer is reused.
 	externalTTL = 5 * time.Second
+	// typedQuiet is how long the user must be quiet, with an empty box, before
+	// the "user touched the input" flag is cleared.
+	typedQuiet = 2 * time.Second
 	// ctrlU clears the input line.
 	ctrlU = "\x15"
 )
@@ -54,9 +57,12 @@ type Agents interface {
 	Start(ws, folder string) error // resume current session or new
 	ExternalOpen(ws, folder string) (bool, error)
 	Inject(ws, folder string, p []byte) error
-	// UserTyped reports whether the user typed text in this agent since the
-	// last Enter. The screen cannot tell a draft from a prompt suggestion.
-	UserTyped(ws, folder string) bool
+	// UserTyped reports whether the user touched this agent's input since the
+	// flag was last cleared, and when they last did. The screen cannot tell a
+	// draft from a prompt suggestion.
+	UserTyped(ws, folder string) (bool, time.Time)
+	// ClearTyped clears the flag if the last input is still last.
+	ClearTyped(ws, folder string, last time.Time)
 }
 
 // Target is one agent: a folder inside a workspace.
@@ -346,11 +352,20 @@ func (d *Deliverer) tickTarget(t Target) {
 	if scr.Busy {
 		return
 	}
-	// Text in the box is a draft only when the user typed it, or when it is
-	// our own stranded nudge. Claude Code draws a prompt suggestion as plain
-	// text, so a box with text the user never typed counts as empty.
+	// Text in the box is a draft only when the user touched the input, or
+	// when it holds our own nudge. Claude Code draws a prompt suggestion as
+	// plain text, so a box with text and no user input counts as empty.
+	typed, lastInput := d.a.UserTyped(t.WS, t.Folder)
+	if typed && scr.InputEmpty && !d.now().Before(lastInput.Add(typedQuiet)) {
+		// An empty box and a quiet user: nothing is half typed any more.
+		d.a.ClearTyped(t.WS, t.Folder, lastInput)
+		typed = false
+	}
+	// A box that still holds our own nudge, alone or with text around it, is a
+	// draft too, so an unconfirmed nudge is never pasted twice.
 	isDraft := func(scr screen.State) bool {
-		return !scr.InputEmpty && (d.a.UserTyped(t.WS, t.Folder) || (scr.Draft != "" && scr.Draft == d.lastNudge[t]))
+		n := d.lastNudge[t]
+		return !scr.InputEmpty && (typed || (n != "" && strings.Contains(scr.Draft, n)))
 	}
 	draft := isDraft(scr)
 	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {

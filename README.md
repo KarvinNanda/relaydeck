@@ -60,7 +60,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 </dict></plist>
 ```
 
-It runs through `zsh -lic` because launchd starts jobs with a minimal PATH, and the agents need your PATH to find `claude`, `node` and `docker`. `-l` makes a login shell, which reads only `.zprofile`. Most setups put `~/.local/bin` (where `claude` lives), Homebrew and fnm or nvm in `.zshrc`, which only an interactive shell (`-i`) reads. So both flags are needed. Check it with `env -i HOME="$HOME" /bin/zsh -lic 'command -v claude'`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
+It runs through `zsh -lic` because launchd starts jobs with a minimal PATH, and the agents need your PATH to find `claude`, `node` and `docker`. A login zsh (`-l`) reads `.zshenv`, `.zprofile` and `.zlogin`, but not `.zshrc`. Many setups add `~/.local/bin` (where `claude` lives), Homebrew and fnm or nvm in `.zshrc`, so `-i` is added: it runs `.zshrc` even without a TTY. The cost is that prompt frameworks in `.zshrc` may print warnings to the log. Check the result with `env -i HOME="$HOME" /bin/zsh -lic 'command -v claude'`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
 
 `serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) applies to files relaydeck creates, but launchd opens the two log files itself with the default mode (0644), so the 0700 log directory is what keeps them private. Also run `chmod 600` on both files once they exist. Use `relaydeck open` to get into the UI.
 

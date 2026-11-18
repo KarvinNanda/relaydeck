@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -730,75 +731,122 @@ func TestExitTypedOnRealScreens(t *testing.T) {
 	}
 }
 
-func TestUserTypedTracksKeystrokes(t *testing.T) {
+// agentTouched is what the review found: a lone Esc, and Esc followed by text,
+// must never hide the next keystrokes. Each case is one agent.
+func TestUserTypedTouchedByInput(t *testing.T) {
 	m := newMgr(t, nil)
-	a := start(t, m, "a")
-	steps := []struct {
-		name  string
-		write string
-		want  bool
+	cases := []struct {
+		name   string
+		writes []string
+		want   bool
 	}{
-		{"fresh agent", "", false},
-		{"printable", "abc", true},
-		{"enter clears", "\r", false},
-		{"enter after text in one write", "abc\r", false},
-		{"text after enter in one write", "\rabc", true},
-		{"backspace does not clear", "\x7f", true},
-		{"ctrl-u does not clear", "\x15", true},
-		{"ctrl-c does not clear", "\x03", true},
-		{"enter clears again", "\r", false},
-		{"focus in", "\x1b[I", false},
-		{"focus out", "\x1b[O", false},
-		{"sgr mouse press", "\x1b[<0;10;5M", false},
-		{"sgr mouse release", "\x1b[<0;10;5m", false},
-		{"legacy mouse report", "\x1b[M !!", false},
-		{"cursor position reply", "\x1b[12;5R", false},
-		{"device attributes reply", "\x1b[?62;4c", false},
-		{"arrow key", "\x1b[A", false},
-		{"ss3 key", "\x1bOP", false},
-		{"osc reply with BEL", "\x1b]11;rgb:0000/0000/0000\x07", false},
-		{"osc reply with ST", "\x1b]11;rgb:0000/0000/0000\x1b\\", false},
-		{"dcs reply", "\x1bP1$r0m\x1b\\", false},
-		{"alt key", "\x1bb", false},
-		{"utf-8 text", "café", true},
-		{"enter", "\r", false},
-		{"control bytes only", "\x01\x02\x05\t", false},
-		{"bracketed paste", "\x1b[200~pasted text\x1b[201~", true},
-		{"enter after paste", "\r", false},
-		{"text after a focus report", "\x1b[Ix", true},
-		{"enter", "\r", false},
-		{"empty paste", "\x1b[200~\x1b[201~", false},
-		{"enter inside a paste does not clear", "x\x1b[200~a\rb\x1b[201~", true},
+		{"printable", []string{"abc"}, true},
+		{"lone Esc then text", []string{"\x1b", "Please"}, true},
+		{"ESC P then text", []string{"\x1bP", "abc"}, true},
+		{"up arrow alone", []string{"\x1b[A"}, true},
+		{"Enter alone", []string{"\r"}, true},
+		{"focus in", []string{"\x1b[I"}, false},
+		{"mouse report", []string{"\x1b[<0;10;5M"}, false},
+		{"query reply", []string{"\x1b[12;5R"}, false},
 	}
-	for _, s := range steps {
-		if s.write != "" {
-			if err := a.Write([]byte(s.write)); err != nil {
-				t.Fatalf("%s: %v", s.name, err)
-			}
+	for i, c := range cases {
+		a := start(t, m, fmt.Sprintf("a%d", i))
+		for _, w := range c.writes {
+			a.Write([]byte(w)) // the flag goes up before the PTY write
 		}
-		if got := a.UserTyped(); got != s.want {
-			t.Fatalf("%s: UserTyped = %v, want %v", s.name, got, s.want)
+		if got := a.UserTyped(); got != c.want {
+			t.Errorf("%s: UserTyped = %v, want %v", c.name, got, c.want)
+		}
+		if got := !a.LastInput().IsZero(); got != c.want {
+			t.Errorf("%s: LastInput set = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
-// A browser can split one escape sequence over two writes.
-func TestUserTypedSequenceSplitOverWrites(t *testing.T) {
+// The classifier decides on one whole write. Pure, so the table is large.
+func TestNeutralOnly(t *testing.T) {
+	neutral := []string{
+		"\x1b[I", "\x1b[O", "\x1b[<0;10;5M", "\x1b[<0;10;5m", "\x1b[M !!",
+		"\x1b[12;5R", "\x1b[?62;4c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[?2004;1$y",
+		"\x1b]11;rgb:0000/0000/0000\x07", "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1bP1$r0m\x1b\\",
+		"\x1b[I\x1b[<0;1;1M\x1b[12;5R",
+	}
+	touching := []string{
+		"", "abc", "\x1b", "\x1b[A", "\x1bOP", "\x1bb", "\r", "\t", "\x03", "\x12", "\x16", "\x15", "\x7f",
+		"\\\r", "caf\u00e9", "\x1b[200~pasted\x1b[201~", "\x1b[Ix", "\x1b[12;5R\x1b[A",
+		"\x1b[<0;10;5", "\x1bP", "\x1b]", "\x1b[", "\x1b]11;rgb:0/0/0", "\x1b[M !",
+	}
+	for _, w := range neutral {
+		if !neutralOnly([]byte(w)) {
+			t.Errorf("%q: want neutral", w)
+		}
+	}
+	for _, w := range touching {
+		if neutralOnly([]byte(w)) {
+			t.Errorf("%q: want touching", w)
+		}
+	}
+}
+
+// Enter does not clear the flag: only a submitted prompt (the hook), a quiet
+// empty box, or a restart does.
+func TestUserTypedStaysAfterEnter(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	for _, part := range []string{"\x1b[<0;1", "0;5M", "\x1b", "[I", "\x1b]11;rgb:0/0/0", "\x07"} {
-		if err := a.Write([]byte(part)); err != nil {
-			t.Fatal(err)
-		}
-		if a.UserTyped() {
-			t.Fatalf("UserTyped set after %q", part)
-		}
-	}
-	for _, part := range []string{"\x1b[20", "0~hi", "\x1b[20", "1~"} {
-		a.Write([]byte(part))
-	}
+	a.Write([]byte("abc\r"))
 	if !a.UserTyped() {
-		t.Fatal("split bracketed paste did not set UserTyped")
+		t.Fatal("abc then Enter cleared UserTyped")
+	}
+	a.ResetTyped()
+	if a.UserTyped() {
+		t.Fatal("ResetTyped did not clear")
+	}
+}
+
+// A write that ends in the middle of a sequence leaves no state behind.
+func TestUserTypedNoStateAcrossWrites(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("\x1b[<0;1"))
+	a.ResetTyped()
+	a.Write([]byte("0;5M"))
+	if !a.UserTyped() {
+		t.Fatal("a split sequence must count as touched, never as neutral")
+	}
+}
+
+func TestClearTypedIfOnlyWhenNoNewInput(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("a"))
+	last := a.LastInput()
+	time.Sleep(2 * time.Millisecond)
+	a.Write([]byte("b"))
+	if a.ClearTypedIf(last) || !a.UserTyped() {
+		t.Fatal("cleared although the user typed after the reading")
+	}
+	if !a.ClearTypedIf(a.LastInput()) || a.UserTyped() {
+		t.Fatal("did not clear with the current LastInput")
+	}
+}
+
+func TestWriteConcurrentKeepsFlag(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				a.Write([]byte("x"))
+				a.Write([]byte("\x1b[I"))
+			}
+		}()
+	}
+	wg.Wait()
+	if !a.UserTyped() {
+		t.Fatal("flag lost under concurrent writes")
 	}
 }
 

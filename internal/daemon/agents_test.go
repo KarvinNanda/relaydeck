@@ -780,3 +780,21 @@ func TestStartExternalCheckFails(t *testing.T) {
 		t.Fatalf("start = %v, want %q", err, want)
 	}
 }
+
+// An Up-arrow brings history text into the box without the user typing a
+// character. Any key counts as touching the input, so the text is a draft.
+func TestStopAgentTouchedBoxIsDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	a.Inject([]byte("suggest\r")) // stands in for the history text Claude Code puts in the box
+	eventually(t, "text on screen", func() bool { return a.ScreenState().Draft == "run" })
+	a.Write([]byte("\x1b[A"))
+	if err := e.d.StopAgent("w", "a", false); !errors.Is(err, ErrDraft) {
+		t.Fatalf("stop after an Up-arrow: %v, want ErrDraft", err)
+	}
+}

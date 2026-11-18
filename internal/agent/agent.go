@@ -56,8 +56,12 @@ type Agent struct {
 	injectTimeout time.Duration
 	injectMu      sync.Mutex // one injected write at a time, in order
 
-	typedMu sync.Mutex
-	scan    typedScanner // what the user typed through Write; see UserTyped
+	// touched is set by every user input through Write that is not only
+	// neutral terminal chatter, and cleared by ResetTyped (a prompt was
+	// submitted) or ClearTypedIf (empty box, user quiet). See UserTyped.
+	typedMu   sync.Mutex
+	touched   bool
+	lastInput time.Time
 
 	replyCh   chan []byte
 	done      chan struct{} // closed when the process is gone and output is drained
@@ -227,21 +231,16 @@ func (a *Agent) Write(p []byte) error {
 	}
 	// The flag goes up before the bytes reach the PTY: the echo can come
 	// back to the screen before this function returns, and the delivery loop
-	// must not see that text as something the user never typed. An Enter
-	// takes the flag down only after the write, for the same reason.
-	a.typedMu.Lock()
-	was := a.scan.typed
-	saw := a.scan.feed(p)
-	final := a.scan.typed
-	a.scan.typed = was || saw
-	a.typedMu.Unlock()
+	// must not see that text as something the user never touched. Write only
+	// ever sets the flag, so concurrent writers cannot lose an update.
+	if !neutralOnly(p) {
+		a.typedMu.Lock()
+		a.touched = true
+		a.lastInput = time.Now()
+		a.typedMu.Unlock()
+	}
 	if _, err := a.pty.Write(p); err != nil {
 		return err
-	}
-	if !final {
-		a.typedMu.Lock()
-		a.scan.typed = false
-		a.typedMu.Unlock()
 	}
 	if a.onUserEnter != nil {
 		for i := bytes.Count(p, []byte{'\r'}); i > 0; i-- {
@@ -302,15 +301,46 @@ func (a *Agent) HasDraft() bool {
 	return st.InputVisible && !st.InputEmpty
 }
 
-// UserTyped reports whether the user typed text (or pasted it) through Write
-// since the last Enter. Claude Code draws a prompt suggestion in the empty box
-// as plain text, so the screen alone cannot tell a draft from a suggestion.
-// Backspace, Ctrl-U and Ctrl-C do not clear it: a stale true only makes a
-// message wait. Inject never changes it.
+// UserTyped reports whether the user touched the input through Write since
+// the flag was last cleared. Claude Code draws a prompt suggestion in the empty
+// box as plain text, so the screen alone cannot tell a draft from a
+// suggestion. Any key counts (text, paste, Enter, Esc, arrows, Ctrl and Alt
+// keys), because Claude Code can put text in the box itself after a key (history
+// recall, an image paste, a slash menu). Only focus, mouse and terminal query
+// replies do not count. Enter does not clear it. Inject never changes it.
 func (a *Agent) UserTyped() bool {
 	a.typedMu.Lock()
 	defer a.typedMu.Unlock()
-	return a.scan.typed
+	return a.touched
+}
+
+// LastInput returns when the user last touched the input through Write (the
+// zero time if never).
+func (a *Agent) LastInput() time.Time {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	return a.lastInput
+}
+
+// ResetTyped clears the flag. The daemon calls it when the agent's own
+// UserPromptSubmit hook fires: the prompt was really submitted.
+func (a *Agent) ResetTyped() {
+	a.typedMu.Lock()
+	a.touched = false
+	a.typedMu.Unlock()
+}
+
+// ClearTypedIf clears the flag only if the last input is still the one the
+// caller saw, so input that arrived after its reading is never wiped. It
+// reports whether it cleared.
+func (a *Agent) ClearTypedIf(last time.Time) bool {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	if !a.lastInput.Equal(last) {
+		return false
+	}
+	a.touched = false
+	return true
 }
 
 // Resize resizes the PTY and the screen emulator.

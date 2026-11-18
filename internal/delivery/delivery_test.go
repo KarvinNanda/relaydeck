@@ -26,8 +26,10 @@ type fakeAgents struct {
 	status      agent.Status
 	scr         screen.State
 	pasted      bool
-	pastedText  string         // what the last paste put in the box
-	typed       bool           // the user typed since the last Enter
+	pastedText  string // what the last paste put in the box
+	typed       bool   // the user touched the input since the flag was cleared
+	lastInput   time.Time
+	clears      int
 	scrSeq      []screen.State // consumed first, one per Screen call
 	external    bool
 	externalErr error
@@ -64,10 +66,18 @@ func (f *fakeAgents) Screen(ws, folder string) screen.State {
 	}
 	return f.scr
 }
-func (f *fakeAgents) UserTyped(ws, folder string) bool {
+func (f *fakeAgents) UserTyped(ws, folder string) (bool, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.typed
+	return f.typed, f.lastInput
+}
+func (f *fakeAgents) ClearTyped(ws, folder string, last time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lastInput.Equal(last) {
+		f.typed = false
+		f.clears++
+	}
 }
 func (f *fakeAgents) Start(ws, folder string) error {
 	f.mu.Lock()
@@ -1234,5 +1244,101 @@ func TestEnterNotSentWhenBoxHoldsNudgePlusText(t *testing.T) {
 	g.tick()
 	if g.fa.enters() != 0 || g.state(m.ID) != notify.StateQueued {
 		t.Fatalf("enters %d state %s", g.fa.enters(), g.state(m.ID))
+	}
+}
+
+// Review fix: the flag is cleared when the box is empty and the user has been
+// quiet for typedQuiet. Input 1 s ago keeps it.
+func TestEmptyBoxAndQuietClearsTypedFlag(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.typed = true; f.lastInput = g.c.now().Add(-typedQuiet) })
+	g.tick()
+	if typed, _ := g.fa.UserTyped("ws", "fe"); typed {
+		t.Fatal("flag kept although the box is empty and the user was quiet for 2 s")
+	}
+}
+
+func TestEmptyBoxRecentInputKeepsTypedFlag(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.typed = true; f.lastInput = g.c.now().Add(-time.Second) })
+	g.tick()
+	if typed, _ := g.fa.UserTyped("ws", "fe"); !typed {
+		t.Fatal("flag cleared although the user typed 1 s ago")
+	}
+}
+
+// A box with text and a quiet user is NOT cleared: the text may be a draft.
+func TestTextInBoxKeepsTypedFlagEvenWhenQuiet(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: "half typed"}
+		f.typed = true
+		f.lastInput = g.c.now().Add(-time.Hour)
+	})
+	g.tick()
+	if typed, _ := g.fa.UserTyped("ws", "fe"); !typed || g.fa.nInjected() != 0 {
+		t.Fatalf("typed %v injected %d", typed, g.fa.nInjected())
+	}
+}
+
+// After an unconfirmed paste the nudge sits in the box. The next tick must not
+// paste it again, with or without other text around it.
+func TestUnconfirmedNudgeInBoxIsNotPastedAgain(t *testing.T) {
+	for name, draft := range map[string]string{"alone": nudge1, "with text": suggestion + " " + nudge1} {
+		g := newRig()
+		m := g.send(t, "x")
+		shown := screen.State{InputVisible: true, InputEmpty: false, Draft: draft, Busy: true}
+		g.fa.set(func(f *fakeAgents) { f.scrSeq = append([]screen.State{readyScreen}, repeat(shown, 60)...) })
+		g.tick() // pasted, never confirmed
+		if g.fa.nInjected() != 1 {
+			t.Fatalf("%s: injected %d after the first tick", name, g.fa.nInjected())
+		}
+		g.fa.set(func(f *fakeAgents) {
+			f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: draft}
+			f.pasted = false
+			f.scrSeq = nil
+		})
+		g.tick()
+		g.tick()
+		if g.fa.nInjected() != 1 || g.state(m.ID) != notify.StateHeldDraft {
+			t.Fatalf("%s: injected %d state %s, want one paste and held_draft", name, g.fa.nInjected(), g.state(m.ID))
+		}
+	}
+}
+
+// The paste is confirmed only by the exact nudge for the current count.
+func TestTwoMessageNudgeNeedsExactMatch(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	m2 := g.send(t, "y")
+	old := screen.State{InputVisible: true, InputEmpty: false, Draft: nudge1}
+	g.fa.set(func(f *fakeAgents) { f.scrSeq = append([]screen.State{readyScreen}, repeat(old, 60)...) })
+	g.tick()
+	if g.fa.enters() != 0 || g.state(m2.ID) != notify.StateQueued {
+		t.Fatalf("enters %d state %s: a 1-message nudge confirmed a 2-message paste", g.fa.enters(), g.state(m2.ID))
+	}
+}
+
+// Deliver now clears a stranded nudge only when the box holds exactly the
+// nudge, never text around it.
+func TestDeliverNowDoesNotClearNudgePlusText(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: "my words " + notify.Nudge([]notify.Message{m})}
+		f.pasted = false
+	})
+	g.c.add(confirmWindow)
+	g.tick()
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	for _, p := range g.fa.injected {
+		if string(p) == "\x15" {
+			t.Fatal("Ctrl-U sent over nudge plus user text")
+		}
 	}
 }

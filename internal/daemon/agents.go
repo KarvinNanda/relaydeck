@@ -287,9 +287,18 @@ func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
 	return x.d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, x.d.opts.OwnPIDs())
 }
 
-func (x agentsAdapter) UserTyped(ws, folder string) bool {
+func (x agentsAdapter) UserTyped(ws, folder string) (bool, time.Time) {
 	a := x.d.running(delivery.Target{WS: ws, Folder: folder})
-	return a != nil && a.UserTyped()
+	if a == nil {
+		return false, time.Time{}
+	}
+	return a.UserTyped(), a.LastInput()
+}
+
+func (x agentsAdapter) ClearTyped(ws, folder string, last time.Time) {
+	if a := x.d.running(delivery.Target{WS: ws, Folder: folder}); a != nil {
+		a.ClearTypedIf(last)
+	}
 }
 
 func (x agentsAdapter) Inject(ws, folder string, p []byte) error {
