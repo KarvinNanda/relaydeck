@@ -30,11 +30,27 @@ const (
 	stopSettle = 500 * time.Millisecond
 )
 
-// queryReplyRe matches a frame made only of terminal query replies: cursor
-// position (R), device attributes (c), device status (n). When the replay is
-// written into xterm.js, it answers the queries inside the old output; those
-// answers must not reach the agent as typed input.
-var queryReplyRe = regexp.MustCompile(`^(?:\x1b\[[0-9;?]*[Rcn])+$`)
+// queryReplyRe matches a frame made only of terminal query replies. When the
+// replay is written into xterm.js, it answers the queries inside the old
+// output; those answers must not reach the agent as typed input. Replies:
+//   - CSI: cursor position (R), device status (n), DA1 and DA2 (c, with an
+//     optional ? or > prefix);
+//   - DECRQM mode reports: ESC [ ? or ESC [, digits, $y;
+//   - DCS replies: ESC P ... ESC \ (DECRQSS, XTGETTCAP);
+//   - OSC 10, 11 and 12 color reports, ended by BEL or ESC \.
+//
+// Shift+F3 and Ctrl+F3 send ESC [ 1 ; 2 R (or 5 R), which looks like a cursor
+// position reply. They are dropped only inside the 1 s window after a replay
+// (queryReplyWindow), never later.
+//
+// The OSC and DCS bodies cannot contain ESC or BEL, so a reply never swallows
+// typed text that follows it.
+var queryReplyRe = regexp.MustCompile(
+	`^(?:\x1b\[[?>]?[0-9;]*[Rcn]` +
+		`|\x1b\[\??[0-9;]*\$y` +
+		`|\x1bP[^\x1b\x07]*\x1b\\` +
+		`|\x1b\]1[0-2];[^\x1b\x07]*(?:\x07|\x1b\\)` +
+		`)+$`)
 
 func (a *api) wsRoutes() http.Handler {
 	m := http.NewServeMux()

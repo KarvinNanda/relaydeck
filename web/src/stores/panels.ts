@@ -14,7 +14,7 @@ export type OpenResult = { ok: true } | { ok: false; reason: string }
 
 // The grid has at most 2x2 panels (global constraint: max 4 terminal panels).
 export const MAX_PANELS = 4
-export const tooManyPanels = `At most ${MAX_PANELS} terminals can be open. Close one first.`
+export const tooManyPanels = `At most ${MAX_PANELS} panels can be open. Close one first.`
 
 export function createPanels() {
   const list = reactive<PanelKey[]>([])

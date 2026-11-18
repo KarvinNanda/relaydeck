@@ -193,7 +193,7 @@ describe('Sidebar', () => {
     expect(w.find('[role="alert"]').exists()).toBe(false)
     await row(w, 'tf').find('button.node-btn').trigger('click')
     const alert = w.find('[role="alert"]')
-    expect(alert.text()).toContain('At most 4 terminals can be open. Close one first.')
+    expect(alert.text()).toContain('At most 4 panels can be open. Close one first.')
     await alert.find('button[aria-label="Dismiss"]').trigger('click')
     expect(w.find('[role="alert"]').exists()).toBe(false)
     // a later successful open clears an old alert as well
