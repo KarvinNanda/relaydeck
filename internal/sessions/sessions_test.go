@@ -159,3 +159,119 @@ func TestNoTitleIsEmpty(t *testing.T) {
 		t.Fatalf("title = %q", got)
 	}
 }
+
+// countOpens replaces openFile for one test and returns a pointer to the
+// number of files opened.
+func countOpens(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	orig := openFile
+	openFile = func(p string) (*os.File, error) { n++; return os.Open(p) }
+	t.Cleanup(func() { openFile = orig })
+	return &n
+}
+
+func cacheHas(path string) bool {
+	titleCache.mu.Lock()
+	defer titleCache.mu.Unlock()
+	_, ok := titleCache.m[path]
+	return ok
+}
+
+func TestSecondListDoesNotReread(t *testing.T) {
+	home, dir := setup(t, map[string]string{idA + ".jsonl": idA + ".jsonl", idB + ".jsonl": idB + ".jsonl"})
+	opens := countOpens(t)
+	first, _ := List(home, dir)
+	if *opens != 2 {
+		t.Fatalf("first List opened %d files, want 2", *opens)
+	}
+	second, _ := List(home, dir)
+	if *opens != 2 {
+		t.Fatalf("second List re-read files: %d opens", *opens)
+	}
+	if len(second) != 2 || byID(t, second, idB).Title != byID(t, first, idB).Title {
+		t.Fatalf("cached result differs: %+v vs %+v", first, second)
+	}
+}
+
+func TestChangedFileIsReparsed(t *testing.T) {
+	home, dir := setup(t, nil)
+	pd := filepath.Join(home, "projects", paths.ProjectDirName(dir))
+	p := filepath.Join(pd, idA+".jsonl")
+	writeRaw(t, home, dir, idA+".jsonl", `{"type":"user","message":{"content":"one"}}`+"\n")
+	opens := countOpens(t)
+	ss, _ := List(home, dir)
+	if byID(t, ss, idA).Title != "one" {
+		t.Fatalf("title = %q", ss[0].Title)
+	}
+	// Same size, new mtime.
+	writeRaw(t, home, dir, idA+".jsonl", `{"type":"user","message":{"content":"two"}}`+"\n")
+	later := time.Now().Add(time.Hour)
+	os.Chtimes(p, later, later)
+	ss, _ = List(home, dir)
+	if byID(t, ss, idA).Title != "two" || *opens != 2 {
+		t.Fatalf("mtime change: title %q, opens %d", ss[0].Title, *opens)
+	}
+	// Same mtime, new size.
+	writeRaw(t, home, dir, idA+".jsonl", `{"type":"user","message":{"content":"three"}}`+"\n")
+	os.Chtimes(p, later, later)
+	ss, _ = List(home, dir)
+	if byID(t, ss, idA).Title != "three" || *opens != 3 {
+		t.Fatalf("size change: title %q, opens %d", ss[0].Title, *opens)
+	}
+}
+
+func TestDeletedFileDropsFromResultAndCache(t *testing.T) {
+	home, dir := setup(t, map[string]string{idA + ".jsonl": idA + ".jsonl", idB + ".jsonl": idB + ".jsonl"})
+	pd := filepath.Join(home, "projects", paths.ProjectDirName(dir))
+	pa, pb := filepath.Join(pd, idA+".jsonl"), filepath.Join(pd, idB+".jsonl")
+	List(home, dir)
+	if !cacheHas(pa) || !cacheHas(pb) {
+		t.Fatal("entries not cached")
+	}
+	os.Remove(pa)
+	ss, _ := List(home, dir)
+	if len(ss) != 1 || ss[0].ID != idB {
+		t.Fatalf("got %+v", ss)
+	}
+	if cacheHas(pa) || !cacheHas(pb) {
+		t.Fatalf("cache after delete: a=%v b=%v", cacheHas(pa), cacheHas(pb))
+	}
+}
+
+func TestAITitleBeforeCapSurvivesInLargeFile(t *testing.T) {
+	home, dir := setup(t, nil)
+	pad := `{"type":"assistant","message":{"content":"` + strings.Repeat("x", 60*1024) + `"}}` + "\n"
+	var b strings.Builder
+	b.WriteString(`{"type":"ai-title","aiTitle":"Early title"}` + "\n")
+	for b.Len() < maxScan+(1<<20) {
+		b.WriteString(pad)
+	}
+	writeRaw(t, home, dir, idA+".jsonl", b.String())
+	ss, _ := List(home, dir)
+	if got := byID(t, ss, idA).Title; got != "Early title" {
+		t.Fatalf("title = %q", got)
+	}
+}
+
+func TestTitleWhitespaceCollapsed(t *testing.T) {
+	home, dir := setup(t, nil)
+	writeRaw(t, home, dir, idA+".jsonl", `{"type":"ai-title","aiTitle":"Line one\n  line\ttwo"}`+"\n")
+	writeRaw(t, home, dir, idB+".jsonl", `{"type":"user","message":{"content":"first\n\nsecond   third"}}`+"\n")
+	ss, _ := List(home, dir)
+	if got := byID(t, ss, idA).Title; got != "Line one line two" {
+		t.Fatalf("ai title = %q", got)
+	}
+	if got := byID(t, ss, idB).Title; got != "first second third" {
+		t.Fatalf("prompt title = %q", got)
+	}
+}
+
+func TestEachLineAfterLongLineStillSplits(t *testing.T) {
+	long := strings.Repeat("a", 100*1024)
+	var got []int
+	eachLine(strings.NewReader(long+"\nshort\nlast"), func(b []byte) { got = append(got, len(b)) })
+	if len(got) != 3 || got[0] != len(long) || got[1] != 5 || got[2] != 4 {
+		t.Fatalf("line lengths = %v", got)
+	}
+}
