@@ -4,7 +4,7 @@ relaydeck is a local web app that runs several Claude Code agents at once, one p
 
 Example: you tell the backend agent "when you are running, tell fe-admin and fe-customer". The agent calls a tool, and relaydeck delivers the message to the agents of those folders, starting them if needed.
 
-Status: early development. The daemon, the agent messaging and the web UI (sidebar, terminal panels, Messages drawer) are built. The full run with real Claude Code agents, and Windows, are not verified yet.
+Status: early development. The daemon, the agent messaging and the web UI (sidebar, terminal panels, Messages drawer) are built. The core flow (two real agents messaging each other, auto-start, nudge, read, hop limit, resume continuity) was verified end to end on macOS with Claude Code 2.1.327. Windows and per-folder cswap accounts are not verified.
 
 ## Requirements
 
