@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/KarvinNanda/relaydeck/internal/paths"
 	"github.com/KarvinNanda/relaydeck/internal/screen"
 	"github.com/aymanbagabas/go-pty"
 )
@@ -76,7 +77,7 @@ func (m *Manager) Start(id string, cmd launch.Command) (*Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, other := range m.agents {
-		if !other.isStopped() && other.dir == dir {
+		if !other.isStopped() && paths.EqualNFC(other.dir, dir) {
 			return nil, ErrAlreadyRunning
 		}
 	}

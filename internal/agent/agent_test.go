@@ -596,3 +596,25 @@ func TestResizeScreenBeforePTY(t *testing.T) {
 		t.Fatalf("screen cols at PTY resize = %d (called %v), want 90", colsAtPTY, called)
 	}
 }
+
+// The same-folder guard treats NFC and NFD spellings of one folder as the
+// same. Only darwin has a file system that opens a folder by either form.
+func TestSameDirNFCvsNFDRejected(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs APFS, which finds a folder by NFC or NFD name")
+	}
+	m := newMgr(t, nil)
+	base := t.TempDir()
+	nfd, nfc := base+"/café", base+"/café"
+	if err := os.Mkdir(nfd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := m.Start("a", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: nfd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(time.Second)
+	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: nfc}); err != ErrAlreadyRunning {
+		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}
