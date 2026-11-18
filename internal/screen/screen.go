@@ -21,6 +21,10 @@ const (
 	nbsp       = " " // Claude Code puts a no-break space after the prompt mark
 	rule       = "─"
 	ruleRatio  = 0.9
+	// minRuleCells is the least number of rule characters in a rule that
+	// carries a label, so a short label line is not taken for a rule.
+	minRuleCells = 10
+	boxChars     = "│╭╮╰╯┌┐└┘├┤┬┴┼"
 )
 
 // State is what the screen shows right now.
@@ -169,15 +173,38 @@ func rowText(em *vt.SafeEmulator, y, w int) string {
 	return b.String()
 }
 
+// isRule reports whether row y is a horizontal rule across the screen.
+// relaydeck starts claude with --name ws/folder, and Claude Code prints that
+// name inside the top rule of the input box ("──── ws/folder ─"). So one
+// label run is allowed between rule characters, as long as it holds no
+// box-drawing characters, the row starts and ends with the rule character and
+// spans at least ruleRatio of the width.
 func isRule(em *vt.SafeEmulator, y, w int) bool {
 	if cellContent(em, 0, y) != rule {
 		return false
 	}
-	n := 0
-	for x := 0; x < w; x++ {
-		if cellContent(em, x, y) == rule {
+	last := w - 1
+	for last > 0 && strings.TrimSpace(cellContent(em, last, y)) == "" {
+		last--
+	}
+	if cellContent(em, last, y) != rule || float64(last+1) < ruleRatio*float64(w) {
+		return false
+	}
+	n, runs, inLabel := 0, 0, false
+	for x := 0; x <= last; x++ {
+		c := cellContent(em, x, y)
+		if c == rule {
 			n++
+			inLabel = false
+			continue
+		}
+		if strings.ContainsAny(c, boxChars) {
+			return false
+		}
+		if !inLabel {
+			runs++
+			inLabel = true
 		}
 	}
-	return float64(n) >= ruleRatio*float64(w)
+	return runs <= 1 && n >= minRuleCells
 }

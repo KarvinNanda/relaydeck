@@ -53,6 +53,10 @@ func TestStateFromFixtures(t *testing.T) {
 		{"nudge-pasted-60", true, false, false, false, false},
 		{"busy-60", true, true, true, false, false},
 		{"trust-dialog-60", false, false, false, true, false},
+		// relaydeck starts claude with --name ws/folder, and Claude Code prints
+		// that name inside the top rule of the input box.
+		{"prompt-empty-named-77", true, true, false, false, true},
+		{"prompt-draft-named-77", true, false, false, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -193,5 +197,46 @@ func TestPanelCharsBelowAnchoredBoxNotReady(t *testing.T) {
 	s.Write(boxFrame(26, "╭────╮", "footer"))
 	if st := s.State(); st.Ready() {
 		t.Fatalf("panel chars below an anchored box must not be Ready: %+v", st)
+	}
+}
+
+// labelledFrame draws an input box whose top rule is the given row (width w),
+// with an empty prompt and a plain lower rule anchored above one footer row.
+func labelledFrame(w, h int, top string) []byte {
+	var b strings.Builder
+	b.WriteString("\x1b[2J")
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", h-3, top)
+	fmt.Fprintf(&b, "\x1b[%d;1H❯"+nbsp, h-2)
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", h-1, strings.Repeat("─", w))
+	fmt.Fprintf(&b, "\x1b[%d;3Hfooter", h)
+	return []byte(b.String())
+}
+
+func TestLabelledTopRule(t *testing.T) {
+	label := func(w int, name string) string {
+		return strings.Repeat("─", w-len(name)-3) + " " + name + " ─"
+	}
+	tests := []struct {
+		name  string
+		w     int
+		top   string
+		ready bool
+	}{
+		{"short name at 60 cols", 60, label(60, "demo/be"), true},
+		{"long name at 60 cols", 60, label(60, "game-lounge/fe-customer"), true},
+		{"two labels", 80, strings.Repeat("─", 20) + " a " + strings.Repeat("─", 20) + " b " + strings.Repeat("─", 31), false},
+		{"label with box chars", 80, strings.Repeat("─", 60) + " │menu│ " + strings.Repeat("─", 12), false},
+		{"label at the end without closing rule", 80, strings.Repeat("─", 70) + " demo/be", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(tc.w, 30, nil)
+			if _, err := s.Write(labelledFrame(tc.w, 30, tc.top)); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.State().Ready(); got != tc.ready {
+				t.Fatalf("Ready = %v, want %v (%+v)", got, tc.ready, s.State())
+			}
+		})
 	}
 }
