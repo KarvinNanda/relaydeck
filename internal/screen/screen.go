@@ -47,6 +47,9 @@ type Screen struct {
 	em    *vt.SafeEmulator
 	reply io.Writer
 	osc   oscFilter
+	// cols and rows are the size last asked for, so reset can rebuild the
+	// emulator even when the old one is too broken to ask.
+	cols, rows int
 }
 
 // New creates a screen of the given size. The emulator answers terminal
@@ -57,7 +60,7 @@ type Screen struct {
 // the closed flag unsynchronised), so Screen has no Close. One goroutine per
 // Screen is the cost.
 func New(cols, rows int, reply io.Writer) *Screen {
-	s := &Screen{reply: reply}
+	s := &Screen{reply: reply, cols: cols, rows: rows}
 	s.em = s.newEmulator(cols, rows)
 	return s
 }
@@ -110,24 +113,37 @@ func (s *Screen) Write(p []byte) (n int, err error) {
 // old emulator's drain goroutine keeps running on the old instance; that is
 // the same one-goroutine cost New already documents.
 func (s *Screen) reset() {
-	w, h := s.em.Width(), s.em.Height()
-	s.em = s.newEmulator(w, h)
+	s.em = s.newEmulator(s.cols, s.rows)
 }
 
 // Resize changes the emulator size. Claude Code redraws after a resize, so
-// the caller should keep feeding PTY output.
+// the caller should keep feeding PTY output. Like Write, it never panics: on
+// a panic the emulator is replaced by a blank one of the new size.
 func (s *Screen) Resize(cols, rows int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cols, s.rows = cols, rows
+	defer func() {
+		if r := recover(); r != nil {
+			s.reset()
+		}
+	}()
 	s.em.Resize(cols, rows)
 }
 
-// State reads the current screen.
-func (s *Screen) State() State {
+// State reads the current screen. Like Write, it never panics: on a panic it
+// returns the zero State (no input box, so delivery waits) and replaces the
+// emulator by a blank one.
+func (s *Screen) State() (st State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			s.reset()
+			st = State{}
+		}
+	}()
 	w, h := s.em.Width(), s.em.Height()
-	var st State
 	rows := make([]string, h)
 	for y := 0; y < h; y++ {
 		rows[y] = rowText(s.em, y, w)

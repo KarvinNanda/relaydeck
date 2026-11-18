@@ -12,7 +12,9 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -29,6 +31,9 @@ const (
 	pollEvery     = 25 * time.Millisecond
 	pollMax       = 20 // 500 ms
 	tickEvery     = time.Second
+	// maxNudges is how many times one message is nudged when the nudge keeps
+	// being swallowed (no UserPromptSubmit). After that it stays nudged.
+	maxNudges = 3
 )
 
 // Agents is what the delivery loop needs from the agent manager.
@@ -71,6 +76,7 @@ type Deliverer struct {
 	noStart    map[Target]time.Time       // do not call Start before this time
 	extWarned  map[Target]time.Time       // last ExternalOpen warning
 	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
+	swallowed  map[Target]map[string]int  // swallowed nudges per message id
 
 	pmu     sync.Mutex
 	prompts map[Target]time.Time // when UserPromptSubmit last fired, not yet seen by Tick
@@ -92,6 +98,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		noStart:    map[Target]time.Time{},
 		extWarned:  map[Target]time.Time{},
 		renudged:   map[Target]map[string]bool{},
+		swallowed:  map[Target]map[string]int{},
 		prompts:    map[Target]time.Time{},
 		asks:       map[Target]time.Time{},
 	}, nil
@@ -116,8 +123,20 @@ func (d *Deliverer) Run(ctx context.Context) {
 		case <-t.C:
 		case <-d.kick:
 		}
-		d.Tick(ctx)
+		d.safeTick(ctx)
 	}
+}
+
+// safeTick runs one Tick. A panic (a bad screen state, a bug in Agents) is
+// logged with its stack and the loop keeps running. Tick's own deferred
+// Unlock runs while the panic unwinds, so the next Tick can take mu.
+func (d *Deliverer) safeTick(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			d.log.Error("delivery: tick panic", "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+		}
+	}()
+	d.Tick(ctx)
 }
 
 // PromptSubmitted records that the hook UserPromptSubmit fired. The next Tick
@@ -178,12 +197,22 @@ func (d *Deliverer) tickTarget(t Target) {
 	}
 
 	if n, ok := d.nudges[t]; ok && !d.now().Before(n.at.Add(confirmWindow)) {
-		// No UserPromptSubmit: the nudge was swallowed. Queue it again.
+		// No UserPromptSubmit: the nudge was swallowed. Queue it again, but
+		// only until maxNudges nudges were swallowed for it. After that it
+		// stays nudged (the agent was told) and only DeliverNow nudges it.
 		delete(d.nudges, t)
 		for _, m := range d.r.Pending(t.WS, t.Folder) {
 			for _, id := range n.ids {
 				if m.ID == id && m.State == notify.StateNudged {
-					d.set(m, notify.StateQueued)
+					if d.swallowed[t] == nil {
+						d.swallowed[t] = map[string]int{}
+					}
+					d.swallowed[t][id]++
+					if d.swallowed[t][id] < maxNudges {
+						d.set(m, notify.StateQueued)
+					} else {
+						d.log.Warn("delivery: nudge swallowed too often, not nudging again", "ws", t.WS, "agent", t.Folder, "message_id", id)
+					}
 				}
 			}
 		}
@@ -195,6 +224,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.deliverNow, t)
 		delete(d.noStart, t)
 		delete(d.renudged, t)
+		delete(d.swallowed, t)
 		return
 	}
 	d.pruneRenudged(t, pending)
@@ -228,7 +258,7 @@ func (d *Deliverer) tickTarget(t Target) {
 			// Told but still unread: one more nudge once its nudge is
 			// confirmed (see waiting below), or any number when the user
 			// asks with DeliverNow.
-			if forced || !d.renudged[t][m.ID] {
+			if forced || (!d.renudged[t][m.ID] && d.swallowed[t][m.ID] < maxNudges) {
 				cand = append(cand, m)
 			}
 		}
@@ -271,17 +301,18 @@ func (d *Deliverer) tickTarget(t Target) {
 
 // pruneRenudged forgets re-nudge marks for messages that are no longer pending.
 func (d *Deliverer) pruneRenudged(t Target, pending []notify.Message) {
-	r := d.renudged[t]
-	if len(r) == 0 {
-		return
-	}
 	live := make(map[string]bool, len(pending))
 	for _, m := range pending {
 		live[m.ID] = true
 	}
-	for id := range r {
+	for id := range d.renudged[t] {
 		if !live[id] {
-			delete(r, id)
+			delete(d.renudged[t], id)
+		}
+	}
+	for id := range d.swallowed[t] {
+		if !live[id] {
+			delete(d.swallowed[t], id)
 		}
 	}
 }
@@ -306,6 +337,7 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 	// The process that was nudged is gone, so a nudged message is unread
 	// and must be nudged again after the restart.
 	delete(d.nudges, t)
+	delete(d.swallowed, t) // a fresh process gets its full set of nudges
 	for _, m := range pending {
 		if m.State == notify.StateHeldExternal || m.State == notify.StateNudged {
 			d.set(m, notify.StateQueued)

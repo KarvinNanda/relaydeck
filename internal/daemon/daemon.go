@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -248,9 +249,9 @@ func (d *Daemon) Run(ctx context.Context) {
 	msgs, cancelMsgs := d.router.Subscribe()
 	var wg sync.WaitGroup
 	wg.Add(3)
-	go func() { defer wg.Done(); d.deliv.Run(ctx) }()
-	go func() { defer wg.Done(); d.fanIn(ctx, evs, msgs) }()
-	go func() { defer wg.Done(); d.pollCswap(ctx) }()
+	safeGo(d.log, "delivery", func() { defer wg.Done(); d.deliv.Run(ctx) })
+	safeGo(d.log, "fan-in", func() { defer wg.Done(); d.fanIn(ctx, evs, msgs) })
+	safeGo(d.log, "cswap-poll", func() { defer wg.Done(); d.pollCswap(ctx) })
 	<-ctx.Done()
 	wg.Wait()
 	cancelEvs()
@@ -297,14 +298,28 @@ func (d *Daemon) stopAll() {
 		}
 		d.life.markIntended(a.ID())
 		wg.Add(1)
-		go func() {
+		safeGo(d.log, "stop-agent", func() {
 			defer wg.Done()
 			// A draft is not on the plain empty box, so it is killed too.
 			if err := d.stopAgent(a); err != nil {
 				d.log.Error("stop agent failed", "agent_id", a.ID(), "ws", t.WS, "folder", t.Folder, "error", err.Error())
 			}
 			d.reg.revoke(a.ID())
-		}()
+		})
 	}
 	wg.Wait()
+}
+
+// safeGo runs fn in a new goroutine. A panic in fn is logged with its stack
+// and ends only that goroutine, not the daemon. fn should call its own
+// wg.Done with defer, which runs before the recover here.
+func safeGo(log *slog.Logger, name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("goroutine panic", "goroutine", name, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			}
+		}()
+		fn()
+	}()
 }

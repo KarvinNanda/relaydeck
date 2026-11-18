@@ -130,11 +130,11 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	}
 	d.setSessionID(ws, folder, sid)
 	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
-	go d.watch(a, t, runtimeDir, time.Now())
+	safeGo(d.log, "watch", func() { d.watch(a, t, runtimeDir, time.Now()) })
 	if d.opts.CswapPath != "" {
 		// Read the default login now, so the "on default login" flag of
 		// this agent is not up to 30 s old.
-		go d.refreshAccount(context.Background())
+		safeGo(d.log, "refresh-account", func() { d.refreshAccount(context.Background()) })
 	}
 	return nil
 }
