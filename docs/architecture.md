@@ -99,7 +99,7 @@ There is no container, no reverse proxy and no database. All persistent state is
 | 9 | Print `relaydeck running: http://127.0.0.1:<port>/#token=<token>` on stdout | `serve` |
 | 10 | Start the delivery loop, the event fan-in and the cswap poll, and block | `Daemon.Run` |
 
-No agent starts at boot. An agent starts when the user presses Start in the UI (`POST /api/agents/{ws}/{name}/start`), or when the delivery loop has a message for a folder whose agent is not running.
+No agent starts at boot. An agent starts when the user clicks "New session" or "Resume session" in the UI, or picks a session in the Sessions list (`POST /api/agents/{ws}/{name}/start`), or when the delivery loop has a message for a folder whose agent is not running.
 
 Starting one agent (`daemon.start`):
 

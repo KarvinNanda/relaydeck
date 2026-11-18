@@ -13,6 +13,7 @@ Thumbs.db
 # Docs stay local, except the as-built architecture doc
 docs/*
 !docs/architecture.md
+!docs/guide.md
 
 # Throwaway spike code (findings are kept locally under docs/)
 /spikes/

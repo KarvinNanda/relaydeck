@@ -2,6 +2,8 @@
 
 relaydeck is a local web app that runs several Claude Code agents at once, one per folder, and lets the agents message each other. It is a Go daemon with a Vue UI. Each agent is the real Claude Code TUI running in a terminal panel, so slash commands, `/resume`, skills, hooks and CLAUDE.md all work as usual.
 
+**New here? Read [docs/guide.md](docs/guide.md).** It explains what relaydeck is, how it differs from the Claude Code CLI, and how to install and use it.
+
 Example: you tell the backend agent "when you are running, tell fe-admin and fe-customer". The agent calls a tool, and relaydeck delivers the message to the agents of those folders, starting them if needed.
 
 Status: early development. The daemon, the agent messaging and the web UI (sidebar, terminal panels, Messages drawer) are built. The core flow (two real agents messaging each other, auto-start, nudge, read, hop limit, resume continuity) was verified end to end on macOS with Claude Code 2.1.327. Windows and per-folder cswap accounts are not verified.
