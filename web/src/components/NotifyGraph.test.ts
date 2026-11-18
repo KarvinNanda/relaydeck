@@ -67,6 +67,24 @@ describe('NotifyGraph', () => {
     }
   })
 
+  it('measures the real text width when the browser can, instead of assuming 0.6 em', async () => {
+    // jsdom has no layout: give the probe span 12 px per character.
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const w = this.classList.contains('probe') ? (this.textContent ?? '').length * 12 : 0
+      return { width: w, height: 0, top: 0, left: 0, right: w, bottom: 0, x: 0, y: 0, toJSON() {} } as DOMRect
+    })
+    try {
+      const { w } = await setup([])
+      for (const g of w.findAll('g.node')) {
+        const text = g.find('text')
+        const textEnd = Number(text.attributes('x')) + text.text().length * 12
+        expect(textEnd + 8).toBeLessThanOrEqual(Number(g.find('rect').attributes('x')) + Number(g.find('rect').attributes('width')))
+      }
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('draws text at 14 units and never scales the SVG below 1', async () => {
     const { w } = await setup([])
     const svg = w.find('svg.graph')
@@ -151,6 +169,23 @@ describe('NotifyGraph', () => {
     }
   })
 
+  it('draws no time label when no spot clears the nodes, and shows the time in the legend', async () => {
+    const two = [folder('be', 'busy'), folder('fe-admin', 'idle')]
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const w = this.classList.contains('probe') ? (this.textContent ?? '').length * 12 : 0
+      return { width: w, height: 0, top: 0, left: 0, right: w, bottom: 0, x: 0, y: 0, toJSON() {} } as DOMRect
+    })
+    try {
+      const { m } = await setup([msg('be', 'fe-admin', 'held_draft', new Date(2026, 10, 17, 10, 42, 5))])
+      const w = mount(NotifyGraph, { props: { messages: m, folders: two, workspace: 'w' } })
+      await flushPromises()
+      expect(w.find('text.when').exists()).toBe(false)
+      expect(w.find('.gl > span').text()).toBe('latest 10:42')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('keeps pairs apart even when folder names contain the separator', async () => {
     const odd = [folder('a>b', 'idle'), folder('c', 'idle'), folder('a', 'idle'), folder('b>c', 'idle')]
     const { m } = await setup([
@@ -173,6 +208,13 @@ describe('NotifyGraph', () => {
       ['dashed'],
       ['dotted'],
     ])
+  })
+
+  it('draws the latest legend swatch solid and dashed, because a held latest edge is dashed', async () => {
+    const { w } = await setup([])
+    const lines = w.findAll('.gl > span')[0].findAll('line')
+    expect(lines.map((l) => l.classes().filter((c) => c !== 'edge' && c !== 'latest'))).toEqual([['solid'], ['dashed']])
+    for (const l of lines) expect(l.classes()).toContain('latest')
   })
 
   it('says so when the workspace has no folders', async () => {

@@ -196,7 +196,7 @@ describe('Timeline', () => {
     const { w } = await setup([msg('m1', 'queued', { body })])
     const cell = rows(w)[0].find('.cell-msg')
     const b = cell.find('button.exp')
-    expect(b.attributes('aria-label')).toBe('Full message')
+    expect(b.attributes('aria-label')).toBe('Full message from be to fe-admin')
     expect(b.attributes('aria-expanded')).toBe('false')
     // the button holds only the chevron; the text is outside it
     expect(b.text()).toBe('')

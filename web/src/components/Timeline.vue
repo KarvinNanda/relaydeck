@@ -132,7 +132,7 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
         <span class="time" role="cell">{{ clock(m.created) }}</span>
         <span class="route" role="cell" :title="`${m.from} -> ${m.to}`">{{ m.from }} -&gt; {{ m.to }}</span>
         <span class="cell-msg" role="cell">
-          <button class="exp" type="button" aria-label="Full message" :aria-expanded="open.has(m.id)" @click="toggle(m.id)">
+          <button class="exp" type="button" :aria-label="`Full message from ${m.from} to ${m.to}`" :aria-expanded="open.has(m.id)" @click="toggle(m.id)">
             <Icon :name="open.has(m.id) ? 'down' : 'right'" />
           </button>
           <span class="lbl">message: </span>
@@ -196,7 +196,8 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
 
 .cell-msg { display: flex; align-items: flex-start; gap: var(--s-2); min-width: 0; }
 .exp {
-  flex: none; width: 14px; height: 18px; padding: 0; margin: 0;
+  /* 24x24 hit area; the negative margins keep the 14x18 footprint of the row */
+  flex: none; width: 24px; height: 24px; padding: 0; margin: -3px -5px -3px -5px;
   display: inline-grid; place-items: center;
   border: 0; border-radius: var(--r-sm); background: none; color: var(--text-muted); cursor: pointer;
 }
