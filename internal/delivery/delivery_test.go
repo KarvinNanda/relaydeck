@@ -607,7 +607,10 @@ func (a blockingAgents) Inject(ws, folder string, p []byte) error {
 	return a.fakeAgents.Inject(ws, folder, p)
 }
 
-func TestPromptSubmittedDoesNotWaitForTick(t *testing.T) {
+// returnsDuringTick checks that call returns while Tick is blocked inside
+// sendNudge (a slow PTY write). Hook and UI requests must not wait for Tick.
+func returnsDuringTick(t *testing.T, call func(d *Deliverer)) {
+	t.Helper()
 	g := newRig()
 	g.send(t, "x")
 	ba := blockingAgents{g.fa, make(chan struct{}, 1), make(chan struct{})}
@@ -621,15 +624,36 @@ func TestPromptSubmittedDoesNotWaitForTick(t *testing.T) {
 		t.Fatal("Tick never reached Inject")
 	}
 	done := make(chan struct{})
-	go func() { d.PromptSubmitted("ws", "fe"); close(done) }()
+	go func() { call(d); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		close(ba.release)
-		t.Fatal("PromptSubmitted waited for Tick")
+		t.Fatal("call waited for Tick")
 	}
 	close(ba.release)
 	<-tickDone
+}
+
+func TestPromptSubmittedDoesNotWaitForTick(t *testing.T) {
+	returnsDuringTick(t, func(d *Deliverer) { d.PromptSubmitted("ws", "fe") })
+}
+
+func TestDeliverNowDoesNotWaitForTick(t *testing.T) {
+	returnsDuringTick(t, func(d *Deliverer) { d.DeliverNow("ws", "fe") })
+}
+
+// promptNoWait calls PromptSubmitted from inside a running Tick. If it ever
+// waits for Tick, the test fails after a timeout instead of hanging.
+func promptNoWait(t *testing.T, d *Deliverer) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { d.PromptSubmitted("ws", "fe"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("PromptSubmitted waited for Tick")
+	}
 }
 
 // hookAgents runs hook after each Inject, like a hook request that arrives
@@ -655,7 +679,7 @@ func TestPromptBeforeNudgeDoesNotConfirm(t *testing.T) {
 			fired = true
 			// A late hook for an older prompt lands during the paste,
 			// before the nudge time is recorded.
-			d.PromptSubmitted("ws", "fe")
+			promptNoWait(t, d)
 			g.c.add(100 * time.Millisecond)
 		}
 	}})
@@ -685,7 +709,7 @@ func TestPromptRightAfterEnterConfirms(t *testing.T) {
 		if string(p) == "\r" && !fired {
 			fired = true
 			// The hook fires within milliseconds of Enter.
-			d.PromptSubmitted("ws", "fe")
+			promptNoWait(t, d)
 			g.c.add(100 * time.Millisecond)
 		}
 	}})
@@ -779,5 +803,69 @@ func TestNudgedStaysNudgedBehindDraft(t *testing.T) {
 	g.tick()
 	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
 		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestRenudgedPrunedWhenRead(t *testing.T) {
+	g := newRig()
+	a := g.send(t, "x")
+	b := g.send(t, "y")
+	g.tick()
+	g.confirm()
+	g.tick() // both re-nudged: both marked
+	tg := Target{"ws", "fe"}
+	if r := g.d.renudged[tg]; !r[a.ID] || !r[b.ID] {
+		t.Fatalf("marks %v", r)
+	}
+	// The agent reads only the oldest message (byte budget of 1).
+	if msgs, left := g.r.ReadN("ws", "fe", 1); len(msgs) != 1 || msgs[0].ID != a.ID || left != 1 {
+		t.Fatalf("ReadN got %d, left %d", len(msgs), left)
+	}
+	g.tick()
+	if r := g.d.renudged[tg]; r[a.ID] || !r[b.ID] || len(r) != 1 {
+		t.Fatalf("after read marks %v, want only %s", r, b.ID)
+	}
+}
+
+func TestRenudgeMarkSurvivesRestart(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.confirm()
+	g.tick() // re-nudge used
+	g.confirm()
+	if g.fa.nInjected() != 4 || !g.d.renudged[Target{"ws", "fe"}][m.ID] {
+		t.Fatalf("setup: injected %d marks %v", g.fa.nInjected(), g.d.renudged)
+	}
+	// The agent exits: the message is requeued and the agent is started.
+	g.fa.set(func(f *fakeAgents) { f.running = false; f.status = agent.StatusStopped })
+	g.tick()
+	if g.state(m.ID) != notify.StateQueued || g.fa.starts != 1 {
+		t.Fatalf("state %s starts %d", g.state(m.ID), g.fa.starts)
+	}
+	// The new process is idle: one nudge, sent for a queued message.
+	g.fa.set(func(f *fakeAgents) { f.running = true; f.status = agent.StatusIdle })
+	g.tick()
+	if g.fa.nInjected() != 6 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+	// Confirmed, idle again, still unread: the mark still holds, no more nudges.
+	g.confirm()
+	g.tick()
+	g.tick()
+	if g.fa.nInjected() != 6 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestDeliverNowTTLFromAsk(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.d.DeliverNow("ws", "fe")
+	g.c.add(6 * time.Second) // no tick saw the ask before it expired
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("expired ask used: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
 	}
 }

@@ -3,9 +3,10 @@
 //
 // A nudged message stays unread until the agent calls read_messages. Once its
 // nudge is confirmed and the agent is idle again with an empty input box, the
-// loop nudges it one more time, and never again after that, so an agent that
-// ignores it cannot cause a loop. A DeliverNow request from the user always
-// includes nudged messages.
+// loop re-nudges it at most once per message, so an agent that ignores it
+// cannot cause a loop. A restart or a swallowed nudge requeues it, and a
+// queued message is always nudged, but the one re-nudge is never given back.
+// A DeliverNow request from the user always includes nudged messages.
 package delivery
 
 import (
@@ -51,8 +52,9 @@ type nudge struct {
 // Deliverer moves pending messages toward their targets. Delivery state is
 // guarded by mu, so Tick may be called from several goroutines. Tick holds mu
 // for a long time (process checks, paste polling), so prompt confirmations
-// from the hook handler go through the small pmu instead. Lock order is always
-// mu then pmu.
+// from the hook handler and DeliverNow requests from the UI go through the
+// small pmu instead, and tickTarget takes them from there. Lock order is
+// always mu then pmu.
 type Deliverer struct {
 	r          *notify.Router
 	a          Agents
@@ -65,13 +67,14 @@ type Deliverer struct {
 
 	mu         sync.Mutex
 	nudges     map[Target]nudge
-	deliverNow map[Target]time.Time       // when DeliverNow was asked
+	deliverNow map[Target]time.Time       // DeliverNow asks taken from pmu, by ask time
 	noStart    map[Target]time.Time       // do not call Start before this time
 	extWarned  map[Target]time.Time       // last ExternalOpen warning
 	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
 
 	pmu     sync.Mutex
 	prompts map[Target]time.Time // when UserPromptSubmit last fired, not yet seen by Tick
+	asks    map[Target]time.Time // when DeliverNow was asked, not yet seen by Tick
 }
 
 // New builds a Deliverer. targets lists the agents to check on each Tick (the
@@ -90,6 +93,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		extWarned:  map[Target]time.Time{},
 		renudged:   map[Target]map[string]bool{},
 		prompts:    map[Target]time.Time{},
+		asks:       map[Target]time.Time{},
 	}, nil
 }
 
@@ -125,11 +129,12 @@ func (d *Deliverer) PromptSubmitted(ws, folder string) {
 	d.Kick()
 }
 
-// DeliverNow makes the next delivery to this target skip the draft check once.
+// DeliverNow makes the next delivery to this target skip the draft check once
+// and include nudged messages. It never waits for a running Tick.
 func (d *Deliverer) DeliverNow(ws, folder string) {
-	d.mu.Lock()
-	d.deliverNow[Target{ws, folder}] = d.now()
-	d.mu.Unlock()
+	d.pmu.Lock()
+	d.asks[Target{ws, folder}] = d.now()
+	d.pmu.Unlock()
 	d.Kick()
 }
 
@@ -161,6 +166,10 @@ func (d *Deliverer) tickTarget(t Target) {
 	d.pmu.Lock()
 	promptAt, prompted := d.prompts[t]
 	delete(d.prompts, t)
+	if at, ok := d.asks[t]; ok {
+		d.deliverNow[t] = at // the TTL runs from the ask, not from this tick
+		delete(d.asks, t)
+	}
 	d.pmu.Unlock()
 	if n, ok := d.nudges[t]; ok && prompted && !promptAt.Before(n.at) {
 		// The prompt came after the nudge time: the nudge was submitted. An
