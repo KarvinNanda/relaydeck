@@ -59,6 +59,7 @@ func List(claudeHome, canonicalDir string) ([]Session, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			pruneCache(dir, nil)
 			return []Session{}, nil
 		}
 		return nil, err
@@ -174,7 +175,7 @@ func readTitle(path string) (string, error) {
 			return // corrupt line: ignore it, keep the session
 		}
 		switch {
-		case l.Type == "ai-title" && l.AITitle != "":
+		case l.Type == "ai-title" && oneLine(l.AITitle) != "":
 			aiTitle = oneLine(l.AITitle)
 		case l.Type == "user" && firstPrompt == "":
 			var s string
