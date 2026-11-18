@@ -426,3 +426,51 @@ func TestAgentTokenRefusedOnUIRoutes(t *testing.T) {
 		t.Fatal("a refused request changed the state")
 	}
 }
+
+// #43: with two sockets on one agent, only the newest may send query replies,
+// at any time. Typed input from either still passes.
+func TestWSTermOnlyNewestSocketAnswersQueries(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	a, _ := r.d.Agent("w", "a")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	old := r.mustDial(t, "/ws/term/w/a")
+	if _, _, err := old.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	newest := r.mustDial(t, "/ws/term/w/a")
+	if _, _, err := newest.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1200 * time.Millisecond) // past the replay window of both
+
+	input(t, old, "\x1b[3;3R")
+	input(t, old, "a\r")
+	waitFor(t, "line a", 5*time.Second, func() bool { return strings.Contains(r.lines(a.ID()), "a\n") })
+	input(t, newest, "\x1b[4;4R")
+	input(t, newest, "b\r")
+	waitFor(t, "line b", 5*time.Second, func() bool { return strings.Contains(r.lines(a.ID()), "b\n") })
+	if got := r.lines(a.ID()); got != "a\n\x1b[4;4Rb\n" {
+		t.Fatalf("lines = %q, want only the newest socket's reply", got)
+	}
+}
+
+func TestTermSeats(t *testing.T) {
+	var s termSeats
+	a := s.join("x")
+	b := s.join("x")
+	if s.newest("x", a) || !s.newest("x", b) {
+		t.Fatal("the last joined must be the newest")
+	}
+	s.leave("x", b)
+	if !s.newest("x", a) {
+		t.Fatal("after the newest left, the previous one is newest")
+	}
+	s.leave("x", a)
+	s.leave("x", a) // twice is fine
+	if s.newest("x", a) {
+		t.Fatal("nobody is newest in an empty agent")
+	}
+}
