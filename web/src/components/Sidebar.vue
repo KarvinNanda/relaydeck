@@ -187,14 +187,25 @@ async function addWorkspace(): Promise<void> {
 <style scoped>
 .sb { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* the tree scrolls inside the sidebar; the footer below it stays put */
-.sb-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.sb-tree {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+  /* Shade at the top or bottom edge only while there is more to scroll to:
+     the "local" covers move with the content and hide the "scroll" shades
+     once the end is reached. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) center top / 100% 16px local no-repeat,
+    linear-gradient(transparent, var(--surface) 70%) center bottom / 100% 16px local no-repeat,
+    linear-gradient(var(--border-strong), transparent) center top / 100% 8px scroll no-repeat,
+    linear-gradient(transparent, var(--border-strong)) center bottom / 100% 8px scroll no-repeat;
+}
 /* focus rings drawn inside, so the scroll box does not cut them off */
 .sb-tree :focus-visible { outline-offset: -2px; }
 .side-title { padding: 0 var(--s-5) var(--s-3); color: var(--text-muted); font-weight: 400; }
 
 .side-alert {
   display: flex; align-items: flex-start; gap: var(--s-3);
-  margin: 0 var(--s-3) var(--s-4); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
+  margin: 0 var(--s-5) var(--s-4); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
   border: 1px solid var(--amber-line); background: var(--amber-tint); color: var(--amber); border-radius: var(--r-sm);
 }
 .side-alert > .i { margin-top: 8px; }

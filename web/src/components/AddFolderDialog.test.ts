@@ -295,3 +295,14 @@ describe('AddFolderDialog', () => {
     w.unmount()
   })
 })
+
+describe('body scroll lock', () => {
+  it('locks the page scroll while the dialog is open and restores the old value after', () => {
+    document.body.style.overflow = 'auto'
+    const w = mountDialog()
+    expect(document.body.style.overflow).toBe('hidden')
+    w.unmount()
+    expect(document.body.style.overflow).toBe('auto')
+    document.body.style.overflow = ''
+  })
+})
