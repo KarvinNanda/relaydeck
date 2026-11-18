@@ -24,6 +24,7 @@ const (
 	// minRuleCells is the least number of rule characters in a rule that
 	// carries a label, so a short label line is not taken for a rule.
 	minRuleCells = 10
+	trustSpan    = 3 // rows between the two trust dialog options, at most
 	boxChars     = "│╭╮╰╯┌┐└┘├┤┬┴┼"
 )
 
@@ -225,12 +226,12 @@ func (s *Screen) State() (st State) {
 }
 
 // trustLayout reports whether the "Yes, I trust this folder" row at y is an
-// option of the trust dialog: the other option, "No, exit", is on the row
-// directly above or below. Plain text that only says the same words has no
-// such neighbour.
+// option of the trust dialog: the other option, "No, exit", is within
+// trustSpan rows (a blank or description row may sit between the options).
+// Plain text that only says the same words has no such neighbour.
 func trustLayout(rows []string, y int) bool {
-	for _, n := range []int{y - 1, y + 1} {
-		if n >= 0 && n < len(rows) && strings.Contains(rows[n], "No, exit") {
+	for n := y - trustSpan; n <= y+trustSpan; n++ {
+		if n != y && n >= 0 && n < len(rows) && strings.Contains(rows[n], "No, exit") {
 			return true
 		}
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"weak"
 
 	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/KarvinNanda/relaydeck/internal/screen"
 	"github.com/aymanbagabas/go-pty"
 )
 
@@ -696,5 +698,33 @@ func TestInjectTimesOut(t *testing.T) {
 	// A write queued behind the stuck one is dropped, never typed late.
 	if err := a.Inject([]byte("y")); !errors.Is(err, ErrInjectTimeout) {
 		t.Fatalf("second Inject err = %v", err)
+	}
+}
+
+// exitTyped must accept the real screens Claude Code draws once /exit is
+// typed: the slash-command list shows above the box.
+func TestExitTypedOnRealScreens(t *testing.T) {
+	for _, name := range []string{"prompt-slash-exit-100", "prompt-slash-exit-60"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join("..", "screen", "testdata")
+			raw, err := os.ReadFile(filepath.Join(dir, name+".raw"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sz, err := os.ReadFile(filepath.Join(dir, name+".size"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cols, rows int
+			if _, err := fmt.Sscanf(string(sz), "%d %d", &cols, &rows); err != nil {
+				t.Fatal(err)
+			}
+			a := &Agent{screen: screen.New(cols, rows, nil)}
+			defer a.screen.Close()
+			a.screen.Write(raw)
+			if !a.exitTyped() {
+				t.Fatalf("exitTyped false on a real /exit screen: %+v", a.screen.State())
+			}
+		})
 	}
 }

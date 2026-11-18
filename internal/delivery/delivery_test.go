@@ -1098,3 +1098,50 @@ func TestExternalOpenIsCached(t *testing.T) {
 		t.Fatalf("starts %d state %s", g.fa.starts, g.state(m.ID))
 	}
 }
+
+// A stuck timer left over from an earlier message must not count for a new
+// one: after the pending messages are gone the timer is forgotten.
+func TestStuckTimerForgottenWhenNothingPending(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusStopped })
+	g.tick() // the timer starts
+	g.r.Read("ws", "fe")
+	g.tick() // nothing pending any more
+	g.c.add(2 * stuckStatusAfter)
+	g.tick()
+	m := g.send(t, "y")
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("injected %d state %s: the old timer counted for the new message", g.fa.nInjected(), g.state(m.ID))
+	}
+	g.c.add(stuckStatusAfter + time.Second)
+	g.tick()
+	if g.fa.nInjected() != 2 {
+		t.Fatalf("injected %d after a full wait", g.fa.nInjected())
+	}
+}
+
+// The timer is also forgotten on the other early returns (a nudge waiting for
+// its confirmation, nothing to nudge).
+func TestStuckTimerForgottenWhenWaiting(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.tick() // nudged, waiting for confirmation
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusStopped })
+	g.tick() // waiting: returns before effectiveStatus
+	if _, ok := g.d.stuck[Target{"ws", "fe"}]; ok {
+		t.Fatal("stuck timer set on a path that does not use the status")
+	}
+}
+
+// lastNudge is the text that reached the PTY. A failed paste leaves nothing.
+func TestLastNudgeSetOnlyAfterPasteSucceeds(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.injectErr = errors.New("pty closed") })
+	g.tick()
+	if got := g.d.lastNudge[Target{"ws", "fe"}]; got != "" {
+		t.Fatalf("lastNudge = %q after a failed paste", got)
+	}
+}

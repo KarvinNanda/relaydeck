@@ -281,6 +281,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.renudged, t)
 		delete(d.swallowed, t)
 		delete(d.lastNudge, t)
+		delete(d.stuck, t)
 		return
 	}
 	d.pruneRenudged(t, pending)
@@ -321,9 +322,11 @@ func (d *Deliverer) tickTarget(t Target) {
 		}
 	}
 	if len(cand) == 0 {
+		delete(d.stuck, t)
 		return
 	}
 	if waiting {
+		delete(d.stuck, t)
 		return // a nudge awaits its prompt confirmation: one nudge per idle cycle
 	}
 
@@ -487,11 +490,11 @@ func (d *Deliverer) externalOpen(t Target) bool {
 func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	nudgeText := notify.Nudge(unread)
 	text := "\x1b[200~" + nudgeText + "\x1b[201~"
-	d.lastNudge[t] = nudgeText
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return false
 	}
+	d.lastNudge[t] = nudgeText
 	d.sleep(d.enterDelay)
 	// The PTY reader feeds the screen asynchronously, so poll until the box
 	// shows the paste. If an overlay or dialog shows instead, or the paste never
