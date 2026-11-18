@@ -676,3 +676,38 @@ func TestUserStopHoldsAutoStart(t *testing.T) {
 		t.Fatal("user start did not lift the hold")
 	}
 }
+
+// A missing claude command is ErrClaudeNotFound (not the raw exec error),
+// and the failed start leaves nothing registered.
+func TestStartClaudeNotOnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup differs on windows")
+	}
+	t.Setenv("PATH", t.TempDir())
+	e := newEnv(t, nil)
+	err := e.d.StartAgent("w", "a", "", false)
+	if !errors.Is(err, ErrClaudeNotFound) || err.Error() != "claude is not installed or not on PATH" {
+		t.Fatalf("start without claude: %v", err)
+	}
+	if _, ok := e.d.Agent("w", "a"); ok {
+		t.Fatal("agent registered after a failed start")
+	}
+}
+
+// When the external session check itself fails, the start is refused with
+// ErrExternalCheck, and the text keeps the cause.
+func TestStartExternalCheckFails(t *testing.T) {
+	const cur = "11111111-1111-4111-8111-111111111111"
+	e := newEnv(t, func(o *Options) {
+		o.Config.Workspaces[0].Folders[0].SessionID = cur
+		o.ExternalOpen = func(context.Context, string, string, map[int]bool) (bool, error) {
+			return false, errors.New("ps failed")
+		}
+	})
+	e.transcript(t, e.dirA, cur)
+	err := e.d.StartAgent("w", "a", "", false)
+	want := "could not check for an open Claude Code session in this folder: ps failed"
+	if !errors.Is(err, ErrExternalCheck) || err.Error() != want {
+		t.Fatalf("start = %v, want %q", err, want)
+	}
+}

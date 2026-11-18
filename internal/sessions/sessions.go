@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/paths"
@@ -24,6 +25,24 @@ const (
 	// maxTitleRunes is the cut length of a title taken from a user prompt.
 	maxTitleRunes = 80
 )
+
+// openFile opens a session file. Tests replace it to count reads.
+var openFile = os.Open
+
+// titleCache remembers the parsed title of each file, so opening the picker
+// does not re-read every file. An entry is valid while the file keeps the same
+// mtime and size. Entries of a directory are pruned on each List of it, so the
+// cache holds at most the files that still exist in listed directories.
+var titleCache = struct {
+	mu sync.Mutex
+	m  map[string]cacheEntry
+}{m: map[string]cacheEntry{}}
+
+type cacheEntry struct {
+	mtime time.Time
+	size  int64
+	title string
+}
 
 // Session is one Claude Code session file of a folder.
 type Session struct {
@@ -40,11 +59,13 @@ func List(claudeHome, canonicalDir string) ([]Session, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			pruneCache(dir, nil)
 			return []Session{}, nil
 		}
 		return nil, err
 	}
 	out := []Session{}
+	seen := map[string]bool{}
 	for _, e := range entries {
 		name := e.Name()
 		id, ok := strings.CutSuffix(name, ".jsonl")
@@ -55,14 +76,50 @@ func List(claudeHome, canonicalDir string) ([]Session, error) {
 		if err != nil {
 			continue
 		}
-		title, err := readTitle(filepath.Join(dir, name))
+		path := filepath.Join(dir, name)
+		title, err := cachedTitle(path, info)
 		if err != nil {
 			continue
 		}
+		seen[path] = true
 		out = append(out, Session{ID: id, Modified: info.ModTime(), Title: title})
 	}
+	pruneCache(dir, seen)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
 	return out, nil
+}
+
+// cachedTitle returns the title of path, parsing the file only when its mtime
+// or size differs from the cached entry. The key comes from info, taken before
+// the read, so a write during the read makes the next List parse again.
+func cachedTitle(path string, info os.FileInfo) (string, error) {
+	mtime, size := info.ModTime(), info.Size()
+	titleCache.mu.Lock()
+	c, ok := titleCache.m[path]
+	titleCache.mu.Unlock()
+	if ok && c.size == size && c.mtime.Equal(mtime) {
+		return c.title, nil
+	}
+	title, err := readTitle(path)
+	if err != nil {
+		return "", err
+	}
+	titleCache.mu.Lock()
+	titleCache.m[path] = cacheEntry{mtime: mtime, size: size, title: title}
+	titleCache.mu.Unlock()
+	return title, nil
+}
+
+// pruneCache drops the entries under dir whose path is not in keep.
+func pruneCache(dir string, keep map[string]bool) {
+	prefix := dir + string(filepath.Separator)
+	titleCache.mu.Lock()
+	defer titleCache.mu.Unlock()
+	for p := range titleCache.m {
+		if strings.HasPrefix(p, prefix) && !keep[p] {
+			delete(titleCache.m, p)
+		}
+	}
 }
 
 // isUUID reports whether s has the 8-4-4-4-12 hex shape.
@@ -100,7 +157,7 @@ type line struct {
 }
 
 func readTitle(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := openFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -118,12 +175,12 @@ func readTitle(path string) (string, error) {
 			return // corrupt line: ignore it, keep the session
 		}
 		switch {
-		case l.Type == "ai-title" && l.AITitle != "":
-			aiTitle = l.AITitle
+		case l.Type == "ai-title" && oneLine(l.AITitle) != "":
+			aiTitle = oneLine(l.AITitle)
 		case l.Type == "user" && firstPrompt == "":
 			var s string
 			if json.Unmarshal(l.Message.Content, &s) == nil && s != "" && !strings.HasPrefix(s, "<") {
-				firstPrompt = cut(s)
+				firstPrompt = cut(oneLine(s))
 			}
 		}
 	})
@@ -146,7 +203,7 @@ func eachLine(r io.Reader, fn func([]byte)) error {
 		chunk, err := br.ReadSlice('\n')
 		switch {
 		case err == nil:
-			if acc != nil {
+			if len(acc) > 0 {
 				acc = append(acc, chunk...)
 				fn(bytes.TrimRight(acc, "\r\n"))
 				acc = acc[:0]
@@ -167,6 +224,11 @@ func eachLine(r io.Reader, fn func([]byte)) error {
 			return err
 		}
 	}
+}
+
+// oneLine collapses every run of whitespace, newlines included, to one space.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func cut(s string) string {

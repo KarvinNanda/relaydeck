@@ -38,6 +38,13 @@ var (
 	ErrDraft        = errors.New("agent has an unsent draft; clear it or use force")
 	ErrExternalOpen = errors.New("this session is open in a terminal outside relaydeck")
 	ErrShuttingDown = errors.New("relaydeck is shutting down")
+
+	// ErrClaudeNotFound: the claude command is not on PATH. The server
+	// cannot do the work here, so the API answers 503.
+	ErrClaudeNotFound = errors.New("claude is not installed or not on PATH")
+	// ErrExternalCheck: the check for a session open outside relaydeck
+	// failed. A start does not resume when it cannot tell.
+	ErrExternalCheck = errors.New("could not check for an open Claude Code session in this folder")
 )
 
 const (

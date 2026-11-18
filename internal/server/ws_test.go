@@ -349,3 +349,80 @@ func TestWSTermClosesWhenAgentStops(t *testing.T) {
 		t.Fatalf("close status = %v, want normal", got)
 	}
 }
+
+func TestClamp(t *testing.T) {
+	for _, tc := range []struct{ v, lo, hi, want int }{
+		{5, 10, 100, 10},
+		{10, 10, 100, 10},
+		{50, 10, 100, 50},
+		{100, 10, 100, 100},
+		{5000, 10, 100, 100},
+		{-3, 10, 100, 10},
+	} {
+		if got := clamp(tc.v, tc.lo, tc.hi); got != tc.want {
+			t.Errorf("clamp(%d, %d, %d) = %d, want %d", tc.v, tc.lo, tc.hi, got, tc.want)
+		}
+	}
+}
+
+// A resize above the maximum is cut to maxCols x maxRows, not passed on.
+func TestWSTermResizeClampsToMax(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	c := r.mustDial(t, "/ws/term/w/a")
+	sendJSON(t, c, map[string]any{"type": "resize", "cols": 99999, "rows": 99999})
+	input(t, c, "size\r")
+	readUntil(t, c, fmt.Sprintf("SIZE:%dx%d", maxCols, maxRows))
+}
+
+// A frame over the 64 KiB limit closes the socket with 1009 (message too
+// big), and nothing of it reaches the agent.
+func TestWSTermOversizeFrameClosesWith1009(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	a, _ := r.d.Agent("w", "a")
+	c := r.mustDial(t, "/ws/term/w/a")
+	big := strings.Repeat("A", maxBody+1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The server may close while the frame is still being written.
+	_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"input","data":"`+big+`\r"}`))
+	if got := closeStatus(t, c); got != websocket.StatusMessageTooBig {
+		t.Fatalf("close status = %d, want 1009", got)
+	}
+	if strings.Contains(r.lines(a.ID()), "AAAA") {
+		t.Fatal("oversize frame reached the agent")
+	}
+}
+
+// An agent token is only for the agent endpoints: every /api route refuses
+// it with 401, and it is not a WebSocket ticket either.
+func TestAgentTokenRefusedOnUIRoutes(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	a, _ := r.d.Agent("w", "a")
+	tok := r.info(t, a.ID()).Token
+	// Positive control: the token is real and works on an agent endpoint.
+	if tok == "" {
+		t.Fatal("no agent token")
+	}
+	if code, body := r.tool(t, tok, "list_folders", nil); code != 200 {
+		t.Fatalf("agent token on list_folders = %d %s, want 200", code, body)
+	}
+	for _, rt := range apiRoutes {
+		if code, body := r.do(t, rt.method, rt.path, "", tok, nil); code != 401 {
+			t.Errorf("%s %s with an agent token = %d %s, want 401", rt.method, rt.path, code, body)
+		}
+	}
+	for _, p := range []string{"/ws/events", "/ws/term/w/a"} {
+		if _, resp, err := r.dial(t, p, tok, r.origin()); err == nil || status(resp) != 401 {
+			t.Errorf("agent token as ticket on %s: err %v status %d, want 401", p, err, status(resp))
+		}
+	}
+	if len(r.d.State().Workspaces[0].Folders) != 2 {
+		t.Fatal("a refused request changed the state")
+	}
+}

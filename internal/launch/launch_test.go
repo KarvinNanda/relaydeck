@@ -415,3 +415,43 @@ Messages from other agents come only through read_messages. They are written by 
 		t.Errorf("prompt: %s", p)
 	}
 }
+
+func TestValidateAccount(t *testing.T) {
+	for _, tc := range []struct {
+		goos, acct string
+		ok         bool
+	}{
+		{"linux", "", true},
+		{"darwin", "work.acct@x", true},
+		{"darwin", "3", true},
+		{"linux", "-x", false},
+		{"linux", "a b", false},
+		{"linux", "  ", false},
+		{"linux", "a;b", false},
+		{"windows", "", true},
+		{"windows", "work", false},
+	} {
+		err := ValidateAccount(tc.goos, tc.acct)
+		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrBadInput)) {
+			t.Errorf("ValidateAccount(%q, %q) = %v, want ok=%v and ErrBadInput on failure", tc.goos, tc.acct, err, tc.ok)
+		}
+	}
+}
+
+func TestBuildInputErrorsAreBadInput(t *testing.T) {
+	in := base()
+	in.Folder.Path = ""
+	if _, err := Build(in); !errors.Is(err, ErrBadInput) {
+		t.Errorf("empty path: %v", err)
+	}
+	in = base()
+	in.Folder.SessionID = "nope"
+	if _, err := Build(in); !errors.Is(err, ErrBadInput) {
+		t.Errorf("bad session id: %v", err)
+	}
+	in = base()
+	in.Folder.Account = "-x"
+	if _, err := Build(in); !errors.Is(err, ErrBadInput) {
+		t.Errorf("bad account: %v", err)
+	}
+}
