@@ -247,6 +247,31 @@ func TestAddFolderRejectsFile(t *testing.T) {
 	}
 }
 
+// #43: the 400 for a bad path has fixed text. It must not echo the resolved
+// path or the raw error of the file system.
+func TestAddFolderBadPathHasFixedText(t *testing.T) {
+	r := newRig(t, nil)
+	link := filepath.Join(t.TempDir(), "link")
+	missing := filepath.Join(r.dirA, "no-such-dir")
+	if err := os.Symlink(missing, link); err != nil {
+		t.Skip("symlink not available")
+	}
+	for _, p := range []string{missing, link} {
+		code, body := r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "c", "path": p})
+		if code != 400 {
+			t.Fatalf("code %d %s", code, body)
+		}
+		for _, bad := range []string{r.dirA, "no-such-dir", "no such file", "lstat", "stat "} {
+			if strings.Contains(body, bad) {
+				t.Errorf("body leaks %q: %s", bad, body)
+			}
+		}
+		if !strings.Contains(errText(t, body), "existing directory") {
+			t.Errorf("unexpected text: %s", body)
+		}
+	}
+}
+
 // Spec 7.7 through the route: the account cswap maps to the path fills an
 // empty account (darwin and linux only).
 func TestAddFolderRoutePrefillsAccount(t *testing.T) {
