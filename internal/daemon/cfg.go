@@ -7,6 +7,7 @@ import (
 
 	"github.com/KarvinNanda/relaydeck/internal/config"
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
+	"github.com/KarvinNanda/relaydeck/internal/launch"
 	"github.com/KarvinNanda/relaydeck/internal/paths"
 )
 
@@ -104,17 +105,21 @@ func (d *Daemon) AddWorkspace(name string) error {
 }
 
 // AddFolder adds a folder to ws and saves the config. The path is stored in
-// canonical form and must be an existing directory. The account is dropped
-// on windows. Without an account, the account cswap maps to the path is
-// used, if any (spec 7.7). It returns the folder as stored.
+// canonical form and must be an existing directory. The account must pass
+// launch.ValidateAccount (so it is refused on windows). Without an account,
+// the account cswap maps to the path is used, if any (spec 7.7). The cheap
+// checks run first and `cswap map` last. It returns the folder as stored.
 func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
+	if err := launch.ValidateAccount(d.opts.GOOS, f.Account); err != nil {
+		return config.Folder{}, err
+	}
 	p, err := paths.Canonicalize(f.Path)
 	if err != nil {
 		return config.Folder{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	f.Path = p
-	if d.opts.GOOS == "windows" {
-		f.Account = ""
+	if err := d.checkNewFolder(ws, f); err != nil {
+		return config.Folder{}, err
 	}
 	if f.Account == "" && d.opts.CswapPath != "" { // CswapPath is "" on windows
 		f.Account = d.mappedAccount(p)
@@ -123,18 +128,48 @@ func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
 	next := cloneWorkspaces(d.cfg.Workspaces)
-	i := slices.IndexFunc(next, func(w config.Workspace) bool { return w.Name == ws })
-	if i < 0 {
-		return config.Folder{}, fmt.Errorf("%w: workspace %q", ErrNotFound, ws)
-	}
-	if slices.ContainsFunc(next[i].Folders, func(o config.Folder) bool { return o.Name == f.Name }) {
-		return config.Folder{}, fmt.Errorf("%w: folder %q in workspace %q", ErrConflict, f.Name, ws)
+	i, err := newFolderSlot(next, ws, f.Name)
+	if err != nil {
+		return config.Folder{}, err
 	}
 	next[i].Folders = append(next[i].Folders, f)
 	if err := d.commit(next); err != nil {
 		return config.Folder{}, err
 	}
 	return f, nil
+}
+
+// checkNewFolder runs every check of AddFolder that does not need cswap
+// (workspace, duplicate name, name, path, permission mode), before the slow
+// `cswap map`. AddFolder checks the slot again under the lock, because the
+// config can change while cswap runs.
+func (d *Daemon) checkNewFolder(ws string, f config.Folder) error {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	next := cloneWorkspaces(d.cfg.Workspaces)
+	i, err := newFolderSlot(next, ws, f.Name)
+	if err != nil {
+		return err
+	}
+	next[i].Folders = append(next[i].Folders, f)
+	c := config.Config{Port: d.cfg.Port, Workspaces: next}
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return nil
+}
+
+// newFolderSlot returns the index of workspace ws, or ErrNotFound, or
+// ErrConflict when it already has a folder called name.
+func newFolderSlot(workspaces []config.Workspace, ws, name string) (int, error) {
+	i := slices.IndexFunc(workspaces, func(w config.Workspace) bool { return w.Name == ws })
+	if i < 0 {
+		return 0, fmt.Errorf("%w: workspace %q", ErrNotFound, ws)
+	}
+	if slices.ContainsFunc(workspaces[i].Folders, func(o config.Folder) bool { return o.Name == name }) {
+		return 0, fmt.Errorf("%w: folder %q in workspace %q", ErrConflict, name, ws)
+	}
+	return i, nil
 }
 
 // setSessionID stores sid as the folder's current session and saves the

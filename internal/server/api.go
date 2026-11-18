@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/auth"
@@ -32,6 +33,9 @@ type api struct {
 	g      *auth.Guard
 	picker FolderPicker
 	log    *slog.Logger
+
+	// pickMu is held while a folder dialog is open: one dialog at a time.
+	pickMu sync.Mutex
 }
 
 func (a *api) routes() http.Handler {
@@ -109,9 +113,15 @@ func (a *api) addFolder(w http.ResponseWriter, r *http.Request) {
 }
 
 // pickFolder opens the native folder dialog on this machine and waits for
-// the user. The dialog error is logged, not returned: it can hold details
-// of the desktop session that the browser does not need.
+// the user. A second request while a dialog is open gets 409 instead of
+// waiting behind it. The dialog error is logged, not returned: it can hold
+// details of the desktop session that the browser does not need.
 func (a *api) pickFolder(w http.ResponseWriter, r *http.Request) {
+	if !a.pickMu.TryLock() {
+		writeError(w, http.StatusConflict, "a folder dialog is already open; finish or close it first")
+		return
+	}
+	defer a.pickMu.Unlock()
 	p, err := a.picker.PickFolder(r.Context())
 	switch {
 	case errors.Is(err, ErrPickCancelled):
@@ -230,13 +240,18 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, daemon.ErrNotFound), errors.Is(err, notify.ErrUnknownMessage):
 		return http.StatusNotFound
-	case errors.Is(err, daemon.ErrInvalid), errors.Is(err, daemon.ErrNoTranscript):
+	case errors.Is(err, daemon.ErrInvalid), errors.Is(err, daemon.ErrNoTranscript),
+		errors.Is(err, launch.ErrBadInput):
 		return http.StatusBadRequest
 	case errors.Is(err, daemon.ErrConflict), errors.Is(err, daemon.ErrRunning),
 		errors.Is(err, daemon.ErrNotRunning), errors.Is(err, daemon.ErrDraft),
-		errors.Is(err, daemon.ErrExternalOpen), errors.Is(err, daemon.ErrShuttingDown),
+		errors.Is(err, daemon.ErrExternalOpen),
 		errors.Is(err, notify.ErrNotAwaitingApproval), errors.Is(err, launch.ErrCswapMissing):
 		return http.StatusConflict
+	// The request is fine but this server cannot do the work right now.
+	case errors.Is(err, daemon.ErrShuttingDown), errors.Is(err, daemon.ErrClaudeNotFound),
+		errors.Is(err, daemon.ErrExternalCheck):
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
 }
@@ -276,7 +291,9 @@ func readBody(w http.ResponseWriter, r *http.Request, v any, optional bool) bool
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %v", err))
 		return false
 	}
-	if dec.More() {
+	// A second Decode must hit the end of the body. dec.More is not enough:
+	// it says false for a stray closing bracket.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: extra data after the object")
 		return false
 	}

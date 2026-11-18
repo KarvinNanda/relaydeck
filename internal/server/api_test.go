@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/config"
+	"github.com/KarvinNanda/relaydeck/internal/daemon"
+	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/KarvinNanda/relaydeck/internal/notify"
 	"github.com/KarvinNanda/relaydeck/internal/paths"
 )
 
@@ -24,13 +27,18 @@ type fakePicker struct {
 	calls int
 	path  string
 	err   error
+	block chan struct{} // when set, PickFolder waits for it to close
 }
 
 func (p *fakePicker) PickFolder(context.Context) (string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.calls++
-	return p.path, p.err
+	path, err, block := p.path, p.err, p.block
+	p.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	return path, err
 }
 
 func (p *fakePicker) set(path string, err error) {
@@ -432,5 +440,146 @@ func TestApproveQueuedMessageConflict(t *testing.T) {
 		if code, body := r.api(t, "POST", p, nil); code != 409 || !strings.Contains(errText(t, body), "not awaiting_approval") {
 			t.Fatalf("%s = %d %s", p, code, body)
 		}
+	}
+}
+
+// Every launch problem has its own status and text: shutting down and a
+// missing claude are 503, a failed external session check is 503 with the
+// cause, an unknown account is 400 at POST time and nothing is saved.
+func TestStartErrorStatuses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup differs on windows")
+	}
+	noAgents(t)
+	r := newRig(t, nil)
+	code, body := r.api(t, "POST", "/api/agents/w/a/start", nil)
+	if code != 503 || errText(t, body) != "claude is not installed or not on PATH" {
+		t.Fatalf("claude missing = %d %s", code, body)
+	}
+	r.stop()
+	code, body = r.api(t, "POST", "/api/agents/w/a/start", nil)
+	if code != 503 || !strings.Contains(errText(t, body), "shutting down") {
+		t.Fatalf("shutting down = %d %s", code, body)
+	}
+}
+
+func TestStartExternalCheckFailureIs503(t *testing.T) {
+	if got := statusOf(fmt.Errorf("%w: ps failed", daemon.ErrExternalCheck)); got != 503 {
+		t.Fatalf("ErrExternalCheck = %d, want 503", got)
+	}
+	if got := statusOf(fmt.Errorf("%w: session id", launch.ErrBadInput)); got != 400 {
+		t.Fatalf("launch.ErrBadInput = %d, want 400", got)
+	}
+	if got := statusOf(daemon.ErrShuttingDown); got != 503 {
+		t.Fatalf("ErrShuttingDown = %d, want 503", got)
+	}
+}
+
+func TestAddFolderRejectsBadAccount(t *testing.T) {
+	r := newRig(t, nil)
+	for _, acct := range []string{"-x", "a b", "a;b", "$(id)"} {
+		code, body := r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "c", "path": r.dirA, "account": acct})
+		if code != 400 || !strings.Contains(errText(t, body), "account") {
+			t.Errorf("account %q = %d %s, want 400 naming the account", acct, code, body)
+		}
+	}
+	if n := len(r.d.State().Workspaces[0].Folders); n != 2 {
+		t.Fatalf("folders = %d after refused adds", n)
+	}
+}
+
+// Only one folder dialog at a time: a second request while one is open is
+// 409 at once, and the picker is called once.
+func TestPickFolderBusy(t *testing.T) {
+	r := newRig(t, nil)
+	release := make(chan struct{})
+	r.picker.block = release
+	first := make(chan int, 1)
+	go func() {
+		code, _ := r.api(t, "POST", "/api/pick-folder", nil)
+		first <- code
+	}()
+	waitFor(t, "first dialog open", 5*time.Second, func() bool { return r.picker.count() == 1 })
+	code, body := r.api(t, "POST", "/api/pick-folder", nil)
+	if code != 409 || !strings.Contains(errText(t, body), "already open") {
+		t.Fatalf("second dialog = %d %s", code, body)
+	}
+	close(release)
+	if c := <-first; c != 200 {
+		t.Fatalf("first dialog = %d", c)
+	}
+	if r.picker.count() != 1 {
+		t.Fatalf("picker calls = %d", r.picker.count())
+	}
+	// The lock is free again.
+	r.picker.block = nil
+	if code, _ := r.api(t, "POST", "/api/pick-folder", nil); code != 200 {
+		t.Fatalf("dialog after release = %d", code)
+	}
+}
+
+// Anything after the first JSON value is a 400, including a stray bracket
+// that json.Decoder.More would let through.
+func TestReadBodyRejectsTrailingData(t *testing.T) {
+	r := newRig(t, nil)
+	for _, b := range []string{`{"name":"x"} {"name":"y"}`, `{"name":"x"}x`, `{"name":"x"}}`, `{"name":"x"}]`, `{"name":"x"} 1`} {
+		code, body := r.raw(t, "POST", "/api/workspaces", b)
+		if code != 400 || !strings.Contains(errText(t, body), "extra data") {
+			t.Errorf("body %q = %d %s, want 400 extra data", b, code, body)
+		}
+	}
+	if n := len(r.d.State().Workspaces); n != 1 {
+		t.Fatalf("workspaces = %d after refused bodies", n)
+	}
+	if code, _ := r.raw(t, "POST", "/api/workspaces", `{"name":"ok"}  `+"\n"); code != 201 {
+		t.Fatalf("body with trailing whitespace = %d, want 201", code)
+	}
+}
+
+// A message held at the hop limit is released by approve (204), and a second
+// approve is 409. The chain a -> b -> a -> b puts the third message at hop 3.
+func TestApproveHeldMessage(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	startAgent(t, r, "b")
+	aa, _ := r.d.Agent("w", "a")
+	ab, _ := r.d.Agent("w", "b")
+	ta, tb := r.info(t, aa.ID()).Token, r.info(t, ab.ID()).Token
+	send := func(token, to string) {
+		t.Helper()
+		if code, body := r.tool(t, token, "notify", map[string]string{"target": to, "message": "x"}); code != 200 {
+			t.Fatalf("notify %s = %d %s", to, code, body)
+		}
+	}
+	read := func(token string) {
+		t.Helper()
+		if code, body := r.tool(t, token, "read_messages", nil); code != 200 {
+			t.Fatalf("read_messages = %d %s", code, body)
+		}
+	}
+	send(ta, "b")
+	read(tb)
+	send(tb, "a")
+	read(ta)
+	send(ta, "b")
+	var held notify.Message
+	msgs, _ := r.d.Messages("w")
+	for _, m := range msgs {
+		if m.State == notify.StateAwaitingApproval {
+			held = m
+		}
+	}
+	if held.ID == "" {
+		t.Fatalf("no message held at the hop limit: %+v", msgs)
+	}
+	if code, body := r.api(t, "POST", "/api/messages/"+held.ID+"/approve", nil); code != 204 || body != "" {
+		t.Fatalf("approve = %d %q", code, body)
+	}
+	if got := r.message(t, held.ID).State; got == notify.StateAwaitingApproval {
+		t.Fatalf("message still %s after approve", got)
+	}
+	if code, body := r.api(t, "POST", "/api/messages/"+held.ID+"/approve", nil); code != 409 {
+		t.Fatalf("second approve = %d %s, want 409", code, body)
 	}
 }

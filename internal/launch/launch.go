@@ -18,6 +18,11 @@ import (
 // available. relaydeck never falls back to the default login silently.
 var ErrCswapMissing = errors.New("folder has an account but cswap is not installed")
 
+// ErrBadInput marks a Build or ValidateAccount error caused by the folder
+// settings (path, session id, account), not by relaydeck itself. The HTTP
+// layer answers it with 400.
+var ErrBadInput = errors.New("invalid input")
+
 // Input is everything Build needs.
 type Input struct {
 	RelaydeckExe string // os.Executable()
@@ -55,6 +60,27 @@ var sessionMarkers = []string{
 
 var hookEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"}
 
+// ValidateAccount checks a folder's cswap account name. An empty account is
+// always fine (the default login). On windows per-folder accounts are not
+// supported in v1, so any account is refused there. The name goes into argv,
+// so it must be plain characters and must not start with a dash. The error
+// wraps ErrBadInput.
+func ValidateAccount(goos, acct string) error {
+	if acct == "" {
+		return nil
+	}
+	if goos == "windows" {
+		return fmt.Errorf("%w: per-folder accounts are not supported on windows", ErrBadInput)
+	}
+	if strings.TrimSpace(acct) == "" {
+		return fmt.Errorf("%w: account is blank", ErrBadInput)
+	}
+	if strings.HasPrefix(acct, "-") || !accountRe.MatchString(acct) {
+		return fmt.Errorf("%w: account %q has characters that are not allowed", ErrBadInput, acct)
+	}
+	return nil
+}
+
 // Build validates the input and returns the command to run.
 func Build(in Input) (Command, error) {
 	windows := in.GOOS == "windows"
@@ -63,7 +89,7 @@ func Build(in Input) (Command, error) {
 		return Command{}, errors.New("relaydeck executable path is empty")
 	}
 	if in.Folder.Path == "" {
-		return Command{}, errors.New("folder path is empty")
+		return Command{}, fmt.Errorf("%w: folder path is empty", ErrBadInput)
 	}
 	if !filepath.IsAbs(in.RuntimeDir) {
 		return Command{}, fmt.Errorf("runtime dir %q is not an absolute path", in.RuntimeDir)
@@ -84,19 +110,15 @@ func Build(in Input) (Command, error) {
 		sessionFlag, sessionID = "--session-id", in.NewSessionID
 	}
 	if !uuidRe.MatchString(sessionID) {
-		return Command{}, fmt.Errorf("session id %q is not a lowercase UUID", sessionID)
+		return Command{}, fmt.Errorf("%w: session id %q is not a lowercase UUID", ErrBadInput, sessionID)
 	}
 
 	useCswap := false
 	if !windows {
-		acct := in.Folder.Account
-		if strings.TrimSpace(acct) == "" && acct != "" {
-			return Command{}, errors.New("account is blank")
+		if err := ValidateAccount(in.GOOS, in.Folder.Account); err != nil {
+			return Command{}, err
 		}
-		if acct != "" {
-			if strings.HasPrefix(acct, "-") || !accountRe.MatchString(acct) {
-				return Command{}, fmt.Errorf("account %q has characters that are not allowed", acct)
-			}
+		if in.Folder.Account != "" {
 			if in.CswapPath == "" {
 				return Command{}, ErrCswapMissing
 			}
