@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	staleID  = "11111111-1111-4111-8111-111111111111"
-	liveID   = "22222222-2222-4222-8222-222222222222"
-	linkID   = "33333333-3333-4333-8333-333333333333"
-	ownPIDID = "44444444-4444-4444-8444-444444444444"
+	staleID  = "11111111111141118111111111111111"
+	liveID   = "22222222222242228222222222222222"
+	linkID   = "33333333333343338333333333333333"
+	ownPIDID = "44444444444444448444444444444444"
 )
 
 func exists(p string) bool { _, err := os.Lstat(p); return err == nil }
@@ -41,7 +41,7 @@ func TestCleanStaleRuntime(t *testing.T) {
 	ownPID := mk(ownPIDID)
 	os.WriteFile(filepath.Join(ownPID, ownerFile), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	other := mk("not-an-agent-id")
-	file := filepath.Join(root, "55555555-5555-4555-8555-555555555555")
+	file := filepath.Join(root, "55555555555545558555555555555555")
 	os.WriteFile(file, []byte("x"), 0o600)
 	if runtime.GOOS != "windows" {
 		if err := os.Symlink(outside, filepath.Join(root, linkID)); err != nil {
@@ -111,5 +111,25 @@ func TestStartAgentWritesOwnerFile(t *testing.T) {
 	b, _ := os.ReadFile(matches[0])
 	if string(b) != strconv.Itoa(os.Getpid()) {
 		t.Fatalf("owner = %q", b)
+	}
+}
+
+// Runtime dirs are named by agent id (randHex(16), as registry.issue makes
+// them), so the cleaner must match that form, not a session UUID.
+func TestCleanStaleRuntimeMatchesRealAgentIDs(t *testing.T) {
+	root := t.TempDir()
+	id, err := randHex(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if n := CleanStaleRuntime(root, slog.New(slog.DiscardHandler)); n != 1 {
+		t.Fatalf("removed %d dirs, want 1 (agent id %q)", n, id)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("stale dir still there: %v", err)
 	}
 }

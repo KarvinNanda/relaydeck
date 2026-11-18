@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,9 +17,13 @@ import (
 // second relaydeck on another port does not lose its live agents' files.
 const ownerFile = "owner.pid"
 
+// agentIDRe matches the per-agent runtime dir names: agent ids are
+// randHex(16), 32 lowercase hex characters (see registry.issue).
+var agentIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
 // CleanStaleRuntime removes per-agent runtime dirs left behind by a daemon
 // that was killed. It only touches direct children of root whose name is an
-// agent id (a UUID) and that are real directories: a symlink, a file or any
+// agent id (32 hex characters) and that are real directories: a symlink, a file or any
 // other name is left alone, and nothing is followed outside root. A dir whose
 // owner.pid names another live process is kept. It returns how many dirs it
 // removed.
@@ -37,7 +42,7 @@ func CleanStaleRuntime(root string, log *slog.Logger) int {
 	}
 	removed := 0
 	for _, e := range entries {
-		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || !sessionIDRe.MatchString(e.Name()) {
+		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || !agentIDRe.MatchString(e.Name()) {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
