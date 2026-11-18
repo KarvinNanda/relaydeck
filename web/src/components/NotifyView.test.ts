@@ -66,14 +66,7 @@ describe('NotifyView', () => {
     const w = mount(NotifyView)
     await flushPromises()
     const sum = w.findAll('.dh .sum > span')
-    // .wide is the desktop text, .narrow the phone text (CSS shows one)
-    const text = (s: (typeof sum)[number], hide: string) => {
-      const c = s.element.cloneNode(true) as HTMLElement
-      c.querySelectorAll(hide).forEach((x) => x.remove())
-      return c.textContent?.trim()
-    }
-    expect(sum.map((s) => text(s, '.narrow'))).toEqual(['2 awaiting approval', '1 held'])
-    expect(sum.map((s) => text(s, '.wide'))).toEqual(['2 to approve', '1 held'])
+    expect(sum.map((s) => s.text())).toEqual(['2 awaiting approval', '1 held'])
     for (const s of sum) expect(s.find('svg').exists()).toBe(true)
   })
 

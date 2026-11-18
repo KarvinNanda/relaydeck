@@ -701,7 +701,7 @@ onBeforeUnmount(() => {
 .ph-2 > .sess-name.is-id:not(.waiting) { flex-shrink: 0; }
 /* With the waiting chip in this row and not enough room, the chip and its
    button take their own line at the right instead of being pushed out. */
-.ph-2.wrap { flex-wrap: wrap; row-gap: var(--s-2); }
+.ph-2.wrap { flex-wrap: wrap; row-gap: var(--s-2); padding-bottom: var(--s-3); } /* header padding 3px + 6px = 9px under the wrapped row */
 .ph-2 > .acct:not(.waiting), .ph-2 > .warn-inline:not(.waiting) { flex-shrink: 0; }
 .ph-2 > span:not(.waiting) .i { vertical-align: -2px; margin-right: 5px; }
 .ph-2 .waiting { margin-left: auto; }

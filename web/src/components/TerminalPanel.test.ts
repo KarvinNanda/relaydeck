@@ -717,6 +717,19 @@ describe('TerminalPanel header layout', () => {
     expect(w!.find('.ph').element.children).toHaveLength(2)
   })
 
+  it('lets row 2 wrap only when the chip sits in it, so the button is never pushed out', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1 })
+    paneWidth(500)
+    await mountPanel()
+    expect(w!.find('.ph-2').classes()).toContain('wrap')
+    vi.restoreAllMocks()
+    paneWidth(900)
+    for (const cb of roCallbacks) cb()
+    await flushPromises()
+    expect(w!.find('.ph-2').classes()).not.toContain('wrap')
+  })
+
   it('goes compact in a very narrow panel, so row 2 does not overflow', async () => {
     messages = [heldDraft('m1')]
     setFolder({ status: 'idle', pending: 1 })

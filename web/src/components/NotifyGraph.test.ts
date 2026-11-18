@@ -210,11 +210,13 @@ describe('NotifyGraph', () => {
     ])
   })
 
-  it('draws the latest legend swatch solid and dashed, because a held latest edge is dashed', async () => {
+  it('shows "latest" in the legend as a green bar only, not a line pattern', async () => {
     const { w } = await setup([])
     const lines = w.findAll('.gl > span')[0].findAll('line')
-    expect(lines.map((l) => l.classes().filter((c) => c !== 'edge' && c !== 'latest'))).toEqual([['solid'], ['dashed']])
-    for (const l of lines) expect(l.classes()).toContain('latest')
+    expect(lines).toHaveLength(1)
+    expect(lines[0].classes().filter((c) => c !== 'edge')).toEqual(['solid', 'latest'])
+    // the pattern swatches are not "latest", so they are neutral
+    for (const s of w.findAll('.gl > span').slice(1)) expect(s.find('line').classes()).not.toContain('latest')
   })
 
   it('says so when the workspace has no folders', async () => {

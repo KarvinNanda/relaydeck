@@ -251,8 +251,8 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
       >{{ latestLabel.text }}</text>
     </svg>
     <div class="gl">
-      <!-- The latest edge keeps its own style, so it is dashed while its message is held. -->
-      <span title="the newest message; dashed while it is held"><svg width="22" height="8" aria-hidden="true"><line class="edge solid latest" x1="0" y1="4" x2="9" y2="4" /><line class="edge dashed latest" x1="12" y1="4" x2="22" y2="4" /></svg>latest{{ latestTime ? ' ' + latestTime : '' }}</span>
+      <!-- Pattern shows the state, green shows the latest: so "latest" is only a green bar. -->
+      <span title="the newest message (green)"><svg width="12" height="8" aria-hidden="true"><line class="edge solid latest" x1="0" y1="4" x2="12" y2="4" /></svg>latest{{ latestTime ? ' ' + latestTime : '' }}</span>
       <span><svg width="22" height="8" aria-hidden="true"><line class="edge solid" x1="0" y1="4" x2="22" y2="4" /></svg>delivered</span>
       <span title="queued, nudged, waiting or held"><svg width="22" height="8" aria-hidden="true"><line class="edge dashed" x1="0" y1="4" x2="22" y2="4" /></svg>held</span>
       <span title="awaiting approval"><svg width="22" height="8" aria-hidden="true"><line class="edge dotted" x1="0" y1="4" x2="22" y2="4" /></svg>approval</span>
@@ -285,6 +285,9 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
 
 .gl { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-6); color: var(--text-muted); }
 .gl span { display: inline-flex; align-items: center; gap: 5px; }
+/* the key shows the line patterns in a neutral color; only "latest" is green */
+.gl .edge { stroke: var(--text-muted); }
+.gl .edge.latest { stroke: var(--green); }
 
 @media (max-width: 767px) {
   .gr { padding: var(--s-4) var(--gutter-mobile) var(--s-8); }
