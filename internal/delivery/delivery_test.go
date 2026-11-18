@@ -32,6 +32,7 @@ type fakeAgents struct {
 	startErr    error
 	injectErr   error
 	starts      int
+	extCalls    int
 	injected    [][]byte
 }
 
@@ -69,6 +70,7 @@ func (f *fakeAgents) Start(ws, folder string) error {
 func (f *fakeAgents) ExternalOpen(ws, folder string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.extCalls++
 	return f.external, f.externalErr
 }
 func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
@@ -77,7 +79,13 @@ func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 	if f.injectErr != nil {
 		return f.injectErr
 	}
-	f.pasted = string(p) != "\r"
+	if string(p) == "\x15" { // Ctrl-U clears the box
+		f.pasted = false
+		f.scr.InputEmpty = true
+		f.scr.Draft = ""
+	} else {
+		f.pasted = string(p) != "\r"
+	}
 	f.injected = append(f.injected, append([]byte(nil), p...))
 	return nil
 }
@@ -224,6 +232,7 @@ func TestHeldExternalReleasedWhenClosed(t *testing.T) {
 	g.fa.set(func(f *fakeAgents) { f.running = false; f.external = true })
 	g.tick()
 	g.fa.set(func(f *fakeAgents) { f.external = false })
+	g.c.add(externalTTL) // a held answer is reused until its TTL ends
 	g.tick()
 	if g.fa.starts != 1 || g.state(m.ID) != notify.StateQueued {
 		t.Fatalf("starts %d state %s", g.fa.starts, g.state(m.ID))
@@ -937,5 +946,155 @@ func TestRunSurvivesTickPanic(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "tick panic") || !strings.Contains(logs.String(), "stack") {
 		t.Fatalf("panic not logged with a stack: %s", logs.String())
+	}
+}
+
+func (f *fakeAgents) nExtCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.extCalls }
+
+// A live process whose hook status stuck at stopped or starting (a SessionEnd
+// after a SessionStart on /clear, a lost SessionStart) must not stall
+// delivery for good: after a while the screen decides.
+func TestStuckStatusFallsBackToScreen(t *testing.T) {
+	for _, s := range []agent.Status{agent.StatusStopped, agent.StatusStarting} {
+		g := newRig()
+		m := g.send(t, "x")
+		g.fa.set(func(f *fakeAgents) { f.status = s })
+		g.tick()
+		g.c.add(stuckStatusAfter - time.Second)
+		g.tick()
+		if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateQueued {
+			t.Fatalf("%s: delivered before the wait was over", s)
+		}
+		g.c.add(2 * time.Second)
+		g.tick()
+		if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+			t.Fatalf("%s: injected %d state %s", s, g.fa.nInjected(), g.state(m.ID))
+		}
+	}
+}
+
+// busy and attention are never overridden: the screen cannot tell a prompt
+// the user must answer.
+func TestStuckStatusDoesNotOverrideBusy(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
+	g.tick()
+	g.c.add(10 * stuckStatusAfter)
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+// A nudge whose Enter was swallowed stays in the box and reads as a draft.
+// DeliverNow must clear it with Ctrl-U instead of pasting a second nudge
+// after it.
+func TestDeliverNowClearsStrandedNudge(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick() // paste, Enter
+	nudgeText := notify.Nudge([]notify.Message{m})
+	// The Enter was swallowed: the text is still in the box.
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: nudgeText}
+	})
+	g.c.add(confirmWindow)
+	g.tick() // swallowed: requeued, then held as a draft
+	if g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("state %s", g.state(m.ID))
+	}
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	got := make([]string, 0, 5)
+	for _, p := range g.fa.injected {
+		got = append(got, string(p))
+	}
+	want := []string{"\x1b[200~" + nudgeText + "\x1b[201~", "\r", "\x15", "\x1b[200~" + nudgeText + "\x1b[201~", "\r"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("injected %q, want %q", got, want)
+	}
+}
+
+// A draft the user typed is not ours: no Ctrl-U, the existing DeliverNow
+// behavior stays.
+func TestDeliverNowKeepsUserDraft(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: "half typed thought"}
+	})
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	for _, p := range g.fa.injected {
+		if string(p) == "\x15" {
+			t.Fatal("Ctrl-U sent over a draft the user typed")
+		}
+	}
+	if g.fa.nInjected() != 2 {
+		t.Fatalf("injected %d", g.fa.nInjected())
+	}
+}
+
+// If Ctrl-U does not empty the box, nothing is pasted on top of it.
+func TestDeliverNowStrandedNudgeNotCleared(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	nudgeText := notify.Nudge([]notify.Message{m})
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: nudgeText}
+		f.scrSeq = repeat(f.scr, 60) // the box never empties
+	})
+	g.c.add(confirmWindow)
+	g.tick()
+	g.d.DeliverNow("ws", "fe")
+	before := g.fa.nInjected()
+	g.tick()
+	if got := g.fa.nInjected() - before; got != 1 { // only the Ctrl-U
+		t.Fatalf("injected %d after DeliverNow, want only Ctrl-U", got)
+	}
+}
+
+// asks and prompts for a target that targets() no longer lists are dropped.
+func TestTickPrunesUnlistedTargets(t *testing.T) {
+	g := newRig()
+	g.d.DeliverNow("ws", "gone")
+	g.d.PromptSubmitted("ws", "gone")
+	g.tick()
+	g.d.pmu.Lock()
+	defer g.d.pmu.Unlock()
+	if len(g.d.asks) != 0 || len(g.d.prompts) != 0 {
+		t.Fatalf("asks %d prompts %d, want 0", len(g.d.asks), len(g.d.prompts))
+	}
+}
+
+// A held external session is not re-checked on every tick: the check starts
+// a process and scans all processes, under the delivery lock.
+func TestExternalOpenIsCached(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.running = false; f.external = true })
+	for i := 0; i < 4; i++ {
+		g.tick()
+		g.c.add(time.Second)
+	}
+	if n := g.fa.nExtCalls(); n != 1 {
+		t.Fatalf("ExternalOpen called %d times in 4 ticks, want 1", n)
+	}
+	if g.state(m.ID) != notify.StateHeldExternal {
+		t.Fatalf("state %s", g.state(m.ID))
+	}
+	g.c.add(externalTTL)
+	g.tick()
+	if n := g.fa.nExtCalls(); n != 2 {
+		t.Fatalf("ExternalOpen called %d times after the TTL, want 2", n)
+	}
+	// The user closes the terminal session: after the TTL the target starts.
+	g.fa.set(func(f *fakeAgents) { f.external = false })
+	g.c.add(externalTTL)
+	g.tick()
+	if g.fa.starts != 1 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("starts %d state %s", g.fa.starts, g.state(m.ID))
 	}
 }
