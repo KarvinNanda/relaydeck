@@ -194,9 +194,29 @@ function start(body: { session_id: string } | { new: true }): void {
   void act(() => api('POST', `${base.value}/start`, body))
 }
 
+// The panel only offers Deliver now while a draft holds messages, and the
+// daemon submits that draft together with the nudge. So the first click asks
+// and the second one delivers; the ask goes away by itself.
+const deliverTitle = 'Deliver now. The draft in the input box is submitted together with the nudge.'
+const deliverAsk = ref(false)
+let deliverTimer: ReturnType<typeof setTimeout> | undefined
+function resetDeliverAsk(): void {
+  clearTimeout(deliverTimer)
+  deliverTimer = undefined
+  deliverAsk.value = false
+}
 function deliverNow(): void {
+  if (!deliverAsk.value) {
+    deliverAsk.value = true
+    deliverTimer = setTimeout(resetDeliverAsk, CONFIRM_MS)
+    return
+  }
+  resetDeliverAsk()
   void act(() => api('POST', `${base.value}/deliver-now`))
 }
+watch(showWaiting, (v) => {
+  if (!v) resetDeliverAsk()
+})
 
 function close(): void {
   panelStore.closePanel(props.ws, props.folder)
@@ -461,6 +481,7 @@ onBeforeUnmount(() => {
   disconnect()
   clearTimeout(fitTimer)
   clearTimeout(confirmTimer)
+  clearTimeout(deliverTimer)
   ro?.disconnect()
   paneRo?.disconnect()
   host.value?.removeEventListener('scroll', measureScroll)
@@ -486,7 +507,15 @@ onBeforeUnmount(() => {
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
           </span>
-          <button class="btn act" type="button" :disabled="acting" @click="deliverNow"><Icon name="right" />Deliver now</button>
+          <button
+            class="btn act"
+            :class="{ ask: deliverAsk }"
+            type="button"
+            :aria-label="deliverAsk ? 'Submit the draft too? The draft in the input box is submitted together with the nudge.' : undefined"
+            :title="deliverTitle"
+            :disabled="acting"
+            @click="deliverNow"
+          ><Icon name="right" />{{ deliverAsk ? 'Submit draft too?' : 'Deliver now' }}</button>
         </span>
         <div class="ph-btns">
           <button
@@ -554,7 +583,15 @@ onBeforeUnmount(() => {
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
           </span>
-          <button class="btn act" type="button" :disabled="acting" @click="deliverNow"><Icon name="right" />Deliver now</button>
+          <button
+            class="btn act"
+            :class="{ ask: deliverAsk }"
+            type="button"
+            :aria-label="deliverAsk ? 'Submit the draft too? The draft in the input box is submitted together with the nudge.' : undefined"
+            :title="deliverTitle"
+            :disabled="acting"
+            @click="deliverNow"
+          ><Icon name="right" />{{ deliverAsk ? 'Submit draft too?' : 'Deliver now' }}</button>
         </span>
       </div>
     </div>
@@ -674,6 +711,8 @@ onBeforeUnmount(() => {
   border: 1px solid var(--amber-line); background: var(--amber-tint); color: var(--amber); border-radius: var(--r-sm);
 }
 .btn:disabled { opacity: .6; cursor: default; }
+/* the Deliver now ask: amber frame and words, like the Stop ask is red */
+.waiting .btn.act.ask { color: var(--amber); border-color: var(--amber-line); background: var(--amber-tint); white-space: nowrap; }
 
 /* terminal body: padding sits here, never on the xterm host, so the fit
    addon measures the real box */

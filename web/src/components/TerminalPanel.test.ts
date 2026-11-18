@@ -347,8 +347,31 @@ describe('TerminalPanel waiting messages', () => {
     const chip = w!.find('.waiting')
     expect(chip.text()).toContain('2 messages waiting')
     await chip.find('button').trigger('click')
+    await chip.find('button').trigger('click') // the first click only asks
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+  })
+
+  it('warns before the click that the draft goes with the nudge, and asks before delivering', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1 })
+    await mountPanel()
+    const b = () => w!.find('.waiting button')
+    expect(b().attributes('title')).toContain('draft')
+    expect(b().attributes('title')).toContain('submitted together with the nudge')
+    await b().trigger('click')
+    expect(apiMock).not.toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+    expect(b().text()).toBe('Submit draft too?')
+    expect(b().attributes('aria-label')).toContain('submitted together with the nudge')
+    // the ask goes away by itself
+    vi.advanceTimersByTime(4100)
+    await flushPromises()
+    expect(b().text()).toBe('Deliver now')
+    await b().trigger('click')
+    await b().trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+    expect(apiMock.mock.calls.filter((c) => c[1].endsWith('/deliver-now'))).toHaveLength(1)
   })
 
   it('says 1 message and hides the chip without a draft hold or when busy', async () => {

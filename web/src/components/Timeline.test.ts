@@ -124,6 +124,7 @@ describe('Timeline', () => {
     ] as const)('%s button %i, HTTP %i: "%s"', async (state, button, status, text) => {
       const { w } = await setup([msg('m1', state)], () => Promise.reject(new ApiError(status, 'raw server text')))
       await rows(w)[0].findAll('button.act')[button].trigger('click')
+      if (state === 'held_draft') await rows(w)[0].findAll('button.act')[button].trigger('click') // the first click asks
       await flushPromises()
       expect(rows(w)[0].find('[role="alert"]').text()).toBe(text)
     })
@@ -131,12 +132,14 @@ describe('Timeline', () => {
     it('says relaydeck is not reachable when the request never arrived', async () => {
       const { w } = await setup([msg('m1', 'held_draft')], () => Promise.reject(new ApiError(0, 'relaydeck is not reachable. Is `relaydeck serve` still running?')))
       await rows(w)[0].find('button.act').trigger('click')
+      await rows(w)[0].find('button.act').trigger('click')
       await flushPromises()
       expect(rows(w)[0].find('[role="alert"]').text()).toBe('relaydeck is not reachable. Is `relaydeck serve` still running?')
     })
 
     it('clears the error when the row changes state', async () => {
       const { w, emit } = await setup([msg('m1', 'held_draft')], () => Promise.reject(new ApiError(500, 'x')))
+      await rows(w)[0].find('button.act').trigger('click')
       await rows(w)[0].find('button.act').trigger('click')
       await flushPromises()
       expect(rows(w)[0].find('[role="alert"]').exists()).toBe(true)
@@ -176,6 +179,11 @@ describe('Timeline', () => {
     const { w, api } = await setup([msg('m1', 'held_draft')])
     const b = rows(w)[0].find('button.act')
     expect(b.text()).toBe('Deliver now')
+    expect(b.attributes('title')).toContain('submitted together with the nudge')
+    await b.trigger('click')
+    // the first click only asks, because a draft in the box goes with the nudge
+    expect(api).not.toHaveBeenCalledWith('POST', '/api/agents/w/fe-admin/deliver-now')
+    expect(b.text()).toBe('Submit draft too?')
     await b.trigger('click')
     await flushPromises()
     expect(api).toHaveBeenCalledWith('POST', '/api/agents/w/fe-admin/deliver-now')
