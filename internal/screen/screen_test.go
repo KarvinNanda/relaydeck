@@ -240,3 +240,74 @@ func TestLabelledTopRule(t *testing.T) {
 		})
 	}
 }
+
+// Output written for a taller screen can arrive after a resize and set a
+// scroll region below the last row. The emulator panics on the next scroll;
+// that panic ran in the PTY read goroutine and would end the daemon.
+func TestLateScrollRegionDoesNotPanic(t *testing.T) {
+	for name, late := range map[string]string{
+		"scroll up":   "\x1b[1;40r\x1b[S",
+		"delete line": "\x1b[3;40r\x1b[5;1H\x1b[M",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := New(100, 40, nil)
+			s.Resize(60, 10)
+			if _, err := s.Write([]byte(late)); err != nil {
+				t.Fatalf("Write error: %v", err)
+			}
+			// The screen keeps working: a full redraw is detected again.
+			if _, err := s.Write(labelledFrame(60, 10, strings.Repeat("─", 60))); err != nil {
+				t.Fatal(err)
+			}
+			if !s.State().Ready() {
+				t.Fatalf("redraw after recovery should be Ready: %+v", s.State())
+			}
+		})
+	}
+}
+
+func TestLabelledTopRuleLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		w    int
+		top  string
+	}{
+		// Fewer than minRuleCells rule characters.
+		{"few rule cells", 60, strings.Repeat("─", 4) + " " + strings.Repeat("x", 49) + " ─────"},
+		// The label is longer than two thirds of the width.
+		{"label too long", 80, strings.Repeat("─", 12) + " " + strings.Repeat("x", 58) + " " + strings.Repeat("─", 8)},
+		// The rule stops short of 90% of the width.
+		{"rule too short", 80, strings.Repeat("─", 50) + " demo/be ─"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(tc.w, 30, nil)
+			if _, err := s.Write(labelledFrame(tc.w, 30, tc.top)); err != nil {
+				t.Fatal(err)
+			}
+			if s.State().InputVisible {
+				t.Fatalf("row %q must not count as the box top rule", tc.top)
+			}
+		})
+	}
+}
+
+// A dialog option row between two labelled rules has non-faint text, so it
+// never counts as an empty input box.
+func TestDialogRowBetweenLabelledRulesNotReady(t *testing.T) {
+	w, h := 80, 30
+	top := strings.Repeat("─", w-10) + " demo/be ─"
+	var b strings.Builder
+	b.WriteString("\x1b[2J")
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", h-3, top)
+	fmt.Fprintf(&b, "\x1b[%d;1H❯"+nbsp+"1. Yes", h-2)
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", h-1, strings.Repeat("─", w))
+	fmt.Fprintf(&b, "\x1b[%d;3Hfooter", h)
+	s := New(w, h, nil)
+	if _, err := s.Write([]byte(b.String())); err != nil {
+		t.Fatal(err)
+	}
+	if s.State().Ready() {
+		t.Fatalf("dialog row must not be Ready: %+v", s.State())
+	}
+}
