@@ -129,24 +129,20 @@ func TestStartAgentErrors(t *testing.T) {
 	}
 }
 
-// One running agent per canonical path, across workspaces.
-func TestStartSamePathOtherWorkspaceConflict(t *testing.T) {
-	needPTY(t)
+// One folder path belongs to one folder, across workspaces. The config
+// refuses a second folder on a path the first one already uses, so two
+// folders can never start on the same directory (the Start guard in
+// agent.Manager stays as a second line).
+func TestAddFolderSamePathOtherWorkspaceRejected(t *testing.T) {
 	e := newEnv(t, nil)
 	if err := e.d.AddWorkspace("v"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.d.AddFolder("v", config.Folder{Name: "a2", Path: e.dirA}); err != nil {
-		t.Fatal(err)
+	if _, err := e.d.AddFolder("v", config.Folder{Name: "a2", Path: e.dirA}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("same path in another workspace: %v, want ErrInvalid", err)
 	}
-	if err := e.d.StartAgent("w", "a", "", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.d.StartAgent("v", "a2", "", false); !errors.Is(err, ErrRunning) {
-		t.Fatalf("same path in another workspace: %v, want ErrRunning", err)
-	}
-	if _, ok := e.d.reg.latest(delivery.Target{WS: "v", Folder: "a2"}); ok {
-		t.Fatal("failed start was recorded as the folder's agent")
+	if e.d.hasWorkspace("v") && len(e.d.targets()) != 2 {
+		t.Fatalf("targets = %+v", e.d.targets())
 	}
 }
 
@@ -349,7 +345,7 @@ func TestTargetsListsEveryFolder(t *testing.T) {
 	if err := e.d.AddWorkspace("v"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: e.dirB}); err != nil {
+	if _, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: e.dirC}); err != nil {
 		t.Fatal(err)
 	}
 	got := e.d.targets()

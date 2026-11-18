@@ -88,10 +88,10 @@ func TestAddWorkspaceAndFolder(t *testing.T) {
 // refused with ErrInvalid (not dropped silently), an empty one is fine.
 func TestAddFolderRejectsAccountOnWindows(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.GOOS = "windows" })
-	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB, Account: "2"}); !errors.Is(err, launch.ErrBadInput) {
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC, Account: "2"}); !errors.Is(err, launch.ErrBadInput) {
 		t.Fatalf("account on windows: err = %v, want launch.ErrBadInput", err)
 	}
-	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB}); err != nil {
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC}); err != nil {
 		t.Fatalf("no account on windows: %v", err)
 	}
 }
@@ -115,13 +115,13 @@ func TestAddFolderValidatesBeforeCswap(t *testing.T) {
 		f    config.Folder
 		want error
 	}{
-		{"bad account", "w", config.Folder{Name: "c", Path: e.dirB, Account: "-x"}, launch.ErrBadInput},
-		{"spaces in account", "w", config.Folder{Name: "c", Path: e.dirB, Account: "a b"}, launch.ErrBadInput},
-		{"unknown workspace", "nope", config.Folder{Name: "c", Path: e.dirB}, ErrNotFound},
-		{"duplicate name", "w", config.Folder{Name: "a", Path: e.dirB}, ErrConflict},
-		{"bad name", "w", config.Folder{Name: "UPPER", Path: e.dirB}, ErrInvalid},
-		{"bad mode", "w", config.Folder{Name: "c", Path: e.dirB, PermissionMode: "yolo"}, ErrInvalid},
-		{"missing path", "w", config.Folder{Name: "c", Path: filepath.Join(e.dirB, "missing")}, ErrInvalid},
+		{"bad account", "w", config.Folder{Name: "c", Path: e.dirC, Account: "-x"}, launch.ErrBadInput},
+		{"spaces in account", "w", config.Folder{Name: "c", Path: e.dirC, Account: "a b"}, launch.ErrBadInput},
+		{"unknown workspace", "nope", config.Folder{Name: "c", Path: e.dirC}, ErrNotFound},
+		{"duplicate name", "w", config.Folder{Name: "a", Path: e.dirC}, ErrConflict},
+		{"bad name", "w", config.Folder{Name: "UPPER", Path: e.dirC}, ErrInvalid},
+		{"bad mode", "w", config.Folder{Name: "c", Path: e.dirC, PermissionMode: "yolo"}, ErrInvalid},
+		{"missing path", "w", config.Folder{Name: "c", Path: filepath.Join(e.dirC, "missing")}, ErrInvalid},
 	}
 	for _, tc := range cases {
 		if _, err := e.d.AddFolder(tc.ws, tc.f); !errors.Is(err, tc.want) {
@@ -131,7 +131,7 @@ func TestAddFolderValidatesBeforeCswap(t *testing.T) {
 	if asked != 0 {
 		t.Fatalf("cswap map ran %d times for refused adds", asked)
 	}
-	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB}); err != nil || asked != 1 {
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC}); err != nil || asked != 1 {
 		t.Fatalf("valid add: err %v, cswap asked %d times, want 1", err, asked)
 	}
 }
@@ -179,7 +179,7 @@ func TestDirectorySeesNewFolders(t *testing.T) {
 	if _, err := e.d.router.Send("w", "a", "c", "hi"); err == nil {
 		t.Fatal("send to a folder that does not exist yet succeeded")
 	}
-	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB}); err != nil {
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.d.router.Send("w", "a", "c", "hi"); err != nil {
@@ -248,9 +248,9 @@ func TestCswapPoll(t *testing.T) {
 		o.Config.Workspaces[0].Folders[1].Account = "3"
 		p := o.Config.Workspaces[0].Folders[0].Path
 		o.Config.Workspaces[0].Folders = append(o.Config.Workspaces[0].Folders,
-			config.Folder{Name: "by-email", Path: p, Account: "User1@Example.com"},
-			config.Folder{Name: "by-label", Path: p, Account: "Account-2"},
-			config.Folder{Name: "other-email", Path: p, Account: "user2@example.com"},
+			config.Folder{Name: "by-email", Path: filepath.Join(p, "x1"), Account: "User1@Example.com"},
+			config.Folder{Name: "by-label", Path: filepath.Join(p, "x2"), Account: "Account-2"},
+			config.Folder{Name: "other-email", Path: filepath.Join(p, "x3"), Account: "user2@example.com"},
 		)
 		o.CswapStatus = func(_ context.Context, path string) (cswap.Info, error) {
 			mu.Lock()
@@ -446,7 +446,7 @@ func TestAddFolderDropsUnusableMappedAccount(t *testing.T) {
 		o.CswapPath = "/opt/cswap"
 		o.CswapMapped = func(context.Context, string, string) (string, bool, error) { return "-bad name", true, nil }
 	})
-	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB})
+	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC})
 	if err != nil || f.Account != "" || e.savedFolder(t, "c").Account != "" {
 		t.Fatalf("mapped bad account: %+v err %v", f, err)
 	}

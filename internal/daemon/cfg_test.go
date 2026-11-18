@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,19 +30,19 @@ func TestAddFolderPrefillsAccountFromCswap(t *testing.T) {
 		o.CswapPath = "/opt/cswap"
 		o.CswapMapped = mapped
 	})
-	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB})
+	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirC})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f.Account != "3" || e.savedFolder(t, "c").Account != "3" {
 		t.Fatalf("account = %q (saved %q), want the mapped 3", f.Account, e.savedFolder(t, "c").Account)
 	}
-	if len(calls) != 1 || calls[0] != (call{"/opt/cswap", e.dirB}) {
+	if len(calls) != 1 || calls[0] != (call{"/opt/cswap", e.dirC}) {
 		t.Fatalf("cswap map calls = %+v, want one with the canonical path", calls)
 	}
 
 	// The user's own account is kept and cswap is not asked.
-	f, err = e.d.AddFolder("w", config.Folder{Name: "d", Path: e.dirB, Account: "1"})
+	f, err = e.d.AddFolder("w", config.Folder{Name: "d", Path: e.dirD, Account: "1"})
 	if err != nil || f.Account != "1" {
 		t.Fatalf("explicit account: %+v %v", f, err)
 	}
@@ -57,7 +58,7 @@ func TestAddFolderPrefillsAccountFromCswap(t *testing.T) {
 			return "", false, errors.New("cswap failed: user@example.com")
 		}
 	})
-	f, err = e2.d.AddFolder("w", config.Folder{Name: "c", Path: e2.dirB})
+	f, err = e2.d.AddFolder("w", config.Folder{Name: "c", Path: e2.dirC})
 	if err != nil || f.Account != "" {
 		t.Fatalf("cswap error: %+v %v", f, err)
 	}
@@ -75,7 +76,48 @@ func TestAddFolderPrefillsAccountFromCswap(t *testing.T) {
 			return "3", true, nil
 		}
 	})
-	if f, err = e3.d.AddFolder("w", config.Folder{Name: "c", Path: e3.dirB}); err != nil || f.Account != "" || asked {
+	if f, err = e3.d.AddFolder("w", config.Folder{Name: "c", Path: e3.dirC}); err != nil || f.Account != "" || asked {
 		t.Fatalf("windows: %+v %v asked=%v", f, err, asked)
+	}
+}
+
+// A hand edit made while the daemon runs must survive the session id save
+// (the most frequent write), and an invalid hand edit must not be overwritten.
+func TestSetSessionIDKeepsHandEdit(t *testing.T) {
+	e := newEnv(t, nil)
+	const sid = "22222222-2222-4222-8222-222222222222"
+
+	c, err := config.Load(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Workspaces[0].Folders = append(c.Workspaces[0].Folders, config.Folder{Name: "hand", Path: e.dirC})
+	if err := c.Save(e.cfgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	e.d.setSessionID("w", "a", sid)
+
+	if got := e.savedFolder(t, "hand"); got.Path != e.dirC {
+		t.Fatalf("hand-added folder lost: %+v", got)
+	}
+	if got := e.savedFolder(t, "a").SessionID; got != sid {
+		t.Fatalf("session id = %q, want %q", got, sid)
+	}
+}
+
+func TestSetSessionIDDoesNotOverwriteInvalidFile(t *testing.T) {
+	e := newEnv(t, nil)
+	bad := []byte("port: [broken\n")
+	if err := os.WriteFile(e.cfgPath, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.d.setSessionID("w", "a", "22222222-2222-4222-8222-222222222222")
+	got, _ := os.ReadFile(e.cfgPath)
+	if string(got) != string(bad) {
+		t.Fatalf("invalid file overwritten: %q", got)
+	}
+	if !strings.Contains(e.logs.String(), "save config failed") {
+		t.Fatalf("failure not logged: %s", e.logs.String())
 	}
 }

@@ -198,3 +198,166 @@ func TestDefaultPath(t *testing.T) {
 		t.Fatalf("got %s", p)
 	}
 }
+
+// A hand edit made between Load and a later change must survive that change.
+func TestUpdateKeepsExternalEdit(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := sample().Save(p); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The user adds a folder by hand while the daemon runs.
+	edited := sample()
+	edited.Workspaces[0].Folders = append(edited.Workspaces[0].Folders, Folder{Name: "hand", Path: filepath.Join(t0(), "hand")})
+	if err := edited.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon records a session id, as setSessionID does.
+	err = c.Update(p, func(c *Config) error {
+		_, f, ok := c.Folder("shop", "api")
+		if !ok {
+			t.Fatal("api missing after reload")
+		}
+		f.SessionID = "sid-1"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := got.Folder("shop", "hand"); !ok {
+		t.Fatal("hand-added folder was lost")
+	}
+	if _, f, _ := got.Folder("shop", "api"); f.SessionID != "sid-1" {
+		t.Fatalf("pending change not applied: %+v", f)
+	}
+	if _, _, ok := c.Folder("shop", "hand"); !ok {
+		t.Fatal("live config did not pick up the hand edit")
+	}
+}
+
+// Without an outside change, Update is a plain apply and save.
+func TestUpdateWithoutExternalEdit(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := sample().Save(p); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := Load(p)
+	for i := 0; i < 2; i++ { // the second call checks the hash after our own Save
+		n := i
+		if err := c.Update(p, func(c *Config) error {
+			c.Workspaces = append(c.Workspaces, Workspace{Name: "w" + string(rune('a'+n))})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := Load(p)
+	if len(got.Workspaces) != 3 {
+		t.Fatalf("workspaces = %d", len(got.Workspaces))
+	}
+}
+
+func TestUpdateRefusesInvalidFreshFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := sample().Save(p); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := Load(p)
+	bad := []byte("port: [not yaml\n")
+	if err := os.WriteFile(p, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applied := false
+	err := c.Update(p, func(*Config) error { applied = true; return nil })
+	if err == nil || applied {
+		t.Fatalf("err = %v, applied = %v, want an error and no apply", err, applied)
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != string(bad) {
+		t.Fatalf("invalid file was overwritten: %q", got)
+	}
+}
+
+func TestUpdateErrorLeavesConfigUnchanged(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	c := sample()
+	if err := c.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	err := c.Update(p, func(c *Config) error { c.Workspaces[0].Name = "x"; return os.ErrInvalid })
+	if err == nil || c.Workspaces[0].Name != "shop" {
+		t.Fatalf("err = %v, name = %q", err, c.Workspaces[0].Name)
+	}
+}
+
+func TestSaveKeepsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real", "config.yaml")
+	if err := sample().Save(real); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.yaml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := Load(link)
+	c.Port = 7400
+	if err := c.Save(link); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(link)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced by a regular file: %v %v", fi, err)
+	}
+	got, _ := Load(real)
+	if got.Port != 7400 {
+		t.Fatalf("target not updated: port %d", got.Port)
+	}
+}
+
+func TestSaveWritesHeader(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := sample().Save(p); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.HasPrefix(string(data), "# Managed by relaydeck. Edits made while relaydeck runs are merged on the next save.\n") {
+		t.Fatalf("no header: %q", data)
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateRejectsDuplicateSessionAndPath(t *testing.T) {
+	c := sample()
+	c.Workspaces = append(c.Workspaces, Workspace{Name: "blog", Folders: []Folder{
+		{Name: "x", Path: filepath.Join(t0(), "other"), SessionID: "abc"},
+	}})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "session_id") {
+		t.Fatalf("duplicate session_id across folders: %v", err)
+	}
+	c = sample()
+	c.Workspaces = append(c.Workspaces, Workspace{Name: "blog", Folders: []Folder{
+		{Name: "x", Path: filepath.Join(t0(), "api")},
+	}})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "path") {
+		t.Fatalf("duplicate path across workspaces: %v", err)
+	}
+	c = sample()
+	c.Workspaces[0].Folders[1].SessionID = "" // empty session ids never clash
+	c.Workspaces[0].Folders[0].SessionID = ""
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

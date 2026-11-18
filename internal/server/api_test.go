@@ -257,11 +257,11 @@ func TestAddFolderRoutePrefillsAccount(t *testing.T) {
 		o.cswapPath = "/opt/cswap"
 		o.mapped = func(_ context.Context, _, dir string) (string, bool, error) { return "4", true, nil }
 	})
-	code, body := r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "c", "path": r.dirB})
+	code, body := r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "c", "path": r.dirC})
 	if code != 201 || decode[map[string]string](t, body)["account"] != "4" {
 		t.Fatalf("add = %d %s, want account 4", code, body)
 	}
-	code, body = r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "d", "path": r.dirB, "account": "1"})
+	code, body = r.api(t, "POST", "/api/workspaces/w/folders", map[string]string{"name": "d", "path": r.dirD, "account": "1"})
 	if code != 201 || decode[map[string]string](t, body)["account"] != "1" {
 		t.Fatalf("explicit account = %d %s", code, body)
 	}

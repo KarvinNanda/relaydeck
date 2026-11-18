@@ -77,18 +77,31 @@ func (d *Daemon) hasWorkspace(ws string) bool {
 	return false
 }
 
-// commit validates and saves next as the new workspace list, then swaps it
-// in. On any error the live config is unchanged. Caller holds cfgMu.
-func (d *Daemon) commit(next []config.Workspace) error {
-	if err := d.validateWorkspaces(next); err != nil {
-		return err
-	}
-	c := config.Config{Port: d.cfg.Port, Workspaces: next}
-	if err := c.Save(d.opts.ConfigPath); err != nil {
+// commit builds the new workspace list with change, validates it and saves
+// it, then swaps it in. If the file was edited by hand since the last save,
+// change runs on the fresh file, so the edit is kept (config.Config.Update).
+// On any error the live config is unchanged. Caller holds cfgMu.
+func (d *Daemon) commit(change func(cur []config.Workspace) ([]config.Workspace, error)) error {
+	var changeErr error
+	err := d.cfg.Update(d.opts.ConfigPath, func(c *config.Config) error {
+		next, err := change(cloneWorkspaces(c.Workspaces))
+		if err == nil {
+			if verr := c.ValidateWith(next); verr != nil {
+				err = fmt.Errorf("%w: %v", ErrInvalid, verr)
+			}
+		}
+		if err != nil {
+			changeErr = err
+			return err
+		}
+		c.Workspaces = next
+		return nil
+	})
+	if err != nil && changeErr == nil {
+		d.log.Error("save config failed", "error", err.Error())
 		return fmt.Errorf("save config: %w", err)
 	}
-	d.cfg.Workspaces = next
-	return nil
+	return err
 }
 
 // AddWorkspace adds an empty workspace and saves the config.
@@ -100,8 +113,12 @@ func (d *Daemon) AddWorkspace(name string) error {
 			return fmt.Errorf("%w: workspace %q", ErrConflict, name)
 		}
 	}
-	next := append(cloneWorkspaces(d.cfg.Workspaces), config.Workspace{Name: name})
-	return d.commit(next)
+	return d.commit(func(cur []config.Workspace) ([]config.Workspace, error) {
+		if slices.ContainsFunc(cur, func(w config.Workspace) bool { return w.Name == name }) {
+			return nil, fmt.Errorf("%w: workspace %q", ErrConflict, name)
+		}
+		return append(cur, config.Workspace{Name: name}), nil
+	})
 }
 
 // AddFolder adds a folder to ws and saves the config. The path is stored in
@@ -127,13 +144,15 @@ func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 
 	d.cfgMu.Lock()
 	defer d.cfgMu.Unlock()
-	next := cloneWorkspaces(d.cfg.Workspaces)
-	i, err := newFolderSlot(next, ws, f.Name)
+	err = d.commit(func(cur []config.Workspace) ([]config.Workspace, error) {
+		i, err := newFolderSlot(cur, ws, f.Name)
+		if err != nil {
+			return nil, err
+		}
+		cur[i].Folders = append(cur[i].Folders, f)
+		return cur, nil
+	})
 	if err != nil {
-		return config.Folder{}, err
-	}
-	next[i].Folders = append(next[i].Folders, f)
-	if err := d.commit(next); err != nil {
 		return config.Folder{}, err
 	}
 	return f, nil
@@ -191,8 +210,15 @@ func (d *Daemon) setSessionID(ws, folder, sid string) {
 	if !ok || f.SessionID == sid {
 		return
 	}
-	f.SessionID = sid
-	if err := d.cfg.Save(d.opts.ConfigPath); err != nil {
+	// The change is re-applied on the fresh file when it was edited by hand.
+	// A folder removed by hand in the meantime is simply skipped.
+	err := d.cfg.Update(d.opts.ConfigPath, func(c *config.Config) error {
+		if _, f, ok := c.Folder(ws, folder); ok {
+			f.SessionID = sid
+		}
+		return nil
+	})
+	if err != nil {
 		d.log.Error("save config failed", "ws", ws, "folder", folder, "error", err.Error())
 		return
 	}
