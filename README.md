@@ -4,12 +4,12 @@ relaydeck is a local web app that runs several Claude Code agents at once, one p
 
 Example: you tell the backend agent "when you are running, tell fe-admin and fe-customer". The agent calls a tool, and relaydeck delivers the message to the agents of those folders, starting them if needed.
 
-Status: early development. Most commands are not implemented yet.
+Status: early development. The daemon, the agent messaging and the web UI (sidebar, terminal panels, Messages drawer) are built. The full run with real Claude Code agents, and Windows, are not verified yet.
 
 ## Requirements
 
 - relaydeck requires Claude Code installed and logged in on this machine. It starts your own `claude` binary. It never implements login and never reads, stores or forwards credentials or tokens. No API key is bundled.
-- Go 1.27 or newer, to build from source.
+- Go 1.27 or newer and Node 24, to build from source.
 - macOS is the main development platform.
 - Windows (native) is **experimental**. It is designed in from the start but not tested yet. Claude Code inside WSL is not supported.
 - Per-folder accounts through cswap are **untested** so far. They are disabled on Windows in v1.
@@ -17,15 +17,28 @@ Status: early development. Most commands are not implemented yet.
 ## Build from source
 
 ```sh
+cd web && npm ci && npm run build && cd ..
 go build -o relaydeck ./cmd/relaydeck
 ./relaydeck version
 ```
 
-The Vue build is embedded from `internal/webui/dist`. That folder is empty until the web UI exists.
+`npm run build` writes the Vue UI into `internal/webui/dist`, and `go build` embeds it in the binary. Without the web build the binary still builds, but the UI answers 404.
+
+## Run
+
+```sh
+./relaydeck serve
+```
+
+`relaydeck serve` listens on `127.0.0.1:7341` (change it with `--port N` or `port` in the config file) and prints a link like `http://127.0.0.1:7341/#token=...`. Open that link in a browser. The token is new on every start, so an old link or a bookmark stops working. The workspace and folder list is stored in `config.yaml` in your user config directory.
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the processes and ports, the auth boundary, the data model, the rules the schema does not enforce, the known limits and where to change things.
 
 ## Security
 
-The daemon listens on `127.0.0.1` only, and every request carries a random token that is new on each start. No telemetry is sent anywhere.
+The daemon listens on `127.0.0.1` only, and every API, WebSocket and agent request carries a random token that is new on each start (only the static UI files are public). The daemon also checks the `Host` and `Origin` headers. No telemetry is sent anywhere.
 
 ## Policy note
 
