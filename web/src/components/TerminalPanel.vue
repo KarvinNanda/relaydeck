@@ -29,7 +29,7 @@ import '@xterm/xterm/css/xterm.css'
 import { api, ApiError, openSocket } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
-import { createMessages } from '../stores/messages'
+import { acquireMessages } from '../stores/messages'
 import Icon from './Icon.vue'
 import StatusBadge from './StatusBadge.vue'
 import SessionPicker, { relTime } from './SessionPicker.vue'
@@ -93,12 +93,11 @@ const lastLine = computed(() => {
 
 // ---- messages held by a draft in this panel ----
 // The folder state has no draft flag, so the panel follows its own
-// workspace's messages (Task 18's store, scoped to this workspace) and
+// workspace's messages (the shared per-workspace store) and
 // counts the ones held by a draft for this folder.
-const msgs = createMessages({
-  api,
-  store: { state: store.state, activeWorkspace: () => ({ name: props.ws, folders: [] }), onEvent: store.onEvent },
-})
+// One store per workspace is shared by every panel (see acquireMessages).
+const held = acquireMessages(props.ws)
+const msgs = held.messages
 // The chip counts held_draft messages only. The sidebar's pending count also
 // includes nudged messages, so the two numbers can differ.
 const heldByDraft = computed(
@@ -439,7 +438,6 @@ watch(running, (r) => {
 }, { flush: 'post' })
 
 onMounted(() => {
-  msgs.start()
   measure()
   host.value?.addEventListener('scroll', measureScroll, { passive: true })
   if (typeof ResizeObserver !== 'undefined' && pane.value) {
@@ -458,7 +456,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   alive = false
-  msgs.stop()
+  held.release()
   document.removeEventListener('pointerdown', onOutside)
   disconnect()
   clearTimeout(fitTimer)
