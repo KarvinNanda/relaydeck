@@ -145,6 +145,8 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, startedAt time.Time) {
 	<-a.Done()
 	d.reg.revoke(a.ID())
+	// Messages the agent read in a turn that never reached Stop go back to queued.
+	d.router.Requeue(t.WS, t.Folder)
 	d.life.exited(t, a.ID(), startedAt)
 	if err := os.RemoveAll(runtimeDir); err != nil {
 		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())

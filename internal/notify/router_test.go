@@ -469,3 +469,106 @@ func TestMessageJSONKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestRequeueUnconfirmedReadAfterExit(t *testing.T) {
+	r := newTestRouter()
+	m1, _ := r.Send("ws", "be", "fe", "a")
+	m2, _ := r.Send("ws", "be", "fe", "b")
+	if got := r.Read("ws", "fe"); len(got) != 2 {
+		t.Fatalf("read %d", len(got))
+	}
+	if len(r.Pending("ws", "fe")) != 0 {
+		t.Fatal("nothing should be pending after read")
+	}
+	r.Requeue("ws", "fe")
+	p := r.Pending("ws", "fe")
+	if len(p) != 2 || p[0].ID != m1.ID || p[1].ID != m2.ID || p[0].State != StateQueued {
+		t.Fatalf("pending after requeue: %+v", p)
+	}
+	// Requeue is one shot: a second call changes nothing.
+	r.Requeue("ws", "fe")
+	if len(r.Pending("ws", "fe")) != 2 {
+		t.Fatal("second requeue changed state")
+	}
+}
+
+func TestConfirmedReadIsNotRequeued(t *testing.T) {
+	r := newTestRouter()
+	r.Send("ws", "be", "fe", "a")
+	msgs, _ := r.ReadN("ws", "fe", 1<<20)
+	if len(msgs) != 1 {
+		t.Fatal("read failed")
+	}
+	r.Confirm("ws", "fe") // the Stop hook
+	r.Requeue("ws", "fe") // process exit afterwards
+	if len(r.Pending("ws", "fe")) != 0 {
+		t.Fatal("confirmed message was requeued")
+	}
+	tl := r.Timeline("ws")
+	if tl[0].State != StateDelivered {
+		t.Fatalf("state %s", tl[0].State)
+	}
+}
+
+func TestRequeueOnlyTouchesThatAgent(t *testing.T) {
+	r := newTestRouter()
+	r.Send("ws", "be", "fe", "a")
+	r.Send("ws", "fe", "be", "b")
+	r.Read("ws", "fe")
+	r.Read("ws", "be")
+	r.Requeue("ws", "fe")
+	if len(r.Pending("ws", "fe")) != 1 || len(r.Pending("ws", "be")) != 0 {
+		t.Fatal("requeue crossed agents")
+	}
+}
+
+func TestPruneKeepsRecentFinishedAndAllPending(t *testing.T) {
+	r := newTestRouter()
+	// A pending message that must survive every prune.
+	keep, _ := r.Send("ws", "be", "fe-admin", "keep")
+	for i := 0; i < MaxFinishedPerWorkspace+20; i++ {
+		if _, err := r.Send("ws", "be", "fe", "x"); err != nil {
+			t.Fatal(err)
+		}
+		r.Read("ws", "fe")
+		r.Confirm("ws", "fe")
+	}
+	// One more send runs the prune over the last delivered message too.
+	last, _ := r.Send("ws", "be", "fe", "last")
+	tl := r.Timeline("ws")
+	finished := 0
+	var haveKeep, haveLast bool
+	for _, m := range tl {
+		if m.State == StateDelivered || m.State == StateRejected {
+			finished++
+		}
+		haveKeep = haveKeep || m.ID == keep.ID
+		haveLast = haveLast || m.ID == last.ID
+	}
+	if finished != MaxFinishedPerWorkspace {
+		t.Fatalf("finished %d, want %d", finished, MaxFinishedPerWorkspace)
+	}
+	if !haveKeep || !haveLast {
+		t.Fatal("a pending message was pruned")
+	}
+	if err := r.Approve(keep.ID); err == nil || errors.Is(err, ErrUnknownMessage) {
+		t.Fatalf("pending message must still be known: %v", err)
+	}
+}
+
+func TestPruneSkipsMessagesStillBeingRead(t *testing.T) {
+	r := newTestRouter()
+	first, _ := r.Send("ws", "be", "fe-admin", "first")
+	r.Read("ws", "fe-admin") // delivered but unconfirmed
+	for i := 0; i < MaxFinishedPerWorkspace+5; i++ {
+		r.Send("ws", "be", "fe", "x")
+		r.Read("ws", "fe")
+		r.Confirm("ws", "fe")
+	}
+	r.Send("ws", "be", "fe", "y")
+	r.Requeue("ws", "fe-admin")
+	p := r.Pending("ws", "fe-admin")
+	if len(p) != 1 || p[0].ID != first.ID {
+		t.Fatalf("unconfirmed message lost: %+v", p)
+	}
+}

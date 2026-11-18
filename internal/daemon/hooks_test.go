@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/agent"
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
@@ -65,5 +66,51 @@ func TestHookEventsSetStatus(t *testing.T) {
 		if got := a.Status(); got != s.want {
 			t.Fatalf("after %+v status = %s, want %s", s.r, got, s.want)
 		}
+	}
+}
+
+// #41: a message read in a turn that never reached Stop is queued again when
+// the agent process exits. After the Stop hook it is final.
+func TestReadMessagesRequeuedWhenAgentExitsBeforeStop(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.d.router.Send("w", "b", "a", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.d.router.Read("w", "a"); len(got) != 1 {
+		t.Fatalf("read %d", len(got))
+	}
+	a, _ := e.d.Agent("w", "a")
+	if err := e.d.StopAgent("w", "a", true); err != nil {
+		t.Fatal(err)
+	}
+	<-a.Done()
+	eventually(t, "message queued again", func() bool { return len(e.d.router.Pending("w", "a")) == 1 })
+}
+
+func TestReadMessagesStayDeliveredAfterStopHook(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	if _, err := e.d.router.Send("w", "b", "a", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	e.d.router.Read("w", "a")
+	e.d.onHook(id, hook.Report{Event: "Stop"})
+	a, _ := e.d.Agent("w", "a")
+	if err := e.d.StopAgent("w", "a", true); err != nil {
+		t.Fatal(err)
+	}
+	<-a.Done()
+	// watch runs Requeue right after Done; give it time, then check nothing came back.
+	time.Sleep(200 * time.Millisecond)
+	if n := len(e.d.router.Pending("w", "a")); n != 0 {
+		t.Fatalf("%d messages requeued after Stop", n)
 	}
 }
