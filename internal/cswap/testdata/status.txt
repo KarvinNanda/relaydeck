@@ -1,0 +1,6 @@
+
+A newer version of claude-swap is available (1.1.0). You are using 0.26.0. Run `cswap upgrade` to update.
+Status: Account-1 (user1@example.com [user1@example.com's Organization])
+  Total managed accounts: 3
+  ├ 5h:  29%   resets Nov 18 03:00  in 3h 14m
+  └ 7d:  70%   resets Nov 19 05:00  in 1d 5h
