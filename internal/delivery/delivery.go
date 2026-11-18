@@ -42,8 +42,11 @@ type nudge struct {
 	ids []string
 }
 
-// Deliverer moves pending messages toward their targets. All state is guarded
-// by one mutex, so Tick may be called from several goroutines.
+// Deliverer moves pending messages toward their targets. Delivery state is
+// guarded by mu, so Tick may be called from several goroutines. Tick holds mu
+// for a long time (process checks, paste polling), so prompt confirmations
+// from the hook handler go through the small pmu instead. Lock order is always
+// mu then pmu.
 type Deliverer struct {
 	r          *notify.Router
 	a          Agents
@@ -59,6 +62,9 @@ type Deliverer struct {
 	deliverNow map[Target]time.Time // when DeliverNow was asked
 	noStart    map[Target]time.Time // do not call Start before this time
 	extWarned  map[Target]time.Time // last ExternalOpen warning
+
+	pmu     sync.Mutex
+	prompts map[Target]time.Time // when UserPromptSubmit last fired, not yet seen by Tick
 }
 
 // New builds a Deliverer. targets lists the agents to check on each Tick (the
@@ -75,6 +81,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		deliverNow: map[Target]time.Time{},
 		noStart:    map[Target]time.Time{},
 		extWarned:  map[Target]time.Time{},
+		prompts:    map[Target]time.Time{},
 	}, nil
 }
 
@@ -101,11 +108,13 @@ func (d *Deliverer) Run(ctx context.Context) {
 	}
 }
 
-// PromptSubmitted confirms a nudge: the hook UserPromptSubmit fired.
+// PromptSubmitted records that the hook UserPromptSubmit fired. The next Tick
+// uses it to confirm a waiting nudge. It never waits for a running Tick.
 func (d *Deliverer) PromptSubmitted(ws, folder string) {
-	d.mu.Lock()
-	delete(d.nudges, Target{ws, folder})
-	d.mu.Unlock()
+	d.pmu.Lock()
+	d.prompts[Target{ws, folder}] = d.now()
+	d.pmu.Unlock()
+	d.Kick()
 }
 
 // DeliverNow makes the next delivery to this target skip the draft check once.
@@ -141,6 +150,16 @@ func (d *Deliverer) set(m notify.Message, s notify.State) {
 }
 
 func (d *Deliverer) tickTarget(t Target) {
+	d.pmu.Lock()
+	promptAt, prompted := d.prompts[t]
+	delete(d.prompts, t)
+	d.pmu.Unlock()
+	if n, ok := d.nudges[t]; ok && prompted && !promptAt.Before(n.at) {
+		// The prompt came after the nudge time: the nudge was submitted. An
+		// older prompt (a late hook for something else) confirms nothing.
+		delete(d.nudges, t)
+	}
+
 	if n, ok := d.nudges[t]; ok && !d.now().Before(n.at.Add(confirmWindow)) {
 		// No UserPromptSubmit: the nudge was swallowed. Queue it again.
 		delete(d.nudges, t)
@@ -279,6 +298,9 @@ func (d *Deliverer) sendNudge(t Target, cand []notify.Message) bool {
 		d.log.Warn("delivery: paste not confirmed on screen, not sending Enter", "ws", t.WS, "agent", t.Folder)
 		return false
 	}
+	// Take the nudge time before Enter: the hook can arrive within
+	// milliseconds, and a prompt earlier than this time is not a confirmation.
+	at := d.now()
 	if err := d.a.Inject(t.WS, t.Folder, []byte("\r")); err != nil {
 		d.log.Error("delivery: inject enter failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return false
@@ -288,6 +310,6 @@ func (d *Deliverer) sendNudge(t Target, cand []notify.Message) bool {
 		d.set(m, notify.StateNudged)
 		ids = append(ids, m.ID)
 	}
-	d.nudges[t] = nudge{at: d.now(), ids: ids}
+	d.nudges[t] = nudge{at: at, ids: ids}
 	return true
 }

@@ -140,6 +140,17 @@ func (g *rig) state(id string) notify.State {
 
 func (g *rig) tick() { g.d.Tick(context.Background()) }
 
+// with builds a second Deliverer on the same router and clock with other Agents.
+func (g *rig) with(a Agents) *Deliverer {
+	d, err := New(g.r, a, 0, g.c.now, func() []Target { return []Target{{"ws", "fe"}} })
+	if err != nil {
+		panic(err)
+	}
+	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	d.sleep = func(time.Duration) {}
+	return d
+}
+
 func TestIdleTargetGetsOneNudge(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "secret body")
@@ -496,12 +507,7 @@ func (a readerAgents) Inject(ws, folder string, p []byte) error {
 func TestSetStateErrorSkipped(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
-	d, err := New(g.r, readerAgents{g.fa, g.r}, 0, g.c.now, func() []Target { return []Target{{"ws", "fe"}} })
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	d.sleep = func(time.Duration) {}
+	d := g.with(readerAgents{g.fa, g.r})
 	g.fa.set(func(f *fakeAgents) {
 		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
 	})
@@ -582,5 +588,113 @@ func TestDeliverNowKeptWhenEnterSkipped(t *testing.T) {
 	g.tick()
 	if _, ok := g.d.deliverNow[Target{"ws", "fe"}]; !ok {
 		t.Fatal("ask must survive a skipped Enter")
+	}
+}
+
+// blockingAgents blocks every Inject until release is closed, like a slow PTY
+// write, and signals entered on the first one.
+type blockingAgents struct {
+	*fakeAgents
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a blockingAgents) Inject(ws, folder string, p []byte) error {
+	select {
+	case a.entered <- struct{}{}:
+	default:
+	}
+	<-a.release
+	return a.fakeAgents.Inject(ws, folder, p)
+}
+
+func TestPromptSubmittedDoesNotWaitForTick(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	ba := blockingAgents{g.fa, make(chan struct{}, 1), make(chan struct{})}
+	d := g.with(ba)
+	tickDone := make(chan struct{})
+	go func() { d.Tick(context.Background()); close(tickDone) }()
+	select {
+	case <-ba.entered:
+	case <-time.After(2 * time.Second):
+		close(ba.release)
+		t.Fatal("Tick never reached Inject")
+	}
+	done := make(chan struct{})
+	go func() { d.PromptSubmitted("ws", "fe"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		close(ba.release)
+		t.Fatal("PromptSubmitted waited for Tick")
+	}
+	close(ba.release)
+	<-tickDone
+}
+
+// hookAgents runs hook after each Inject, like a hook request that arrives
+// while the delivery loop is still typing.
+type hookAgents struct {
+	*fakeAgents
+	hook func(p []byte)
+}
+
+func (a hookAgents) Inject(ws, folder string, p []byte) error {
+	err := a.fakeAgents.Inject(ws, folder, p)
+	a.hook(p)
+	return err
+}
+
+func TestPromptBeforeNudgeDoesNotConfirm(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	fired := false
+	var d *Deliverer
+	d = g.with(hookAgents{g.fa, func(p []byte) {
+		if string(p) != "\r" && !fired {
+			fired = true
+			// A late hook for an older prompt lands during the paste,
+			// before the nudge time is recorded.
+			d.PromptSubmitted("ws", "fe")
+			g.c.add(100 * time.Millisecond)
+		}
+	}})
+	d.Tick(context.Background())
+	g.c.add(time.Second)
+	d.Tick(context.Background())
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("stale prompt confirmed the nudge: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+	if _, ok := d.nudges[Target{"ws", "fe"}]; !ok {
+		t.Fatal("nudge must still wait for its confirmation")
+	}
+	g.c.add(3 * time.Second)
+	d.Tick(context.Background())
+	// Swallowed: requeued and nudged again in the same tick.
+	if g.fa.nInjected() != 4 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestPromptRightAfterEnterConfirms(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	fired := false
+	var d *Deliverer
+	d = g.with(hookAgents{g.fa, func(p []byte) {
+		if string(p) == "\r" && !fired {
+			fired = true
+			// The hook fires within milliseconds of Enter.
+			d.PromptSubmitted("ws", "fe")
+			g.c.add(100 * time.Millisecond)
+		}
+	}})
+	d.Tick(context.Background())
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
+	g.c.add(5 * time.Second)
+	d.Tick(context.Background())
+	if g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("confirmed nudge treated as swallowed: state %s", g.state(m.ID))
 	}
 }
