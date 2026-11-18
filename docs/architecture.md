@@ -177,6 +177,8 @@ relaydeck has two kinds of caller. The UI holder of the UI token is fully truste
 | WebSocket ticket | `POST /api/ws-ticket` (needs the UI token) | same generator | daemon memory (`TicketStore`) | `?ticket=` on the upgrade request | 30 s, single use. Expired tickets are dropped on the next `Issue`. |
 | Agent token | `registry.issue` at each agent start | same generator | the agent's environment (`RELAYDECK_AGENT_TOKEN`). The daemon keeps only `sha256(token)`. | `Authorization: Bearer` on `/agent/` | until the process exits or the user stops it (`registry.revoke`). A restart gets a new id and token. |
 
+The UI token is also written to the open page (`<user cache dir>/relaydeck/open.html`, file mode 0600 in a 0700 directory) right after the startup line, by `cmd/relaydeck/openpage.go:writeOpenPage`. `relaydeck open` opens that file, never the URL, so the token is not in argv. On a clean shutdown `removeOpenPage` deletes the page, but only when it still holds this run's token, so a newer daemon's page stays. A daemon that is killed leaves the page behind, and `relaydeck open` then reports a stale page when the port does not answer.
+
 How the UI token reaches the browser: the link printed by `serve` carries it in the URL fragment (`#token=...`). A fragment is never sent in a request and never in a Referer header. `web/src/token.ts:readToken` moves it to `sessionStorage` and removes it from the address bar with `history.replaceState`.
 
 Browser hardening headers (set on every response, before any handler can write one, in `server.securityHeaders`):
@@ -470,6 +472,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 - **The agent token is readable by every process the agent spawns** (Claude's Bash tool, the user's own MCP servers). Any of them can act as that agent on the agent endpoints (notify as that folder, read that folder's messages, report status).
 - **All agents and the daemon run as one OS user.** On Linux and Windows a prompt-injected agent with a shell can read a sibling agent's `RELAYDECK_AGENT_TOKEN` from its environment (macOS `ps` did not show it). So the workspace scope and the hop limit protect against mistakes and simple injection, not against a determined local attacker of the same user.
 - **Any local process of the same machine can connect to `127.0.0.1:7341`**, but without the token it gets 401 on `/api`, `/ws` and `/agent`. Static files are public. There is no TLS.
+- **Any process that runs as the same user can read the open page and get the UI token.** This is the same trust level as reading an agent's environment (see above). The 0600 mode and the 0700 directory only keep out other OS users. A stale page also keeps an old token on disk until the next start or `removeOpenPage`, but the token is useless once the daemon is gone.
 - **The UI token is in `sessionStorage`**, so a script running in the UI origin could read it. The CSP (`script-src 'self'`, no inline script) and the `vue/no-v-html` rule are the defence.
 - A WebSocket ticket is not bound to a route (section 3.2).
 - `[::1]` is rejected as a Host on purpose. Use `127.0.0.1` or `localhost`.
@@ -508,6 +511,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 | Hook events and the status mapping | `internal/launch/launch.go` (`hookEvents`), `internal/hook/client.go` (`Events`), `internal/hook/handler.go` (`StatusFor`), `internal/daemon/hooks.go` |
 | Static file content types, UI-not-built warning | `internal/server/server.go:staticFiles`, `cmd/relaydeck/serve.go:warnIfNoUI` |
 | Stale runtime dirs at start | `internal/daemon/runtimeclean.go` |
+| The open page and `relaydeck open` (path, content, opener per OS) | `cmd/relaydeck/openpage.go`, the call in `cmd/relaydeck/serve.go`, the subcommand in `cmd/relaydeck/main.go` |
 | Shutdown signals | `cmd/relaydeck/main.go`, `cmd/relaydeck/signals_unix.go`, `cmd/relaydeck/signals_windows.go` |
 | External session detection | `internal/extsession/detect.go`. Wiring in `internal/daemon/daemon.go:New`. |
 | cswap (status, map, account display) | `internal/cswap/cswap.go`, `internal/daemon/cswappoll.go`, `internal/daemon/cfg.go:mappedAccount` |
