@@ -2,6 +2,9 @@ module github.com/KarvinNanda/relaydeck
 
 go 1.27
 
+// web/node_modules holds Go files from some npm packages; keep them out of ./...
+ignore ./web/node_modules
+
 require (
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff
