@@ -106,6 +106,7 @@ type rigOptions struct {
 	static    fstest.MapFS
 	cswapPath string
 	mapped    func(ctx context.Context, path, dir string) (string, bool, error)
+	external  func(ctx context.Context, dir, sid string, own map[int]bool) (bool, error)
 }
 
 func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
@@ -135,6 +136,10 @@ func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
 		t.Fatal(err)
 	}
 	log := logx.New(r.logs)
+	external := func(context.Context, string, string, map[int]bool) (bool, error) { return false, nil }
+	if o.external != nil {
+		external = o.external
+	}
 	d, err := daemon.New(daemon.Options{
 		ConfigPath:   r.cfgPath,
 		Config:       cfg,
@@ -144,7 +149,7 @@ func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
 		RuntimeRoot:  filepath.Join(base, "runtime"),
 		BaseEnv:      []string{"FAKECLAUDE_DIR=" + r.out},
 		ClaudeHome:   r.home,
-		ExternalOpen: func(context.Context, string, string, map[int]bool) (bool, error) { return false, nil },
+		ExternalOpen: external,
 		OwnPIDs:      func() map[int]bool { return nil },
 		CswapStatus:  func(context.Context, string) (cswap.Info, error) { return cswap.Info{}, cswap.ErrUnknownFormat },
 		EnterDelay:   10 * time.Millisecond,

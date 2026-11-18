@@ -256,14 +256,29 @@ func statusOf(err error) int {
 	return http.StatusInternalServerError
 }
 
-// fail writes the error. A 500 gets a fixed text and the detail goes to the
-// log with the request_id. No error text here carries a token.
+// fail writes the error. A 500 gets a fixed text and a 503 gets the fixed
+// text of its sentinel; the full error goes to the log with the request_id.
+// A 503 never sends err.Error(): it can hold subprocess output or absolute
+// paths. No error text here carries a token.
 func (a *api) fail(w http.ResponseWriter, r *http.Request, err error) {
 	code := statusOf(err)
 	msg := err.Error()
-	if code == http.StatusInternalServerError {
+	switch code {
+	case http.StatusInternalServerError:
 		a.log.Error("api error", "path", r.URL.Path, "request_id", logx.RequestID(r.Context()), "error", msg)
 		msg = "internal error; see the relaydeck log"
+	case http.StatusServiceUnavailable:
+		a.log.Error("api unavailable", "path", r.URL.Path, "request_id", logx.RequestID(r.Context()), "error", msg)
+		switch {
+		case errors.Is(err, daemon.ErrShuttingDown):
+			msg = daemon.ErrShuttingDown.Error()
+		case errors.Is(err, daemon.ErrClaudeNotFound):
+			msg = daemon.ErrClaudeNotFound.Error()
+		case errors.Is(err, daemon.ErrExternalCheck):
+			msg = daemon.ErrExternalCheck.Error()
+		default:
+			msg = "service unavailable; see the relaydeck log"
+		}
 	}
 	writeError(w, code, msg)
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -435,4 +436,21 @@ func TestAgentStartRefreshesAccount(t *testing.T) {
 		return calls == 1
 	})
 	eventually(t, "account known", func() bool { return e.d.State().Account.Known })
+}
+
+// An account returned by `cswap map` goes through the same check as a typed
+// one: a bad name is not saved, and the folder is added without an account.
+func TestAddFolderDropsUnusableMappedAccount(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.GOOS = "linux"
+		o.CswapPath = "/opt/cswap"
+		o.CswapMapped = func(context.Context, string, string) (string, bool, error) { return "-bad name", true, nil }
+	})
+	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB})
+	if err != nil || f.Account != "" || e.savedFolder(t, "c").Account != "" {
+		t.Fatalf("mapped bad account: %+v err %v", f, err)
+	}
+	if !strings.Contains(e.logs.String(), "unusable account") || strings.Contains(e.logs.String(), "-bad name") {
+		t.Fatalf("warning missing, or it logs the account: %s", e.logs.String())
+	}
 }

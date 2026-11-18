@@ -443,9 +443,7 @@ func TestApproveQueuedMessageConflict(t *testing.T) {
 	}
 }
 
-// Every launch problem has its own status and text: shutting down and a
-// missing claude are 503, a failed external session check is 503 with the
-// cause, an unknown account is 400 at POST time and nothing is saved.
+// Shutting down and a missing claude are 503 with a fixed text.
 func TestStartErrorStatuses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH lookup differs on windows")
@@ -463,7 +461,7 @@ func TestStartErrorStatuses(t *testing.T) {
 	}
 }
 
-func TestStartExternalCheckFailureIs503(t *testing.T) {
+func TestStatusOfNewSentinels(t *testing.T) {
 	if got := statusOf(fmt.Errorf("%w: ps failed", daemon.ErrExternalCheck)); got != 503 {
 		t.Fatalf("ErrExternalCheck = %d, want 503", got)
 	}
@@ -472,6 +470,35 @@ func TestStartExternalCheckFailureIs503(t *testing.T) {
 	}
 	if got := statusOf(daemon.ErrShuttingDown); got != 503 {
 		t.Fatalf("ErrShuttingDown = %d, want 503", got)
+	}
+}
+
+// A failed external session check is 503 with a fixed text. The cause (here
+// a path) goes to the log with the request_id, never to the client.
+func TestStartExternalCheckFailureHidesCause(t *testing.T) {
+	const cur = "11111111-1111-4111-8111-111111111111"
+	r := newRigWith(t, func(o *rigOptions) {
+		o.external = func(context.Context, string, string, map[int]bool) (bool, error) {
+			return false, errors.New("ps: cannot read /Users/someone/secret")
+		}
+	})
+	// The session needs a transcript, or the start stops before the check.
+	sessDir := filepath.Join(r.home, "projects", paths.ProjectDirName(r.dirA))
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, cur+".jsonl"), []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, body := r.api(t, "POST", "/api/agents/w/a/start", map[string]any{"session_id": cur})
+	if code != 503 || errText(t, body) != "could not check for an open Claude Code session in this folder" {
+		t.Fatalf("external check failure = %d %s", code, body)
+	}
+	if strings.Contains(body, "/Users/someone/secret") {
+		t.Fatalf("cause leaked to the client: %s", body)
+	}
+	if logs := r.logs.String(); !strings.Contains(logs, "/Users/someone/secret") || !strings.Contains(logs, "api unavailable") {
+		t.Fatalf("cause not logged: %s", logs)
 	}
 }
 
@@ -493,6 +520,9 @@ func TestAddFolderRejectsBadAccount(t *testing.T) {
 func TestPickFolderBusy(t *testing.T) {
 	r := newRig(t, nil)
 	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // a failed assertion must not leave the dialog blocked
 	r.picker.block = release
 	first := make(chan int, 1)
 	go func() {
@@ -504,7 +534,7 @@ func TestPickFolderBusy(t *testing.T) {
 	if code != 409 || !strings.Contains(errText(t, body), "already open") {
 		t.Fatalf("second dialog = %d %s", code, body)
 	}
-	close(release)
+	unblock()
 	if c := <-first; c != 200 {
 		t.Fatalf("first dialog = %d", c)
 	}

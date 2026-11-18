@@ -80,10 +80,10 @@ func (d *Daemon) hasWorkspace(ws string) bool {
 // commit validates and saves next as the new workspace list, then swaps it
 // in. On any error the live config is unchanged. Caller holds cfgMu.
 func (d *Daemon) commit(next []config.Workspace) error {
-	c := config.Config{Port: d.cfg.Port, Workspaces: next}
-	if err := c.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	if err := d.validateWorkspaces(next); err != nil {
+		return err
 	}
+	c := config.Config{Port: d.cfg.Port, Workspaces: next}
 	if err := c.Save(d.opts.ConfigPath); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -152,6 +152,12 @@ func (d *Daemon) checkNewFolder(ws string, f config.Folder) error {
 		return err
 	}
 	next[i].Folders = append(next[i].Folders, f)
+	return d.validateWorkspaces(next)
+}
+
+// validateWorkspaces checks next as config.Validate does, as ErrInvalid.
+// Caller holds cfgMu.
+func (d *Daemon) validateWorkspaces(next []config.Workspace) error {
 	c := config.Config{Port: d.cfg.Port, Workspaces: next}
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -203,6 +209,12 @@ func (d *Daemon) mappedAccount(dir string) string {
 		return ""
 	}
 	if !ok {
+		return ""
+	}
+	// The name goes into argv at start, so it gets the same check as one
+	// typed by the user. Only the kind is logged, as with a cswap error.
+	if err := launch.ValidateAccount(d.opts.GOOS, acc); err != nil {
+		d.log.Warn("cswap map returned an unusable account, folder added without an account")
 		return ""
 	}
 	return acc

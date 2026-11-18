@@ -405,6 +405,13 @@ func TestAgentTokenRefusedOnUIRoutes(t *testing.T) {
 	startAgent(t, r, "a")
 	a, _ := r.d.Agent("w", "a")
 	tok := r.info(t, a.ID()).Token
+	// Positive control: the token is real and works on an agent endpoint.
+	if tok == "" {
+		t.Fatal("no agent token")
+	}
+	if code, body := r.tool(t, tok, "list_folders", nil); code != 200 {
+		t.Fatalf("agent token on list_folders = %d %s, want 200", code, body)
+	}
 	for _, rt := range apiRoutes {
 		if code, body := r.do(t, rt.method, rt.path, "", tok, nil); code != 401 {
 			t.Errorf("%s %s with an agent token = %d %s, want 401", rt.method, rt.path, code, body)
