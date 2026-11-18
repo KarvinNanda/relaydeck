@@ -148,6 +148,40 @@ export function createMessages(deps: MessagesDeps = { api, store }) {
   return { newestFirst, loading, error, counts, lit, start, stop, reload: () => (ws ? load(ws) : Promise.resolve()), approve, reject, startNew, deliverNow }
 }
 
+// One store per workspace, shared by every holder (each open panel). Without
+// this, 4 panels would each load and reload the whole workspace history. The
+// first holder starts the store, the last release stops it.
+const shared = new Map<string, { m: Messages; refs: number }>()
+
+export function acquireMessages(
+  ws: string,
+  deps: Pick<MessagesDeps, 'api' | 'store'> = { api, store },
+): { messages: Messages; release: () => void } {
+  let entry = shared.get(ws)
+  if (!entry) {
+    const m = createMessages({
+      api: deps.api,
+      store: { state: deps.store.state, activeWorkspace: () => ({ name: ws, folders: [] }), onEvent: deps.store.onEvent },
+    })
+    entry = { m, refs: 0 }
+    shared.set(ws, entry)
+    m.start()
+  }
+  entry.refs++
+  const mine = entry
+  let released = false
+  return {
+    messages: mine.m,
+    release() {
+      if (released) return
+      released = true
+      if (--mine.refs > 0) return
+      mine.m.stop()
+      if (shared.get(ws) === mine) shared.delete(ws)
+    },
+  }
+}
+
 function upsert(list: Message[], m: Message): Message[] {
   const i = list.findIndex((x) => x.id === m.id)
   if (i < 0) return [...list, m]

@@ -1,0 +1,20 @@
+# Dependabot keeps the pinned GitHub Actions SHAs and the dependencies up to
+# date with weekly pull requests. Dev-only npm advisories (vite, vitest,
+# vue-tsc chain) are picked up here when fixed versions are released.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: development
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    target-branch: development
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: development

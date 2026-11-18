@@ -132,7 +132,10 @@ func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 	}
 	p, err := paths.Canonicalize(f.Path)
 	if err != nil {
-		return config.Folder{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		// The error holds the resolved path and raw file system text, so only
+		// the log gets it. The caller sees fixed text.
+		d.log.Warn("add folder: path refused", "ws", ws, "error", err.Error())
+		return config.Folder{}, fmt.Errorf("%w: path must be an existing directory", ErrInvalid)
 	}
 	f.Path = p
 	if err := d.checkNewFolder(ws, f); err != nil {

@@ -19,6 +19,13 @@ const (
 	replyBuffer    = 64
 	defaultCols    = 120
 	defaultRows    = 40
+	// defaultInjectTimeout bounds one Inject. A healthy PTY takes a write at
+	// once; only a hung process with a full input buffer blocks.
+	defaultInjectTimeout = 2 * time.Second
+	// exitConfirmPolls and exitConfirmEvery bound the wait for "/exit" to
+	// show in the input box before Stop sends Enter (500 ms).
+	exitConfirmPolls = 20
+	exitConfirmEvery = 25 * time.Millisecond
 )
 
 // Agent is one running process inside a PTY.
@@ -44,6 +51,10 @@ type Agent struct {
 	subs     map[*subscriber]struct{}
 	exitCode int
 	stopped  bool
+
+	// injectTimeout bounds one Inject. Zero means defaultInjectTimeout.
+	injectTimeout time.Duration
+	injectMu      sync.Mutex // one injected write at a time, in order
 
 	replyCh   chan []byte
 	done      chan struct{} // closed when the process is gone and output is drained
@@ -78,10 +89,10 @@ func (a *Agent) ExitCode() int {
 
 // replyWriter forwards emulator query replies to the PTY, but only while no
 // browser is attached (an attached xterm.js answers the same queries). It
-// never blocks: the Screen drain goroutine calls it. That goroutine lives as
-// long as the process (Screen has no Close), so the Agent is held through an
-// atomic pointer that waitLoop clears once the process is gone; then a
-// removed Agent can be freed.
+// never blocks: the Screen drain goroutine calls it. waitLoop closes the
+// Screen once the process is gone, which ends that goroutine. Until then the
+// goroutine holds this writer, so the Agent is held through an atomic pointer
+// that waitLoop clears; then a removed Agent can be freed.
 type replyWriter struct{ a atomic.Pointer[Agent] }
 
 func (w *replyWriter) Write(p []byte) (int, error) {
@@ -169,6 +180,7 @@ func (a *Agent) waitLoop() {
 	}
 	a.pty.Close()
 	<-a.readDone
+	a.screen.Close() // the reader is done, so nothing writes to the screen now
 
 	a.mu.Lock()
 	a.exitCode = code
@@ -186,6 +198,10 @@ func (a *Agent) waitLoop() {
 	a.mu.Unlock()
 	a.log.Info("agent stopped", "agent_id", a.id, "exit_code", code)
 }
+
+// ErrInjectTimeout is returned when the PTY did not accept an injected write
+// in time (a hung process with a full input buffer).
+var ErrInjectTimeout = errors.New("agent: write to the PTY timed out")
 
 // ErrStopped is returned when writing to an agent whose process is gone.
 var ErrStopped = errors.New("agent: process has stopped")
@@ -218,12 +234,43 @@ func (a *Agent) Write(p []byte) error {
 
 // Inject sends daemon input (the nudge) to the PTY. It never fires
 // OnUserEnter.
+//
+// The write runs in its own goroutine and Inject gives up after the inject
+// timeout with ErrInjectTimeout, because a hung process with a full input
+// buffer blocks a PTY write for good, and the delivery loop calls Inject
+// under its lock. Writes are ordered by injectMu. A write that is still
+// queued when its Inject gave up is dropped, so a late nudge is never typed
+// after the caller moved on. The one write already blocked in the PTY ends
+// when the PTY closes (waitLoop closes it once the process is gone).
 func (a *Agent) Inject(p []byte) error {
 	if a.isStopped() {
 		return ErrStopped
 	}
-	_, err := a.pty.Write(p)
-	return err
+	var abandoned atomic.Bool
+	res := make(chan error, 1)
+	go func() {
+		a.injectMu.Lock()
+		defer a.injectMu.Unlock()
+		if abandoned.Load() {
+			res <- ErrInjectTimeout
+			return
+		}
+		_, err := a.pty.Write(p)
+		res <- err
+	}()
+	timeout := a.injectTimeout
+	if timeout <= 0 {
+		timeout = defaultInjectTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-res:
+		return err
+	case <-timer.C:
+		abandoned.Store(true)
+		return ErrInjectTimeout
+	}
 }
 
 // ScreenState returns the current reading of the terminal screen.
@@ -274,7 +321,17 @@ func (a *Agent) Stop(grace time.Duration) error {
 	// grace timer. Once the process is killed, waitLoop closes the PTY, which
 	// releases a blocked write.
 	go func() {
-		a.Inject([]byte("/exit"))
+		if a.Inject([]byte("/exit")) != nil {
+			return
+		}
+		// The screen was read a few ms before this point. A dialog that
+		// opened in the gap would take the Enter as a choice, so the box
+		// must show exactly "/exit" before Enter. Otherwise kill.
+		if !a.exitTyped() {
+			a.log.Warn("agent: /exit not shown in the input box, killing instead of typing Enter", "agent_id", a.id)
+			a.Kill()
+			return
+		}
 		a.Inject([]byte("\r"))
 	}()
 	select {
@@ -283,6 +340,22 @@ func (a *Agent) Stop(grace time.Duration) error {
 	case <-time.After(grace):
 	}
 	return a.Kill()
+}
+
+// exitTyped polls until the input box shows exactly "/exit". It gives up
+// early when the trust dialog is on screen.
+func (a *Agent) exitTyped() bool {
+	for i := 0; i < exitConfirmPolls; i++ {
+		st := a.screen.State()
+		if st.Trust {
+			return false
+		}
+		if st.InputVisible && st.Draft == "/exit" {
+			return true
+		}
+		time.Sleep(exitConfirmEvery)
+	}
+	return false
 }
 
 // Kill ends the process tree at once without typing anything, and returns

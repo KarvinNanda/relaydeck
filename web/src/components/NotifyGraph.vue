@@ -22,7 +22,9 @@ const statusMeta: Record<AgentStatus, { icon: IconName; cls: string; word: strin
   starting: { icon: 'start', cls: 'c-start', word: 'starting' },
 }
 
-// Layout in px (scale 1). JetBrains Mono is 0.6 em per character.
+// Layout in px (scale 1). textW measures the real text when the browser can;
+// without layout (or before the font loads) it assumes JetBrains Mono, 0.6 em
+// per character.
 const FS = 14
 const CHAR = FS * 0.6
 const TEXT_X = 28 // left padding 8, icon 14, gap 6
@@ -37,7 +39,23 @@ const maxName = 11
 const root = ref<HTMLElement | null>(null)
 const boxW = ref(324)
 let ro: ResizeObserver | null = null
+// A hidden span that takes the same font as the graph text. `ready` makes the
+// layout computeds run again once the probe exists and once fonts are loaded.
+const probe = ref<HTMLElement | null>(null)
+const ready = ref(0)
+function textW(s: string): number {
+  void ready.value
+  const el = probe.value
+  if (el) {
+    el.textContent = s
+    const w = el.getBoundingClientRect().width
+    if (w > 0) return w
+  }
+  return Array.from(s).length * CHAR
+}
 onMounted(() => {
+  ready.value++
+  void document.fonts?.ready.then(() => ready.value++).catch(() => {})
   if (typeof ResizeObserver === 'undefined' || !root.value) return
   ro = new ResizeObserver(([e]) => {
     if (e) boxW.value = Math.floor(e.contentRect.width)
@@ -53,7 +71,7 @@ const cut = (name: string) => {
 
 interface Node { name: string; x: number; y: number; cx: number; cy: number; label: string; title: string; icon: IconName; cls: string }
 
-const nodeW = computed(() => Math.max(118, Math.ceil(TEXT_X + Math.max(0, ...props.folders.map((f) => Array.from(cut(f.name)).length)) * CHAR + PAD_R)))
+const nodeW = computed(() => Math.max(118, Math.ceil(TEXT_X + Math.max(0, ...props.folders.map((f) => textW(cut(f.name)))) + PAD_R)))
 const W = computed(() => Math.max(2 * nodeW.value + 2 * SIDE + MIN_GAP, boxW.value))
 
 const nodes = computed<Node[]>(() => {
@@ -157,25 +175,31 @@ const latestLabel = computed(() => {
   const e = edges.value.find((x) => x.latest)
   if (!m || !e) return null
   const text = clock(m.created, false)
-  const lw = text.length * CHAR
+  const lw = textW(text)
   const fits = (x: number, y: number, anchor: string) => {
     const left = anchor === 'middle' ? x - lw / 2 : anchor === 'end' ? x - lw : x
     const b = { x1: left, x2: left + lw, y1: y - FS / 2, y2: y + FS / 2 }
     if (b.x1 < 0 || b.x2 > W.value || b.y1 < 0 || b.y2 > H.value) return false
     return nodes.value.every((nd) => b.x2 < nd.x - 4 || b.x1 > nd.x + nodeW.value + 4 || b.y2 < nd.y - 4 || b.y1 > nd.y + NH + 4)
   }
-  let first: { x: number; y: number; anchor: string } | null = null
   for (const dist of [14, 24, 36]) {
     for (const side of [1, -1]) {
       const nx = e.nx * side
       const ny = e.ny * side
       const anchor = Math.abs(nx) > 0.7 ? (nx > 0 ? 'start' : 'end') : 'middle'
       const c = { x: r1(e.mx + nx * dist), y: r1(e.my + ny * dist), anchor }
-      first ??= c
       if (fits(c.x, c.y, c.anchor)) return { ...c, text, from: m.from, to: m.to }
     }
   }
-  return { ...first!, text, from: m.from, to: m.to }
+  // No spot is clear of the nodes: draw no label rather than one that
+  // touches a node. The legend carries the time instead.
+  return null
+})
+
+// The latest message has an edge but its label did not fit anywhere.
+const latestTime = computed(() => {
+  const m = latestMsg.value
+  return m && !latestLabel.value ? clock(m.created, false) : ''
 })
 
 const summary = computed(() => {
@@ -189,6 +213,7 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
 
 <template>
   <div ref="root" class="gr">
+    <span ref="probe" class="probe" aria-hidden="true"></span>
     <div class="gr-h"><span>graph &middot; {{ workspace }}</span></div>
     <p v-if="nodes.length === 0" class="none">No folders in this workspace.</p>
     <svg v-else class="graph" :width="W" :height="H" :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="summary">
@@ -226,7 +251,8 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
       >{{ latestLabel.text }}</text>
     </svg>
     <div class="gl">
-      <span><svg width="22" height="8" aria-hidden="true"><line class="edge solid latest" x1="0" y1="4" x2="22" y2="4" /></svg>latest</span>
+      <!-- Pattern shows the state, green shows the latest: so "latest" is only a green bar. -->
+      <span title="the newest message (green)"><svg width="12" height="8" aria-hidden="true"><line class="edge solid latest" x1="0" y1="4" x2="12" y2="4" /></svg>latest{{ latestTime ? ' ' + latestTime : '' }}</span>
       <span><svg width="22" height="8" aria-hidden="true"><line class="edge solid" x1="0" y1="4" x2="22" y2="4" /></svg>delivered</span>
       <span title="queued, nudged, waiting or held"><svg width="22" height="8" aria-hidden="true"><line class="edge dashed" x1="0" y1="4" x2="22" y2="4" /></svg>held</span>
       <span title="awaiting approval"><svg width="22" height="8" aria-hidden="true"><line class="edge dotted" x1="0" y1="4" x2="22" y2="4" /></svg>approval</span>
@@ -237,6 +263,7 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
 <style scoped>
 .gr { padding: var(--s-1) var(--s-5) var(--s-3); display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; overflow: auto; }
 .gr-h { color: var(--text-muted); }
+.probe { position: absolute; left: -9999px; visibility: hidden; white-space: pre; font-size: 14px; pointer-events: none; }
 .none { margin: 0; color: var(--text-muted); }
 .graph { display: block; flex: none; }
 
@@ -258,6 +285,9 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
 
 .gl { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-6); color: var(--text-muted); }
 .gl span { display: inline-flex; align-items: center; gap: 5px; }
+/* the key shows the line patterns in a neutral color; only "latest" is green */
+.gl .edge { stroke: var(--text-muted); }
+.gl .edge.latest { stroke: var(--green); }
 
 @media (max-width: 767px) {
   .gr { padding: var(--s-4) var(--gutter-mobile) var(--s-8); }

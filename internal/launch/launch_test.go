@@ -260,6 +260,30 @@ func TestEnvScrubsClaudeSessionMarkers(t *testing.T) {
 	}
 }
 
+func TestEnvScrubsIDEVariablesKeepsUserSettings(t *testing.T) {
+	in := base()
+	in.BaseEnv = []string{
+		"CLAUDE_CODE_SSE_PORT=1234", "ENABLE_IDE_INTEGRATION=true",
+		"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL=1", "CLAUDE_CODE_IDE_HOST_OVERRIDE=h",
+		"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CONFIG_DIR=/keep", "PATH=/bin",
+	}
+	c, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range c.Env {
+		k, _, _ := strings.Cut(e, "=")
+		if k == "CLAUDE_CODE_SSE_PORT" || k == "ENABLE_IDE_INTEGRATION" || strings.HasPrefix(k, "CLAUDE_CODE_IDE_") {
+			t.Errorf("not scrubbed: %q", e)
+		}
+	}
+	for _, e := range []string{"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CONFIG_DIR=/keep", "PATH=/bin"} {
+		if !slices.Contains(c.Env, e) {
+			t.Errorf("wrongly dropped: %q", e)
+		}
+	}
+}
+
 func TestEnvScrubWindowsCaseInsensitive(t *testing.T) {
 	in := base()
 	in.GOOS = "windows"

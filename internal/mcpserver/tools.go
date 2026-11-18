@@ -65,7 +65,7 @@ func Handlers(r *notify.Router, dir notify.Directory, status func(ws, folder str
 			}
 			text, err = sendNotify(r, ws, folder, a)
 		case "read_messages":
-			text = readMessages(r, ws, folder)
+			text = readMessages(r, ws, folder, id)
 		default:
 			writeErr(w, http.StatusNotFound, fmt.Sprintf("unknown tool %q", name))
 			return
@@ -104,8 +104,8 @@ func sendNotify(r *notify.Router, ws, from string, a notifyArgs) (string, error)
 	return fmt.Sprintf("Message %s queued for %q (hop %d).", m.ID, m.To, m.Hop), nil
 }
 
-func readMessages(r *notify.Router, ws, agent string) string {
-	msgs, remaining := r.ReadN(ws, agent, readBudget)
+func readMessages(r *notify.Router, ws, agent, agentID string) string {
+	msgs, remaining := r.ReadAs(ws, agent, agentID, readBudget)
 	if len(msgs) == 0 {
 		return "No messages."
 	}

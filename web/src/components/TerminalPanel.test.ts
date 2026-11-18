@@ -347,8 +347,31 @@ describe('TerminalPanel waiting messages', () => {
     const chip = w!.find('.waiting')
     expect(chip.text()).toContain('2 messages waiting')
     await chip.find('button').trigger('click')
+    await chip.find('button').trigger('click') // the first click only asks
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+  })
+
+  it('warns before the click that the draft goes with the nudge, and asks before delivering', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1 })
+    await mountPanel()
+    const b = () => w!.find('.waiting button')
+    expect(b().attributes('title')).toContain('draft')
+    expect(b().attributes('title')).toContain('submitted together with the nudge')
+    await b().trigger('click')
+    expect(apiMock).not.toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+    expect(b().text()).toBe('Submit draft too?')
+    expect(b().attributes('aria-label')).toContain('submitted together with the nudge')
+    // the ask goes away by itself
+    vi.advanceTimersByTime(4100)
+    await flushPromises()
+    expect(b().text()).toBe('Deliver now')
+    await b().trigger('click')
+    await b().trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('POST', '/api/agents/game-lounge/fe-admin/deliver-now')
+    expect(apiMock.mock.calls.filter((c) => c[1].endsWith('/deliver-now'))).toHaveLength(1)
   })
 
   it('says 1 message and hides the chip without a draft hold or when busy', async () => {
@@ -596,20 +619,59 @@ describe('TerminalPanel terminal', () => {
     }
   })
 
-  it('passes only http and https links, opened without opener or referrer', async () => {
-    await mountPanel()
-    const lh = (term().options as { linkHandler: { activate(e: MouseEvent, t: string): void } }).linkHandler
-    const open = vi.fn()
-    vi.stubGlobal('open', open)
-    lh.activate(new MouseEvent('click'), 'https://example.com/a')
-    lh.activate(new MouseEvent('click'), 'http://127.0.0.1:3000/')
-    lh.activate(new MouseEvent('click'), 'javascript:alert(1)')
-    lh.activate(new MouseEvent('click'), 'file:///etc/passwd')
-    lh.activate(new MouseEvent('click'), 'not a url')
-    expect(open.mock.calls).toEqual([
-      ['https://example.com/a', '_blank', 'noopener,noreferrer'],
-      ['http://127.0.0.1:3000/', '_blank', 'noopener,noreferrer'],
-    ])
+  describe('OSC 8 links', () => {
+    async function activate(url: string): Promise<void> {
+      const lh = (term().options as { linkHandler: { activate(e: MouseEvent, t: string): void } }).linkHandler
+      lh.activate(new MouseEvent('click'), url)
+      await flushPromises()
+    }
+    const ask = () => w!.find('.link-ask')
+
+    it('shows the real URL and waits for Open before opening anything', async () => {
+      await mountPanel()
+      const open = vi.fn()
+      vi.stubGlobal('open', open)
+      await activate('https://example.com/a?x=1')
+      expect(open).not.toHaveBeenCalled()
+      expect(ask().exists()).toBe(true)
+      expect(ask().text()).toContain('Open https://example.com/a?x=1?')
+      expect(ask().findAll('button').map((b) => b.text())).toEqual(['Open', 'Cancel'])
+      await ask().findAll('button')[0].trigger('click')
+      expect(open.mock.calls).toEqual([['https://example.com/a?x=1', '_blank', 'noopener,noreferrer']])
+      expect(ask().exists()).toBe(false)
+    })
+
+    it('Cancel and Escape close the ask without opening', async () => {
+      await mountPanel()
+      const open = vi.fn()
+      vi.stubGlobal('open', open)
+      await activate('http://127.0.0.1:3000/')
+      await ask().findAll('button')[1].trigger('click')
+      expect(ask().exists()).toBe(false)
+      await activate('http://127.0.0.1:3000/')
+      await ask().trigger('keydown', { key: 'Escape' })
+      expect(ask().exists()).toBe(false)
+      expect(open).not.toHaveBeenCalled()
+    })
+
+    it('never asks for, or opens, anything but http and https', async () => {
+      await mountPanel()
+      const open = vi.fn()
+      vi.stubGlobal('open', open)
+      for (const u of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'not a url']) {
+        await activate(u)
+        expect(ask().exists()).toBe(false)
+      }
+      expect(open).not.toHaveBeenCalled()
+    })
+
+    it('a newer link replaces the ask, and the ask shows the normalized URL it will open', async () => {
+      await mountPanel()
+      await activate('https://a.example/')
+      await activate('HTTPS://B.example:443/x y')
+      expect(w!.findAll('.link-ask')).toHaveLength(1)
+      expect(ask().text()).toContain('Open https://b.example/x%20y?')
+    })
   })
 
   it('stops reconnecting and closes the socket on unmount', async () => {
@@ -653,6 +715,19 @@ describe('TerminalPanel header layout', () => {
     const row2 = w!.find('.ph-2').element
     expect(row2.lastElementChild?.classList.contains('waiting')).toBe(true)
     expect(w!.find('.ph').element.children).toHaveLength(2)
+  })
+
+  it('lets row 2 wrap only when the chip sits in it, so the button is never pushed out', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1 })
+    paneWidth(500)
+    await mountPanel()
+    expect(w!.find('.ph-2').classes()).toContain('wrap')
+    vi.restoreAllMocks()
+    paneWidth(900)
+    for (const cb of roCallbacks) cb()
+    await flushPromises()
+    expect(w!.find('.ph-2').classes()).not.toContain('wrap')
   })
 
   it('goes compact in a very narrow panel, so row 2 does not overflow', async () => {

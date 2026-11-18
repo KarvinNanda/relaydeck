@@ -2,7 +2,7 @@
 // The Messages timeline, newest first: time, from -> to, message, state.
 // Rows that need the user carry their actions. Message text is written by
 // agents, so it is rendered only through text interpolation.
-import { reactive, watch } from 'vue'
+import { onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ApiError } from '../api'
 import { clock, type Messages } from '../stores/messages'
 import type { Message, MessageState } from '../types'
@@ -109,7 +109,24 @@ async function act(m: Message, a: Action, run: () => Promise<unknown>): Promise<
 const approve = (m: Message) => act(m, 'approve', () => props.messages.approve(m.id))
 const reject = (m: Message) => act(m, 'reject', () => props.messages.reject(m.id))
 const startNew = (m: Message) => act(m, 'start', () => props.messages.startNew(m))
-const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.deliverNow(m))
+// A held_draft message waits because the input box holds a draft, and the
+// daemon submits that draft together with the nudge. So the first click on
+// Deliver now asks, the second delivers; the ask goes away by itself.
+const deliverTitle = 'Deliver now. The draft in the input box is submitted together with the nudge.'
+const CONFIRM_MS = 4000
+const asking = ref<string | null>(null)
+let askTimer: ReturnType<typeof setTimeout> | undefined
+function deliverNow(m: Message): void {
+  clearTimeout(askTimer)
+  if (asking.value !== m.id) {
+    asking.value = m.id
+    askTimer = setTimeout(() => (asking.value = null), CONFIRM_MS)
+    return
+  }
+  asking.value = null
+  void act(m, 'deliver', () => props.messages.deliverNow(m))
+}
+onBeforeUnmount(() => clearTimeout(askTimer))
 </script>
 
 <template>
@@ -132,7 +149,7 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
         <span class="time" role="cell">{{ clock(m.created) }}</span>
         <span class="route" role="cell" :title="`${m.from} -> ${m.to}`">{{ m.from }} -&gt; {{ m.to }}</span>
         <span class="cell-msg" role="cell">
-          <button class="exp" type="button" aria-label="Full message" :aria-expanded="open.has(m.id)" @click="toggle(m.id)">
+          <button class="exp" type="button" :aria-label="`Full message from ${m.from} to ${m.to}`" :aria-expanded="open.has(m.id)" @click="toggle(m.id)">
             <Icon :name="open.has(m.id) ? 'down' : 'right'" />
           </button>
           <span class="lbl">message: </span>
@@ -155,8 +172,17 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
             <button class="btn act" type="button" :disabled="busy.has(m.id)" @click="waited.add(m.id)">Wait</button>
           </span>
           <span v-else-if="m.state === 'held_draft'" class="acts">
-            <button class="btn act" type="button" :disabled="busy.has(m.id)" :aria-describedby="errorOf(m) ? errId(m) : undefined" @click="deliverNow(m)">
-              <Icon name="right" />Deliver now
+            <button
+              class="btn act"
+              :class="{ ask: asking === m.id }"
+              type="button"
+              :title="deliverTitle"
+              :aria-label="asking === m.id ? 'Submit the draft too? The draft in the input box is submitted together with the nudge.' : undefined"
+              :disabled="busy.has(m.id)"
+              :aria-describedby="errorOf(m) ? errId(m) : undefined"
+              @click="deliverNow(m)"
+            >
+              <Icon name="right" />{{ asking === m.id ? 'Submit draft too?' : 'Deliver now' }}
             </button>
           </span>
           <span v-if="errorOf(m)" :id="errId(m)" class="err c-stop" role="alert"><Icon name="attn" />{{ errorOf(m) }}</span>
@@ -196,7 +222,8 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
 
 .cell-msg { display: flex; align-items: flex-start; gap: var(--s-2); min-width: 0; }
 .exp {
-  flex: none; width: 14px; height: 18px; padding: 0; margin: 0;
+  /* 24x24 hit area; the negative margins keep the 14x18 footprint of the row */
+  flex: none; width: 24px; height: 24px; padding: 0; margin: -3px -5px -3px -5px;
   display: inline-grid; place-items: center;
   border: 0; border-radius: var(--r-sm); background: none; color: var(--text-muted); cursor: pointer;
 }
@@ -215,6 +242,7 @@ const deliverNow = (m: Message) => act(m, 'deliver', () => props.messages.delive
 .err { overflow-wrap: anywhere; }
 .acts { display: flex; flex-wrap: wrap; gap: var(--s-3); width: 100%; }
 .act:disabled { opacity: .55; cursor: progress; }
+.act.ask { color: var(--amber); border-color: var(--amber-line); background: var(--amber-tint); }
 
 .empty { margin: 0; padding: var(--s-4) var(--inset); }
 .err-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); }

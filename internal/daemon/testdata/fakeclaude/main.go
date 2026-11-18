@@ -70,7 +70,7 @@ func main() {
 			continue
 		case "trust":
 			draw()
-			fmt.Print("\x1b[5;1H > 1. Yes, I trust this folder\x1b[38;3H")
+			fmt.Print("\x1b[4;1H   2. No, exit\x1b[5;1H > 1. Yes, I trust this folder\x1b[38;3H")
 			continue
 		case "size":
 			draw()
