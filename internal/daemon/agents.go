@@ -189,12 +189,16 @@ func (d *Daemon) StopAgent(ws, folder string, force bool) error {
 	return err
 }
 
-// stopAgent types /exit only into the plain input box (busy is fine).
+// stopAgent types /exit only into the plain input box (busy is fine), empty
+// or showing a suggestion.
 // With an overlay, a dialog or a permission prompt on screen, Enter would
 // pick the highlighted option (trust the folder, approve a tool call), so
 // the agent is killed instead.
 func (d *Daemon) stopAgent(a *agent.Agent) error {
-	if st := a.ScreenState(); st.InputVisible && st.InputEmpty && !st.Trust {
+	// Text the user did not type is a prompt suggestion: typing /exit replaces
+	// it (verified on Claude Code 2.1.327), and Stop checks the box shows
+	// exactly "/exit" before Enter. Text the user typed would take /exit.
+	if st := a.ScreenState(); st.InputVisible && !st.Trust && (st.InputEmpty || !a.UserTyped()) {
 		return a.Stop(d.opts.StopGrace)
 	}
 	return a.Kill()

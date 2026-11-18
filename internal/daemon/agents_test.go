@@ -230,8 +230,8 @@ func TestStopAgentDraft(t *testing.T) {
 }
 
 // Claude Code draws a prompt suggestion in the empty box as plain text. The
-// user never typed it, so a normal stop is not refused. (Inject does not
-// count as typing, and the terminal echoes it into the box like a suggestion.)
+// user never typed it, so a normal stop is not refused and /exit is typed over
+// it (verified on Claude Code 2.1.327: typing replaces a suggestion).
 func TestStopAgentSuggestionIsNotDraft(t *testing.T) {
 	needPTY(t)
 	e := newEnv(t, nil)
@@ -241,10 +241,10 @@ func TestStopAgentSuggestionIsNotDraft(t *testing.T) {
 	id := e.agentID(t, "a")
 	a, _ := e.d.Agent("w", "a")
 	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
-	if err := a.Inject([]byte("cek pesan dari api lagi")); err != nil {
+	if err := a.Inject([]byte("suggest\r")); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "suggestion on screen", a.HasDraft)
+	eventually(t, "suggestion on screen", func() bool { return a.ScreenState().Draft == "run" })
 	if a.UserTyped() {
 		t.Fatal("UserTyped set by Inject")
 	}
@@ -256,8 +256,13 @@ func TestStopAgentSuggestionIsNotDraft(t *testing.T) {
 	default:
 		t.Fatal("agent still running after a normal stop")
 	}
-	if strings.Contains(e.lines(id), "cek pesan") {
-		t.Fatalf("the suggestion was submitted: %q", e.lines(id))
+	// Graceful: /exit was typed over the suggestion and the process exited 0
+	// by itself (a kill gives -1).
+	if l := e.lines(id); !strings.Contains(l, "/exit") || strings.Contains(l, "run") {
+		t.Fatalf("lines %q: want /exit typed over the suggestion", l)
+	}
+	if a.ExitCode() != 0 {
+		t.Fatalf("exit code %d: the agent was killed, not stopped with /exit", a.ExitCode())
 	}
 }
 
