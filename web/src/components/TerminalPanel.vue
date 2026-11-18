@@ -593,12 +593,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <div class="ph-2">
+      <div class="ph-2" :class="{ wrap: showWaiting && narrow }">
         <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
         <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
           <Icon name="attn" />on default login
         </span>
-        <span v-if="sessionText" class="sess-name"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+        <span v-if="sessionText" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
         <span v-if="showWaiting && narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
@@ -697,6 +697,11 @@ onBeforeUnmount(() => {
   display: block; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ph-2 > .sess-name:not(.waiting) { flex-shrink: 3; }
+/* An id is never cut: only a title can lose its end to an ellipsis. */
+.ph-2 > .sess-name.is-id:not(.waiting) { flex-shrink: 0; }
+/* With the waiting chip in this row and not enough room, the chip and its
+   button take their own line at the right instead of being pushed out. */
+.ph-2.wrap { flex-wrap: wrap; row-gap: var(--s-2); }
 .ph-2 > .acct:not(.waiting), .ph-2 > .warn-inline:not(.waiting) { flex-shrink: 0; }
 .ph-2 > span:not(.waiting) .i { vertical-align: -2px; margin-right: 5px; }
 .ph-2 .waiting { margin-left: auto; }
@@ -715,6 +720,7 @@ onBeforeUnmount(() => {
 /* A very narrow panel: the chip says "3 waiting" (the word "messages" stays
    for screen readers) and drops its icon. If chip and button still do not
    fit next to the account, they take their own line at the right. */
+.tight .ph { padding-bottom: var(--s-4); }
 .tight .ph-2 { flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
 .tight .waiting { gap: var(--s-4); }
 .tight .waiting .opt {
@@ -765,9 +771,10 @@ onBeforeUnmount(() => {
 }
 
 .term-fade {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 28px; pointer-events: none;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 20px; pointer-events: none;
   border-radius: 0 0 var(--r) 0;
-  background: linear-gradient(to right, transparent, var(--border-strong));
+  /* a soft shade of the terminal's own color, not a lighter band */
+  background: linear-gradient(to right, transparent, color-mix(in srgb, #000 55%, var(--term)));
 }
 
 .stopped {
@@ -796,6 +803,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 767px) {
+  .ph { padding-bottom: var(--s-4); }
   .pane { height: 360px; flex: 1 1 auto; }
   .pane.pane-stopped { height: auto; }
   .pane.focus { height: 400px; }
