@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"runtime"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -51,5 +55,16 @@ func TestRunDispatch(t *testing.T) {
 		if !strings.Contains(errb.String(), tt.stderr) {
 			t.Errorf("run(%v) stderr = %q, want %q", tt.args, errb.String(), tt.stderr)
 		}
+	}
+}
+
+func TestShutdownSignalsIncludeHangupOnUnix(t *testing.T) {
+	sigs := shutdownSignals()
+	has := func(want os.Signal) bool { return slices.Contains(sigs, want) }
+	if !has(os.Interrupt) || !has(syscall.SIGTERM) {
+		t.Fatalf("signals = %v, want interrupt and SIGTERM", sigs)
+	}
+	if runtime.GOOS != "windows" && !has(syscall.SIGHUP) {
+		t.Fatalf("signals = %v, want SIGHUP on unix", sigs)
 	}
 }

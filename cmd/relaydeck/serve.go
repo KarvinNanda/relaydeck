@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -79,6 +80,9 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "relaydeck: %v\n", err)
 		return 1
 	}
+	warnIfNoUI(log, webui.FS())
+	// The port is ours, so runtime dirs of a daemon that was killed are stale.
+	daemon.CleanStaleRuntime(opts.RuntimeRoot, log)
 
 	guard := &auth.Guard{Port: port, UIToken: uiToken, Agents: d.Tokens(), Tickets: auth.NewTicketStore(time.Now)}
 	srv := &http.Server{
@@ -118,4 +122,12 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	log.Info("relaydeck stopped")
 	return 0
+}
+
+// warnIfNoUI logs one warning when the embedded UI has no index.html: the
+// binary was built before the web UI, and the browser would get a 404.
+func warnIfNoUI(log *slog.Logger, ui fs.FS) {
+	if _, err := fs.Stat(ui, "index.html"); err != nil {
+		log.Warn(`web UI not built: run "cd web && npm ci && npm run build" before go build`)
+	}
 }

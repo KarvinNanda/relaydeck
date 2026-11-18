@@ -129,7 +129,9 @@ func TestStartAgentErrors(t *testing.T) {
 	}
 }
 
-// One running agent per canonical path, across workspaces.
+// One running agent per canonical path, across workspaces. The config
+// allows the same folder in two workspaces (spec 7.2); the second start is
+// refused.
 func TestStartSamePathOtherWorkspaceConflict(t *testing.T) {
 	needPTY(t)
 	e := newEnv(t, nil)
@@ -349,7 +351,7 @@ func TestTargetsListsEveryFolder(t *testing.T) {
 	if err := e.d.AddWorkspace("v"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: e.dirB}); err != nil {
+	if _, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: e.dirC}); err != nil {
 		t.Fatal(err)
 	}
 	got := e.d.targets()

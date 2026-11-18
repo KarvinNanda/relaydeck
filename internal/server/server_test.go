@@ -79,6 +79,8 @@ type rig struct {
 	logs    *syncBuf
 	dirA    string
 	dirB    string
+	dirC    string
+	dirD    string
 	home    string // ClaudeHome
 }
 
@@ -121,6 +123,8 @@ func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
 		out:     canon(t, filepath.Join(base, "out")),
 		dirA:    canon(t, filepath.Join(base, "a")),
 		dirB:    canon(t, filepath.Join(base, "b")),
+		dirC:    canon(t, filepath.Join(base, "c")),
+		dirD:    canon(t, filepath.Join(base, "d")),
 		logs:    &syncBuf{},
 		home:    filepath.Join(base, "claudehome"),
 	}

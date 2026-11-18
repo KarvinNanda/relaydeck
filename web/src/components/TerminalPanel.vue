@@ -151,6 +151,38 @@ async function act(fn: () => Promise<unknown>): Promise<ApiError | null> {
   }
 }
 
+// A stop answer belongs to the agent it was sent for. When the status or the
+// session changes, the old alert and its "Stop anyway" are dropped, so a stale
+// button can never force-kill a newer agent.
+watch(
+  () => `${status.value}\n${sessionId.value}\n${running.value}`,
+  () => {
+    alert.value = ''
+    canForce.value = false
+    resetConfirm()
+  },
+)
+
+// A busy agent is mid-turn: the first click on Stop only asks, and the ask
+// goes away by itself after CONFIRM_MS.
+const CONFIRM_MS = 4000
+const confirming = ref(false)
+let confirmTimer: ReturnType<typeof setTimeout> | undefined
+function resetConfirm(): void {
+  clearTimeout(confirmTimer)
+  confirmTimer = undefined
+  confirming.value = false
+}
+function onStop(): void {
+  if (status.value === 'busy' && !confirming.value) {
+    confirming.value = true
+    confirmTimer = setTimeout(resetConfirm, CONFIRM_MS)
+    return
+  }
+  resetConfirm()
+  void stop()
+}
+
 async function stop(force = false): Promise<void> {
   const err = await act(() => api('POST', `${base.value}/stop${force ? '?force=true' : ''}`))
   if (err?.status === 409 && err.message === DRAFT_ERROR && !force) {
@@ -170,6 +202,18 @@ function deliverNow(): void {
 function close(): void {
   panelStore.closePanel(props.ws, props.folder)
 }
+
+// Gives xterm the keyboard when this panel is the focused one, for example
+// after a click in the sidebar. It does not take focus away from a control of
+// this panel that the user is using (a header button reached with Tab).
+function focusTerm(): void {
+  if (!term || !props.focused) return
+  const a = document.activeElement
+  if (a && pane.value?.contains(a) && !host.value?.contains(a)) return
+  term.focus()
+}
+
+watch(() => props.focused, () => focusTerm(), { flush: 'post' })
 
 function focusMe(): void {
   if (!props.focused) panelStore.focusPanel(props.ws, props.folder)
@@ -351,6 +395,7 @@ function attach(s: WebSocket): void {
     scheduleRetry()
   }
   fitNow()
+  focusTerm()
 }
 
 function disconnect(): void {
@@ -417,6 +462,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onOutside)
   disconnect()
   clearTimeout(fitTimer)
+  clearTimeout(confirmTimer)
   ro?.disconnect()
   paneRo?.disconnect()
   host.value?.removeEventListener('scroll', measureScroll)
@@ -458,14 +504,15 @@ onBeforeUnmount(() => {
             <Icon name="history" /><span class="lab">Sessions</span>
           </button>
           <button
-            class="ib"
+            class="ib stop-btn"
+            :class="{ confirm: confirming }"
             type="button"
-            aria-label="Stop agent"
-            :title="running ? 'Stop agent' : 'Already stopped'"
+            :aria-label="confirming ? 'Stop? It is working' : 'Stop agent'"
+            :title="confirming ? 'Click again to stop the agent. It is working.' : running ? 'Stop agent' : 'Already stopped'"
             :disabled="!running || acting"
-            @click="stop()"
+            @click="onStop"
           >
-            <Icon name="square" />
+            <Icon name="square" /><span v-if="confirming" class="confirm-lab">Stop? It is working</span>
           </button>
           <button
             v-if="maximized"
@@ -614,6 +661,15 @@ onBeforeUnmount(() => {
 }
 .p-alert .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .p-alert .ib { color: var(--red); }
+
+/* Stop on a busy agent turns into a one-line confirm: red text and frame,
+   with words, so it is not a color-only cue. */
+.ib.confirm {
+  gap: var(--s-2); padding: 0 var(--s-4); color: var(--red);
+  border-color: var(--red-line); background: var(--red-tint);
+}
+.ib.confirm:hover:not(:disabled) { background: var(--red-tint); color: var(--red); border-color: var(--red); }
+.confirm-lab { white-space: nowrap; font-weight: 600; }
 .p-note {
   display: flex; align-items: center; gap: var(--s-3);
   margin: var(--s-2) var(--s-3) 0; padding: var(--s-1) var(--s-4);

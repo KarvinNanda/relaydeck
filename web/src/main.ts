@@ -8,10 +8,10 @@ import './styles/tokens.css'
 import './styles/base.css'
 import App from './App.vue'
 import { setToken } from './api'
-import { readToken } from './token'
+import { readToken, sessionStore } from './token'
 import { store } from './stores/state'
 
-const token = readToken(window.location, window.sessionStorage)
+const token = readToken(window.location, sessionStore())
 setToken(token)
 if (token) store.start()
 else store.state.unauthorized = true

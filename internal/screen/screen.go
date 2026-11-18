@@ -21,6 +21,10 @@ const (
 	nbsp       = " " // Claude Code puts a no-break space after the prompt mark
 	rule       = "─"
 	ruleRatio  = 0.9
+	// minRuleCells is the least number of rule characters in a rule that
+	// carries a label, so a short label line is not taken for a rule.
+	minRuleCells = 10
+	boxChars     = "│╭╮╰╯┌┐└┘├┤┬┴┼"
 )
 
 // State is what the screen shows right now.
@@ -39,8 +43,13 @@ type Screen struct {
 	// mu keeps Write and Resize out while State reads: CellAt returns a
 	// pointer into the emulator buffer, so reading its fields after the
 	// emulator's own lock is released would race with a concurrent Write.
-	mu sync.Mutex
-	em *vt.SafeEmulator
+	mu    sync.Mutex
+	em    *vt.SafeEmulator
+	reply io.Writer
+	osc   oscFilter
+	// cols and rows are the size last asked for, so reset can rebuild the
+	// emulator even when the old one is too broken to ask.
+	cols, rows int
 }
 
 // New creates a screen of the given size. The emulator answers terminal
@@ -51,14 +60,23 @@ type Screen struct {
 // the closed flag unsynchronised), so Screen has no Close. One goroutine per
 // Screen is the cost.
 func New(cols, rows int, reply io.Writer) *Screen {
-	s := &Screen{em: vt.NewSafeEmulator(cols, rows)}
+	s := &Screen{reply: reply, cols: cols, rows: rows}
+	s.em = s.newEmulator(cols, rows)
+	return s
+}
+
+// newEmulator creates an emulator and starts the goroutine that drains its
+// query replies into s.reply.
+func (s *Screen) newEmulator(cols, rows int) *vt.SafeEmulator {
+	em := vt.NewSafeEmulator(cols, rows)
 	// The detector reads only visible rows. The library ignores 0 (it keeps
 	// the 10,000 line default), so 1 is the smallest scrollback.
-	s.em.SetScrollbackSize(1)
+	em.SetScrollbackSize(1)
+	reply := s.reply
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := s.em.Read(buf)
+			n, err := em.Read(buf)
 			if n > 0 && reply != nil {
 				reply.Write(buf[:n])
 			}
@@ -67,30 +85,72 @@ func New(cols, rows int, reply io.Writer) *Screen {
 			}
 		}
 	}()
-	return s
+	return em
 }
 
-// Write feeds PTY output into the emulator.
-func (s *Screen) Write(p []byte) (int, error) {
+// Write feeds PTY output into the emulator. It never panics: output written
+// for a taller screen can arrive after a resize and set a scroll region below
+// the last row, and the emulator panics on the next scroll. Write runs in the
+// PTY read goroutine, so such a panic would end the daemon. On a panic the
+// emulator is replaced by a blank one of the same size; the detector then
+// sees no input box until Claude Code redraws, which is the safe direction.
+func (s *Screen) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.em.Write(p)
+	defer func() {
+		if r := recover(); r != nil {
+			s.reset()
+			n, err = len(p), nil
+		}
+	}()
+	if _, err := s.em.Write(s.osc.filter(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// reset replaces a broken emulator with a blank one of the same size. The
+// old emulator's drain goroutine keeps running on the old instance; that is
+// the same one-goroutine cost New already documents.
+func (s *Screen) reset() {
+	s.em = s.newEmulator(s.cols, s.rows)
 }
 
 // Resize changes the emulator size. Claude Code redraws after a resize, so
-// the caller should keep feeding PTY output.
+// the caller should keep feeding PTY output. Like Write, it never panics: on
+// a panic the emulator is replaced by a blank one of the new size.
 func (s *Screen) Resize(cols, rows int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cols, s.rows = cols, rows
+	defer func() {
+		if r := recover(); r != nil {
+			s.reset()
+		}
+	}()
 	s.em.Resize(cols, rows)
 }
 
-// State reads the current screen.
-func (s *Screen) State() State {
+// Size returns the size last given to New or Resize.
+func (s *Screen) Size() (cols, rows int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.cols, s.rows
+}
+
+// State reads the current screen. Like Write, it never panics: on a panic it
+// returns the zero State (no input box, so delivery waits) and replaces the
+// emulator by a blank one.
+func (s *Screen) State() (st State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			s.reset()
+			st = State{}
+		}
+	}()
 	w, h := s.em.Width(), s.em.Height()
-	var st State
 	rows := make([]string, h)
 	for y := 0; y < h; y++ {
 		rows[y] = rowText(s.em, y, w)
@@ -169,15 +229,40 @@ func rowText(em *vt.SafeEmulator, y, w int) string {
 	return b.String()
 }
 
+// isRule reports whether row y is a horizontal rule across the screen.
+// relaydeck starts claude with --name ws/folder, and Claude Code prints that
+// name inside the top rule of the input box ("──── ws/folder ─"). So one
+// label run is allowed between rule characters, as long as it holds no
+// box-drawing characters, the row starts and ends with the rule character and
+// spans at least ruleRatio of the width.
 func isRule(em *vt.SafeEmulator, y, w int) bool {
 	if cellContent(em, 0, y) != rule {
 		return false
 	}
-	n := 0
-	for x := 0; x < w; x++ {
-		if cellContent(em, x, y) == rule {
+	last := w - 1
+	for last > 0 && strings.TrimSpace(cellContent(em, last, y)) == "" {
+		last--
+	}
+	if cellContent(em, last, y) != rule || float64(last+1) < ruleRatio*float64(w) {
+		return false
+	}
+	n, runs, inLabel := 0, 0, false
+	for x := 0; x <= last; x++ {
+		c := cellContent(em, x, y)
+		if c == rule {
 			n++
+			inLabel = false
+			continue
+		}
+		if strings.ContainsAny(c, boxChars) {
+			return false
+		}
+		if !inLabel {
+			runs++
+			inLabel = true
 		}
 	}
-	return float64(n) >= ruleRatio*float64(w)
+	// A label may take at most two thirds of the width, so a line of text
+	// framed by a few rule characters is not taken for a rule.
+	return runs <= 1 && n >= minRuleCells && 3*n >= w
 }

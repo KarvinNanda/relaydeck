@@ -869,3 +869,73 @@ func TestDeliverNowTTLFromAsk(t *testing.T) {
 		t.Fatalf("expired ask used: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
 	}
 }
+
+// enters counts the Enter keys sent, one per nudge.
+func (f *fakeAgents) enters() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, p := range f.injected {
+		if string(p) == "\r" {
+			n++
+		}
+	}
+	return n
+}
+
+// A hook that never confirms must not cause nudges forever: after 3 nudges
+// the message stays nudged and is left alone. DeliverNow still works.
+func TestSwallowedNudgeIsCapped(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	for i := 0; i < 12; i++ {
+		g.tick()
+		g.c.add(4 * time.Second) // past the confirm window, no prompt ever arrives
+	}
+	if got := g.fa.enters(); got != 3 {
+		t.Fatalf("nudges = %d, want 3", got)
+	}
+	if g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("state = %s, want nudged", g.state(m.ID))
+	}
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	if got := g.fa.enters(); got != 4 {
+		t.Fatalf("DeliverNow nudges = %d, want 4", got)
+	}
+}
+
+// panicOnceAgents panics in its first Running call, then behaves normally.
+type panicOnceAgents struct {
+	*fakeAgents
+	once sync.Once
+}
+
+func (a *panicOnceAgents) Running(ws, folder string) bool {
+	a.once.Do(func() { panic("boom") })
+	return a.fakeAgents.Running(ws, folder)
+}
+
+// A panic in one Tick is logged and does not stop Run or leave mu locked.
+func TestRunSurvivesTickPanic(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	var logs strings.Builder
+	d := g.with(&panicOnceAgents{fakeAgents: g.fa})
+	d.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { d.Run(ctx); close(done) }()
+	for i := 0; i < 400 && g.state(m.ID) != notify.StateNudged; i++ {
+		d.Kick() // the first Tick panics, a later one delivers
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if g.state(m.ID) != notify.StateNudged {
+		t.Fatal("Run stopped after a Tick panic")
+	}
+	if !strings.Contains(logs.String(), "tick panic") || !strings.Contains(logs.String(), "stack") {
+		t.Fatalf("panic not logged with a stack: %s", logs.String())
+	}
+}
