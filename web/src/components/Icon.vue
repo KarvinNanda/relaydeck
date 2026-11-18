@@ -45,6 +45,12 @@ const icons = {
     { tag: 'path', d: 'M21 3l-7 7' },
     { tag: 'path', d: 'M3 21l7-7' },
   ],
+  restore: [
+    { tag: 'path', d: 'm14 10 7-7' },
+    { tag: 'path', d: 'M20 10h-6V4' },
+    { tag: 'path', d: 'm3 21 7-7' },
+    { tag: 'path', d: 'M4 14h6v6' },
+  ],
   down: [{ tag: 'path', d: 'm6 9 6 6 6-6' }],
   up: [{ tag: 'path', d: 'm18 15-6-6-6 6' }],
   right: [{ tag: 'path', d: 'm9 18 6-6-6-6' }],
