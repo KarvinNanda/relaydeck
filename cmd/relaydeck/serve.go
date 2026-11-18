@@ -79,6 +79,8 @@ func serve(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "relaydeck: %v\n", err)
 		return 1
 	}
+	// The port is ours, so runtime dirs of a daemon that was killed are stale.
+	daemon.CleanStaleRuntime(opts.RuntimeRoot, log)
 
 	guard := &auth.Guard{Port: port, UIToken: uiToken, Agents: d.Tokens(), Tickets: auth.NewTicketStore(time.Now)}
 	srv := &http.Server{

@@ -108,6 +108,9 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 		d.reg.forget(id)
 		return err
 	}
+	if err := writeOwner(runtimeDir); err != nil {
+		d.log.Warn("write runtime dir owner failed", "agent_id", id, "error", err.Error())
+	}
 	a, err := d.mgr.Start(id, cmd)
 	if err != nil {
 		d.reg.forget(id)
