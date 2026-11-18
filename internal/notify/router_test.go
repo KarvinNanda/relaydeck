@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -594,5 +595,60 @@ func TestRequeueOfOldAgentLeavesNewAgentReads(t *testing.T) {
 		if m.ID == fresh.ID && m.State != StateDelivered {
 			t.Fatalf("new agent's message is %s", m.State)
 		}
+	}
+}
+
+// Poison message: a message that crashes the agent after read_messages must not
+// be redelivered forever. After MaxRequeues requeues it stays delivered.
+func TestRequeueCapStopsPoisonLoop(t *testing.T) {
+	r := newTestRouter()
+	var logs strings.Builder
+	r.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	m, _ := r.Send("ws", "be", "fe", "poison")
+	requeues := 0
+	for cycle := 0; cycle < 4; cycle++ {
+		id := fmt.Sprintf("proc-%d", cycle)
+		got, _ := r.ReadAs("ws", "fe", id, 1<<20)
+		if len(got) != 1 {
+			break // no longer pending: the cap held
+		}
+		r.Requeue(id) // the process crashed before Stop
+		for _, x := range r.Timeline("ws") {
+			if x.ID == m.ID && x.State == StateQueued {
+				requeues++
+			}
+		}
+	}
+	if requeues > MaxRequeues {
+		t.Fatalf("%d requeues, want at most %d", requeues, MaxRequeues)
+	}
+	if requeues != MaxRequeues {
+		t.Fatalf("%d requeues, want %d", requeues, MaxRequeues)
+	}
+	tl := r.Timeline("ws")
+	if tl[0].State != StateDelivered {
+		t.Fatalf("state %s, want delivered after the cap", tl[0].State)
+	}
+	if !strings.Contains(logs.String(), m.ID) || !strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("no warning naming the message: %s", logs.String())
+	}
+}
+
+// A read_messages request that passed auth before the revoke can reach ReadAs
+// after Requeue. That read must not be tracked: nobody would ever confirm it.
+func TestReadAsAfterRequeueIsUntracked(t *testing.T) {
+	r := newTestRouter()
+	m, _ := r.Send("ws", "be", "fe", "a")
+	r.ReadAs("ws", "fe", "p1", 1<<20)
+	r.Requeue("p1")
+	if got, _ := r.ReadAs("ws", "fe", "p1", 1<<20); len(got) != 1 {
+		t.Fatal("late read should still return the message")
+	}
+	if r.byID[m.ID].reading {
+		t.Fatal("late read leaked the reading flag")
+	}
+	r.Requeue("p1")
+	if len(r.Pending("ws", "fe")) != 0 {
+		t.Fatal("untracked late read was requeued")
 	}
 }

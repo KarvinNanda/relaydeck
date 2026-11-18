@@ -393,7 +393,7 @@ stateDiagram-v2
 | `delivered` | set only by `Read` or `ReadN`, when the agent really pulled it | no |
 | `rejected` | the user rejected it | no |
 
-A `delivered` message is not final until the agent's turn ends. The router remembers what each agent process read since its last turn start (`Router.reads`, keyed by agent id, not by folder, so a late `Requeue` of an old process never touches the reads of a new process of the same folder). `read_messages` reads through `Router.ReadAs`. The Stop hook and a new UserPromptSubmit hook call `Router.Confirm(agentID)`, which makes them final. If the agent process exits first (crash, user stop, lost MCP response with a dead agent), `daemon.watch` calls `Router.Requeue(agentID)` and the messages go back to `queued`, unless they were rejected meanwhile. The hop count is not rolled back.
+A `delivered` message is not final until the agent's turn ends. The router remembers what each agent process read since its last turn start (`Router.reads`, keyed by agent id, not by folder, so a late `Requeue` of an old process never touches the reads of a new process of the same folder). `read_messages` reads through `Router.ReadAs`. The Stop hook and a new UserPromptSubmit hook call `Router.Confirm(agentID)`, which makes them final. If the agent process exits first (crash, user stop, lost MCP response with a dead agent), `daemon.watch` calls `Router.Requeue(agentID)` and the messages go back to `queued`, unless they were rejected meanwhile. The hop count is not rolled back. A message is requeued at most 3 times (`notify.MaxRequeues`). A message that keeps crashing the agent after `read_messages` stays `delivered` from the 4th exit on, and the daemon logs a warning with its id. After `Requeue` the agent id is closed: a `read_messages` request that was already past auth and reaches `ReadAs` later is not tracked, so it does not leave a `reading` flag nobody confirms.
 
 `delivered` is reachable only through `read_messages`, never by typing a nudge. `SetState` refuses any other path, so a stale snapshot in the delivery loop cannot revive a delivered message or skip the user's approval.
 
@@ -476,6 +476,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 
 ### Terminal behavior
 
+- **The newest terminal socket owns query replies.** With two tabs on one agent, only the newest socket may send terminal query replies (rule 17). If the newest tab hangs but stays connected, nobody answers terminal queries until it closes or the user opens the terminal again in a new tab. Typed input from any tab still works.
 - **Shift+F3 and Ctrl+F3 are dropped in the 1 s replay window.** They send `ESC [ 1 ; 2 R` (or `5 R`), which looks like a cursor position reply, so `queryReplyRe` drops them for 1 s after a terminal attaches. Later they work, except in a tab that is not the newest one for that agent, where they are always dropped.
 - A query sent at the exact moment a browser attaches may get no answer or two answers.
 - The screen emulator has one drain goroutine per agent for the life of the process (the library has no safe close). A stopped agent stays pinned by it until replaced (about 1 MiB).
