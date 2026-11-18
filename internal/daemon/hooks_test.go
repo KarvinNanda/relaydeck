@@ -80,7 +80,7 @@ func TestReadMessagesRequeuedWhenAgentExitsBeforeStop(t *testing.T) {
 	if _, err := e.d.router.Send("w", "b", "a", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.d.router.Read("w", "a"); len(got) != 1 {
+	if got, _ := e.d.router.ReadAs("w", "a", e.agentID(t, "a"), 1<<20); len(got) != 1 {
 		t.Fatalf("read %d", len(got))
 	}
 	a, _ := e.d.Agent("w", "a")
@@ -101,7 +101,7 @@ func TestReadMessagesStayDeliveredAfterStopHook(t *testing.T) {
 	if _, err := e.d.router.Send("w", "b", "a", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	e.d.router.Read("w", "a")
+	e.d.router.ReadAs("w", "a", id, 1<<20)
 	e.d.onHook(id, hook.Report{Event: "Stop"})
 	a, _ := e.d.Agent("w", "a")
 	if err := e.d.StopAgent("w", "a", true); err != nil {

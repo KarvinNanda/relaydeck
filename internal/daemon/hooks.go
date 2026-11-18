@@ -20,7 +20,7 @@ func (d *Daemon) onHook(agentID string, r hook.Report) {
 	if r.Event == "Stop" || r.Event == "UserPromptSubmit" {
 		// The turn that read the messages ended, or the agent moved on to a
 		// new turn: the messages it read are final.
-		d.router.Confirm(t.WS, t.Folder)
+		d.router.Confirm(agentID)
 	}
 	if r.Event == "UserPromptSubmit" {
 		// Busy first, so a Tick between the two calls cannot see "idle"

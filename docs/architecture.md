@@ -393,7 +393,7 @@ stateDiagram-v2
 | `delivered` | set only by `Read` or `ReadN`, when the agent really pulled it | no |
 | `rejected` | the user rejected it | no |
 
-A `delivered` message is not final until the agent's turn ends. The router remembers what each agent read since its last turn start (`Router.reads`). The Stop hook and a new UserPromptSubmit hook call `Router.Confirm`, which makes them final. If the agent process exits first (crash, user stop, lost MCP response with a dead agent), `daemon.watch` calls `Router.Requeue` and the messages go back to `queued`, unless they were rejected meanwhile. The hop count is not rolled back.
+A `delivered` message is not final until the agent's turn ends. The router remembers what each agent process read since its last turn start (`Router.reads`, keyed by agent id, not by folder, so a late `Requeue` of an old process never touches the reads of a new process of the same folder). `read_messages` reads through `Router.ReadAs`. The Stop hook and a new UserPromptSubmit hook call `Router.Confirm(agentID)`, which makes them final. If the agent process exits first (crash, user stop, lost MCP response with a dead agent), `daemon.watch` calls `Router.Requeue(agentID)` and the messages go back to `queued`, unless they were rejected meanwhile. The hop count is not rolled back.
 
 `delivered` is reachable only through `read_messages`, never by typing a nudge. `SetState` refuses any other path, so a stale snapshot in the delivery loop cannot revive a delivered message or skip the user's approval.
 

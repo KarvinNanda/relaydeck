@@ -474,19 +474,19 @@ func TestRequeueUnconfirmedReadAfterExit(t *testing.T) {
 	r := newTestRouter()
 	m1, _ := r.Send("ws", "be", "fe", "a")
 	m2, _ := r.Send("ws", "be", "fe", "b")
-	if got := r.Read("ws", "fe"); len(got) != 2 {
+	if got, _ := r.ReadAs("ws", "fe", "id-fe", 1<<20); len(got) != 2 {
 		t.Fatalf("read %d", len(got))
 	}
 	if len(r.Pending("ws", "fe")) != 0 {
 		t.Fatal("nothing should be pending after read")
 	}
-	r.Requeue("ws", "fe")
+	r.Requeue("id-fe")
 	p := r.Pending("ws", "fe")
 	if len(p) != 2 || p[0].ID != m1.ID || p[1].ID != m2.ID || p[0].State != StateQueued {
 		t.Fatalf("pending after requeue: %+v", p)
 	}
 	// Requeue is one shot: a second call changes nothing.
-	r.Requeue("ws", "fe")
+	r.Requeue("id-fe")
 	if len(r.Pending("ws", "fe")) != 2 {
 		t.Fatal("second requeue changed state")
 	}
@@ -495,12 +495,12 @@ func TestRequeueUnconfirmedReadAfterExit(t *testing.T) {
 func TestConfirmedReadIsNotRequeued(t *testing.T) {
 	r := newTestRouter()
 	r.Send("ws", "be", "fe", "a")
-	msgs, _ := r.ReadN("ws", "fe", 1<<20)
+	msgs, _ := r.ReadAs("ws", "fe", "id-fe", 1<<20)
 	if len(msgs) != 1 {
 		t.Fatal("read failed")
 	}
-	r.Confirm("ws", "fe") // the Stop hook
-	r.Requeue("ws", "fe") // process exit afterwards
+	r.Confirm("id-fe") // the Stop hook
+	r.Requeue("id-fe") // process exit afterwards
 	if len(r.Pending("ws", "fe")) != 0 {
 		t.Fatal("confirmed message was requeued")
 	}
@@ -514,9 +514,9 @@ func TestRequeueOnlyTouchesThatAgent(t *testing.T) {
 	r := newTestRouter()
 	r.Send("ws", "be", "fe", "a")
 	r.Send("ws", "fe", "be", "b")
-	r.Read("ws", "fe")
-	r.Read("ws", "be")
-	r.Requeue("ws", "fe")
+	r.ReadAs("ws", "fe", "id-fe", 1<<20)
+	r.ReadAs("ws", "be", "id-be", 1<<20)
+	r.Requeue("id-fe")
 	if len(r.Pending("ws", "fe")) != 1 || len(r.Pending("ws", "be")) != 0 {
 		t.Fatal("requeue crossed agents")
 	}
@@ -530,8 +530,8 @@ func TestPruneKeepsRecentFinishedAndAllPending(t *testing.T) {
 		if _, err := r.Send("ws", "be", "fe", "x"); err != nil {
 			t.Fatal(err)
 		}
-		r.Read("ws", "fe")
-		r.Confirm("ws", "fe")
+		r.ReadAs("ws", "fe", "id-fe", 1<<20)
+		r.Confirm("id-fe")
 	}
 	// One more send runs the prune over the last delivered message too.
 	last, _ := r.Send("ws", "be", "fe", "last")
@@ -559,16 +559,40 @@ func TestPruneKeepsRecentFinishedAndAllPending(t *testing.T) {
 func TestPruneSkipsMessagesStillBeingRead(t *testing.T) {
 	r := newTestRouter()
 	first, _ := r.Send("ws", "be", "fe-admin", "first")
-	r.Read("ws", "fe-admin") // delivered but unconfirmed
+	r.ReadAs("ws", "fe-admin", "id-admin", 1<<20) // delivered but unconfirmed
 	for i := 0; i < MaxFinishedPerWorkspace+5; i++ {
 		r.Send("ws", "be", "fe", "x")
-		r.Read("ws", "fe")
-		r.Confirm("ws", "fe")
+		r.ReadAs("ws", "fe", "id-fe", 1<<20)
+		r.Confirm("id-fe")
 	}
 	r.Send("ws", "be", "fe", "y")
-	r.Requeue("ws", "fe-admin")
+	r.Requeue("id-admin")
 	p := r.Pending("ws", "fe-admin")
 	if len(p) != 1 || p[0].ID != first.ID {
 		t.Fatalf("unconfirmed message lost: %+v", p)
+	}
+}
+
+// #41 follow-up: reads are keyed by agent process. When a new process of the same
+// folder has read, the old process's Requeue must not touch the new reads.
+func TestRequeueOfOldAgentLeavesNewAgentReads(t *testing.T) {
+	r := newTestRouter()
+	old, _ := r.Send("ws", "be", "fe", "for old")
+	if got, _ := r.ReadAs("ws", "fe", "old-id", 1<<20); len(got) != 1 {
+		t.Fatal("old read failed")
+	}
+	fresh, _ := r.Send("ws", "be", "fe", "for new")
+	if got, _ := r.ReadAs("ws", "fe", "new-id", 1<<20); len(got) != 1 || got[0].ID != fresh.ID {
+		t.Fatal("new read failed")
+	}
+	r.Requeue("old-id") // the old process's watch runs late
+	p := r.Pending("ws", "fe")
+	if len(p) != 1 || p[0].ID != old.ID {
+		t.Fatalf("only the old agent's message may be queued again: %+v", p)
+	}
+	for _, m := range r.Timeline("ws") {
+		if m.ID == fresh.ID && m.State != StateDelivered {
+			t.Fatalf("new agent's message is %s", m.State)
+		}
 	}
 }

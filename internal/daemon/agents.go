@@ -146,7 +146,7 @@ func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, sta
 	<-a.Done()
 	d.reg.revoke(a.ID())
 	// Messages the agent read in a turn that never reached Stop go back to queued.
-	d.router.Requeue(t.WS, t.Folder)
+	d.router.Requeue(a.ID())
 	d.life.exited(t, a.ID(), startedAt)
 	if err := os.RemoveAll(runtimeDir); err != nil {
 		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
