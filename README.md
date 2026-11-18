@@ -42,7 +42,7 @@ The daemon removes the page on a clean shutdown. Any process that runs as your u
 
 ## Start at login (macOS)
 
-A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist` and replace `USER_HOME` with your home directory (launchd does not expand `~` in these keys). Create `~/Library/Logs/relaydeck` first.
+A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist` and replace `USER_HOME` with your home directory (launchd does not expand `~` in these keys). Create the log directory first and keep it private: `mkdir -p ~/Library/Logs/relaydeck && chmod 700 ~/Library/Logs/relaydeck`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,7 +60,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 
 It runs through `zsh -lc` because launchd starts jobs with a minimal PATH. The agents need your login PATH to find `claude`, `node` and `docker`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
 
-`serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) makes launchd create both log files readable by your user only. Use `relaydeck open` to get into the UI.
+`serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) applies to files relaydeck creates, but launchd opens the two log files itself with the default mode (0644), so the 0700 log directory is what keeps them private. Also run `chmod 600` on both files once they exist. Use `relaydeck open` to get into the UI.
 
 - Load: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist`
 - Restart after a rebuild: `launchctl kickstart -k gui/$(id -u)/com.karvinnanda.relaydeck`
