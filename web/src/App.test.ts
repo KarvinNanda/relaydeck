@@ -16,6 +16,8 @@ describe('App', () => {
     store.state.unauthorized = true
     const w = mount(App)
     expect(w.text()).toContain('Open relaydeck from the link printed by relaydeck serve.')
+    // A restart changes the token, so the screen says how to get a fresh link.
+    expect(w.text()).toContain('Run relaydeck open in a terminal to get a fresh link.')
     expect(w.find('nav').exists()).toBe(false)
     expect(w.text()).not.toContain('{')
   })
