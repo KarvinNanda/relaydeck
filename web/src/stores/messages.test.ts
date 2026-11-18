@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, reactive } from 'vue'
 import { ApiError } from '../api'
 import type { DaemonEvent, Message, MessageState, WorkspaceState } from '../types'
-import { createMessages, type MessagesDeps } from './messages'
+import { acquireMessages, createMessages, type MessagesDeps } from './messages'
 
 function msg(id: string, state: MessageState, extra: Partial<Message> = {}): Message {
   return { id, workspace: 'w', from: 'a', to: 'b', body: `body ${id}`, hop: 1, created: '2026-11-17T10:00:00Z', state, ...extra }
@@ -33,7 +33,7 @@ function rig(opts: { ws?: string | null; connection?: 'connecting' | 'connected'
   const emit = (message: Message, ws = message.workspace) => {
     for (const fn of listeners) fn({ type: 'message', ws, folder: message.to, message })
   }
-  return { m, api, gets, posts, ui, state, emit, listeners }
+  return { m, api, store, gets, posts, ui, state, emit, listeners }
 }
 
 const flush = () => vi.advanceTimersByTimeAsync(0)
@@ -201,5 +201,49 @@ describe('messages store', () => {
       { path: '/api/agents/w%20s/fe%2Fx/start', body: { new: true } },
       { path: '/api/agents/w%20s/fe%2Fx/deliver-now', body: undefined },
     ])
+  })
+})
+
+describe('shared messages store per workspace', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('loads the history once for any number of holders and stops after the last release', async () => {
+    const r = rig({ ws: null })
+    const a = acquireMessages('w', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    const b = acquireMessages('w', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    const c = acquireMessages('w', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    expect(a.messages).toBe(b.messages)
+    expect(r.gets.map((g) => g.path)).toEqual(['/api/workspaces/w/messages'])
+    r.gets[0].resolve({ messages: [msg('1', 'held_draft')] })
+    await flush()
+    expect(c.messages.counts.value.waiting).toBe(1)
+
+    // One reconnect is one reload, not one per holder.
+    r.state.connection = 'disconnected'
+    await nextTick()
+    r.state.connection = 'connected'
+    await nextTick()
+    expect(r.gets).toHaveLength(2)
+
+    a.release()
+    b.release()
+    expect(r.listeners.size).toBe(1)
+    a.release() // a second release of the same handle changes nothing
+    expect(r.listeners.size).toBe(1)
+    c.release()
+    expect(r.listeners.size).toBe(0)
+  })
+
+  it('keeps one store per workspace, and a new one after the last release', async () => {
+    const r = rig({ ws: null })
+    const a = acquireMessages('w', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    const o = acquireMessages('other', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    expect(a.messages).not.toBe(o.messages)
+    a.release()
+    o.release()
+    const again = acquireMessages('w', { api: r.api, store: r.store } as unknown as MessagesDeps)
+    expect(again.messages).not.toBe(a.messages)
+    again.release()
   })
 })

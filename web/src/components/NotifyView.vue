@@ -32,7 +32,7 @@ onUnmounted(() => messages.stop())
     </button>
     <h2>Messages</h2>
     <div class="sum">
-      <span v-if="counts.awaiting > 0" class="c-attn"><Icon name="shield" /><span>{{ counts.awaiting }} <span class="wide">awaiting approval</span><span class="narrow">to approve</span></span></span>
+      <span v-if="counts.awaiting > 0" class="c-attn"><Icon name="shield" />{{ counts.awaiting }} awaiting approval</span>
       <span v-if="counts.held > 0" class="c-attn"><Icon name="pause" />{{ counts.held }} held</span>
       <span v-if="counts.waiting > 0" class="c-idle"><Icon name="clock" />{{ counts.waiting }} waiting</span>
     </div>
@@ -53,7 +53,6 @@ onUnmounted(() => messages.stop())
 .sum { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); }
 .sum:empty { display: none; }
 .sum > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.narrow { display: none; }
 
 .db {
   flex: 1; min-height: 0;
@@ -63,11 +62,9 @@ onUnmounted(() => messages.stop())
 
 @media (max-width: 767px) {
   .dh { padding: var(--s-4) var(--gutter-mobile); }
-  /* the three counts fit on one line at 375 */
+  /* the three counts wrap onto a second line when they do not fit */
   .sum { gap: var(--s-2) var(--s-4); }
   .sum > span { gap: var(--s-2); }
-  .wide { display: none; }
-  .narrow { display: inline; }
   .db { display: block; }
   .db > .tl { border-right: 0; border-bottom: 1px solid var(--border); }
 }
