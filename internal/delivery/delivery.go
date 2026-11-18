@@ -102,6 +102,7 @@ type Deliverer struct {
 	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
 	swallowed  map[Target]map[string]int  // swallowed nudges per message id
 	lastNudge  map[Target]string          // text of the last nudge typed, to spot a stranded one
+	quiet      map[Target]time.Time       // last input seen on a quiet, empty-box reading
 	stuck      map[Target]time.Time       // since when the hook status reads stopped or starting
 	extCache   map[Target]extResult       // last "held" answer of ExternalOpen
 
@@ -127,6 +128,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		renudged:   map[Target]map[string]bool{},
 		swallowed:  map[Target]map[string]int{},
 		lastNudge:  map[Target]string{},
+		quiet:      map[Target]time.Time{},
 		stuck:      map[Target]time.Time{},
 		extCache:   map[Target]extResult{},
 		prompts:    map[Target]time.Time{},
@@ -229,6 +231,11 @@ func (d *Deliverer) prune(listed map[Target]bool) {
 			delete(d.stuck, t)
 		}
 	}
+	for t := range d.quiet {
+		if !listed[t] {
+			delete(d.quiet, t)
+		}
+	}
 	for t := range d.extCache {
 		if !listed[t] {
 			delete(d.extCache, t)
@@ -292,6 +299,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.swallowed, t)
 		delete(d.lastNudge, t)
 		delete(d.stuck, t)
+		delete(d.quiet, t)
 		return
 	}
 	d.pruneRenudged(t, pending)
@@ -356,16 +364,28 @@ func (d *Deliverer) tickTarget(t Target) {
 	// when it holds our own nudge. Claude Code draws a prompt suggestion as
 	// plain text, so a box with text and no user input counts as empty.
 	typed, lastInput := d.a.UserTyped(t.WS, t.Folder)
-	if typed && scr.InputEmpty && !d.now().Before(lastInput.Add(typedQuiet)) {
-		// An empty box and a quiet user: nothing is half typed any more.
-		d.a.ClearTyped(t.WS, t.Folder, lastInput)
-		typed = false
+	recent := typed && d.now().Before(lastInput.Add(typedQuiet))
+	if typed && scr.InputEmpty && !recent {
+		// An empty box and a quiet user. Clear only on the second reading in
+		// a row with the same last input, so a keystroke between two ticks
+		// is never wiped.
+		if seen, ok := d.quiet[t]; ok && seen.Equal(lastInput) {
+			d.a.ClearTyped(t.WS, t.Folder, lastInput)
+			delete(d.quiet, t)
+			typed = false
+		} else {
+			d.quiet[t] = lastInput
+		}
+	} else {
+		delete(d.quiet, t)
 	}
-	// A box that still holds our own nudge, alone or with text around it, is a
-	// draft too, so an unconfirmed nudge is never pasted twice.
+	// Input within the last typedQuiet holds the message even when the box
+	// reads empty: the echo of a keystroke may not have reached the screen.
+	// A box that still holds our own nudge, alone or with text around it, is
+	// a draft too, so an unconfirmed nudge is never pasted twice.
 	isDraft := func(scr screen.State) bool {
 		n := d.lastNudge[t]
-		return !scr.InputEmpty && (typed || (n != "" && strings.Contains(scr.Draft, n)))
+		return recent || (!scr.InputEmpty && (typed || (n != "" && strings.Contains(scr.Draft, n))))
 	}
 	draft := isDraft(scr)
 	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {
@@ -511,6 +531,7 @@ func (d *Deliverer) externalOpen(t Target) bool {
 // nudge is sent for. It reports whether Enter was sent.
 func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	nudgeText := notify.Nudge(unread)
+	_, inputBefore := d.a.UserTyped(t.WS, t.Folder)
 	text := "\x1b[200~" + nudgeText + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
@@ -536,6 +557,13 @@ func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	}
 	if !ready {
 		d.log.Warn("delivery: paste not confirmed on screen, not sending Enter", "ws", t.WS, "agent", t.Folder)
+		return false
+	}
+	// The user may have typed while the paste landed: Enter would submit
+	// their text with the nudge. The nudge stays in the box, and the draft
+	// rule holds the message from now on.
+	if _, now := d.a.UserTyped(t.WS, t.Folder); !now.Equal(inputBefore) {
+		d.log.Warn("delivery: user typed during the paste, not sending Enter", "ws", t.WS, "agent", t.Folder)
 		return false
 	}
 	// Take the nudge time before Enter: the hook can arrive within

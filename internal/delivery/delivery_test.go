@@ -30,6 +30,7 @@ type fakeAgents struct {
 	typed       bool   // the user touched the input since the flag was cleared
 	lastInput   time.Time
 	clears      int
+	typeOnPaste bool           // the user types while the paste is being injected
 	scrSeq      []screen.State // consumed first, one per Screen call
 	external    bool
 	externalErr error
@@ -104,6 +105,10 @@ func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 	} else {
 		f.pasted = string(p) != "\r"
 		f.pastedText = strings.TrimSuffix(strings.TrimPrefix(string(p), "\x1b[200~"), "\x1b[201~")
+		if f.typeOnPaste && string(p) != "\r" {
+			f.typed = true
+			f.lastInput = time.Now()
+		}
 	}
 	f.injected = append(f.injected, append([]byte(nil), p...))
 	return nil
@@ -1253,9 +1258,59 @@ func TestEmptyBoxAndQuietClearsTypedFlag(t *testing.T) {
 	g := newRig()
 	g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) { f.typed = true; f.lastInput = g.c.now().Add(-typedQuiet) })
-	g.tick()
+	g.tick() // first reading: the nudge is sent, the flag stays
+	if typed, _ := g.fa.UserTyped("ws", "fe"); !typed {
+		t.Fatal("flag cleared on the first quiet reading")
+	}
+	g.confirm()
+	g.send(t, "y")
+	g.tick() // second reading with the same last input
 	if typed, _ := g.fa.UserTyped("ws", "fe"); typed {
-		t.Fatal("flag kept although the box is empty and the user was quiet for 2 s")
+		t.Fatal("flag kept although the box is empty and the user was quiet on two readings")
+	}
+}
+
+// One quiet reading is not enough: the user may have typed between them.
+func TestQuietClearNeedsSameLastInputTwice(t *testing.T) {
+	g := newRig()
+	g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.typed = true; f.lastInput = g.c.now().Add(-time.Minute) })
+	g.tick()
+	g.confirm()
+	g.fa.set(func(f *fakeAgents) { f.lastInput = g.c.now().Add(-30 * time.Second) }) // typed in between
+	g.send(t, "y")
+	g.tick()
+	if typed, _ := g.fa.UserTyped("ws", "fe"); !typed {
+		t.Fatal("flag cleared although the last input changed between the readings")
+	}
+}
+
+// A tick between a keystroke and its echo sees an empty box. Input within the
+// last 2 s holds the message anyway.
+func TestRecentInputHoldsEvenWhenBoxReadsEmpty(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.typed = true; f.lastInput = g.c.now().Add(-500 * time.Millisecond) })
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+// The user typed while the paste was landing: Enter would submit their text
+// with the nudge. No Enter; the nudge stays in the box and holds the message.
+func TestEnterSkippedWhenUserTypesAfterPaste(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.typeOnPaste = true })
+	g.tick()
+	if g.fa.enters() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("enters %d state %s", g.fa.enters(), g.state(m.ID))
+	}
+	g.fa.set(func(f *fakeAgents) { f.typeOnPaste = false })
+	g.tick()
+	if g.fa.nInjected() != 1 || g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("injected %d state %s: the nudge was pasted again or not held", g.fa.nInjected(), g.state(m.ID))
 	}
 }
 

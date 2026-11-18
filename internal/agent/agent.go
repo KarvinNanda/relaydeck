@@ -62,6 +62,7 @@ type Agent struct {
 	typedMu   sync.Mutex
 	touched   bool
 	lastInput time.Time
+	lastEnter time.Time // when the last Enter (CR) in user input was written
 
 	replyCh   chan []byte
 	done      chan struct{} // closed when the process is gone and output is drained
@@ -235,8 +236,16 @@ func (a *Agent) Write(p []byte) error {
 	// ever sets the flag, so concurrent writers cannot lose an update.
 	if !neutralOnly(p) {
 		a.typedMu.Lock()
+		now := time.Now()
 		a.touched = true
-		a.lastInput = time.Now()
+		a.lastInput = now
+		if i := bytes.LastIndexByte(p, '\r'); i >= 0 {
+			a.lastEnter = now
+			if i < len(p)-1 {
+				// Bytes follow the Enter in this write: they are newer.
+				a.lastEnter = now.Add(-time.Nanosecond)
+			}
+		}
 		a.typedMu.Unlock()
 	}
 	if _, err := a.pty.Write(p); err != nil {
@@ -317,16 +326,26 @@ func (a *Agent) UserTyped() bool {
 // LastInput returns when the user last touched the input through Write (the
 // zero time if never).
 func (a *Agent) LastInput() time.Time {
-	a.typedMu.Lock()
-	defer a.typedMu.Unlock()
-	return a.lastInput
+	_, last := a.TypedState()
+	return last
 }
 
-// ResetTyped clears the flag. The daemon calls it when the agent's own
-// UserPromptSubmit hook fires: the prompt was really submitted.
+// TypedState returns the flag and the last input time in one locked reading.
+func (a *Agent) TypedState() (bool, time.Time) {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	return a.touched, a.lastInput
+}
+
+// ResetTyped clears the flag when the agent's own UserPromptSubmit hook fires:
+// a prompt was really submitted. It clears only if nothing was typed after the
+// last Enter. A prompt queued while the agent was busy is submitted later, and
+// a draft the user typed in between must stay a draft.
 func (a *Agent) ResetTyped() {
 	a.typedMu.Lock()
-	a.touched = false
+	if !a.lastInput.After(a.lastEnter) {
+		a.touched = false
+	}
 	a.typedMu.Unlock()
 }
 

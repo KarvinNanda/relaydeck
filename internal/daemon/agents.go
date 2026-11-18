@@ -292,7 +292,7 @@ func (x agentsAdapter) UserTyped(ws, folder string) (bool, time.Time) {
 	if a == nil {
 		return false, time.Time{}
 	}
-	return a.UserTyped(), a.LastInput()
+	return a.TypedState()
 }
 
 func (x agentsAdapter) ClearTyped(ws, folder string, last time.Time) {

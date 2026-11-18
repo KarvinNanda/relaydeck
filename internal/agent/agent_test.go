@@ -766,14 +766,14 @@ func TestUserTypedTouchedByInput(t *testing.T) {
 // The classifier decides on one whole write. Pure, so the table is large.
 func TestNeutralOnly(t *testing.T) {
 	neutral := []string{
-		"\x1b[I", "\x1b[O", "\x1b[<0;10;5M", "\x1b[<0;10;5m", "\x1b[M !!",
+		"\x1b[M\u00e9!!", "\x1b[I", "\x1b[O", "\x1b[<0;10;5M", "\x1b[<0;10;5m", "\x1b[M !!",
 		"\x1b[12;5R", "\x1b[?62;4c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[?2004;1$y",
 		"\x1b]11;rgb:0000/0000/0000\x07", "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1bP1$r0m\x1b\\",
 		"\x1b[I\x1b[<0;1;1M\x1b[12;5R",
 	}
 	touching := []string{
 		"", "abc", "\x1b", "\x1b[A", "\x1bOP", "\x1bb", "\r", "\t", "\x03", "\x12", "\x16", "\x15", "\x7f",
-		"\\\r", "caf\u00e9", "\x1b[200~pasted\x1b[201~", "\x1b[Ix", "\x1b[12;5R\x1b[A",
+		"\x1b[M\r!!", "\x1b[M !\x01", "\x1b[M\x7f!!", "\\\r", "caf\u00e9", "\x1b[200~pasted\x1b[201~", "\x1b[Ix", "\x1b[12;5R\x1b[A",
 		"\x1b[<0;10;5", "\x1bP", "\x1b]", "\x1b[", "\x1b]11;rgb:0/0/0", "\x1b[M !",
 	}
 	for _, w := range neutral {
@@ -863,5 +863,46 @@ func TestInjectDoesNotSetUserTyped(t *testing.T) {
 	a.Inject([]byte("\r"))
 	if !a.UserTyped() {
 		t.Fatal("Inject cleared UserTyped")
+	}
+}
+
+// Round 2: the hook clears the flag only when nothing was typed after the last
+// Enter. A prompt queued while the agent was busy is submitted later, and the
+// draft the user typed in between must stay a draft.
+func TestResetTypedKeepsInputAfterEnter(t *testing.T) {
+	m := newMgr(t, nil)
+	for name, writes := range map[string][]string{
+		"typing after Enter":          {"abc\r", "def"},
+		"text after Enter, one write": {"abc\rdef"},
+		"another Esc after Enter":     {"abc\r", "\x1b[A"},
+	} {
+		a := start(t, m, "k"+strings.ReplaceAll(name, " ", ""))
+		for _, w := range writes {
+			a.Write([]byte(w))
+			time.Sleep(time.Millisecond)
+		}
+		a.ResetTyped()
+		if !a.UserTyped() {
+			t.Errorf("%s: ResetTyped wiped input typed after the last Enter", name)
+		}
+	}
+	a := start(t, m, "plain")
+	a.Write([]byte("abc\r"))
+	a.ResetTyped()
+	if a.UserTyped() {
+		t.Error("Enter was the last input, but ResetTyped did not clear")
+	}
+}
+
+func TestTypedStateIsOneReading(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	if typed, last := a.TypedState(); typed || !last.IsZero() {
+		t.Fatalf("fresh agent: %v %v", typed, last)
+	}
+	a.Write([]byte("x"))
+	typed, last := a.TypedState()
+	if !typed || last.IsZero() || !last.Equal(a.LastInput()) {
+		t.Fatalf("after input: %v %v", typed, last)
 	}
 }

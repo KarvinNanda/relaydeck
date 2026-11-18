@@ -4,7 +4,7 @@ import "regexp"
 
 // neutralInputRe matches a write made only of terminal chatter that is not the
 // user touching the keyboard: xterm focus reports, mouse reports (SGR and
-// legacy X10) and replies to terminal queries. The query replies mirror
+// legacy X10, whose three bytes must be printable) and replies to terminal queries. The query replies mirror
 // queryReplyRe in internal/server/ws.go: cursor position, device status, DA1
 // and DA2, DECRQM mode reports, DCS replies and OSC 10 to 12 color reports.
 //
@@ -15,7 +15,7 @@ import "regexp"
 var neutralInputRe = regexp.MustCompile(`(?s)^(?:` +
 	`\x1b\[[IO]` +
 	`|\x1b\[<[0-9;]*[Mm]` +
-	`|\x1b\[M...` +
+	`|\x1b\[M[ -~\x{a0}-\x{10ffff}]{3}` +
 	`|\x1b\[[?>]?[0-9;]*[Rcn]` +
 	`|\x1b\[\??[0-9;]*\$y` +
 	`|\x1bP[^\x1b\x07]*\x1b\\` +

@@ -140,3 +140,22 @@ func TestUserPromptSubmitClearsTypedFlag(t *testing.T) {
 		t.Fatal("UserPromptSubmit did not clear the flag")
 	}
 }
+
+// Prompt A was queued while the agent was busy, the user typed draft B, then A
+// was submitted: the hook must not wipe B.
+func TestUserPromptSubmitKeepsLaterDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	a, _ := e.d.Agent("w", "a")
+	a.Write([]byte("prompt A\r"))
+	time.Sleep(2 * time.Millisecond)
+	a.Write([]byte("draft B"))
+	e.d.onHook(id, hook.Report{Event: "UserPromptSubmit"})
+	if !a.UserTyped() {
+		t.Fatal("UserPromptSubmit wiped a draft typed after the last Enter")
+	}
+}
