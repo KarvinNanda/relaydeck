@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"weak"
 
 	"github.com/KarvinNanda/relaydeck/internal/launch"
+	"github.com/KarvinNanda/relaydeck/internal/screen"
 	"github.com/aymanbagabas/go-pty"
 )
 
@@ -215,18 +218,32 @@ func TestSetStatusEmitsEvent(t *testing.T) {
 func TestResize(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	// READY may already be in the scrollback, so the replay counts too.
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	collect(t, nil, out, "READY")
+	collect(t, replay, out, "READY")
 	if err := a.Resize(90, 30); err != nil {
 		t.Fatal(err)
 	}
 	collect(t, nil, out, "SIZE:90x30")
 }
 
+// drawInputBox paints the empty input box at the bottom of the agent's screen
+// and parks the cursor on the prompt row, so the terminal echo of what is
+// typed lands in the box like it does in Claude Code.
+func drawInputBox(a *Agent) {
+	rule := strings.Repeat("─", defaultCols)
+	a.screen.Write([]byte("\x1b[2J\x1b[37;1H" + rule + "\x1b[38;1H❯\u00a0\x1b[2mTry something\x1b[22m" +
+		"\x1b[39;1H" + rule + "\x1b[40;3H? for shortcuts\x1b[38;3H\x1b[K"))
+}
+
 func TestStopSendsExit(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, replay, out, "READY") // READY is printed at the cursor, so wait for it first
+	drawInputBox(a)
 	start := time.Now()
 	if err := a.Stop(5 * time.Second); err != nil {
 		t.Fatal(err)
@@ -333,9 +350,9 @@ func TestStartWritesFiles(t *testing.T) {
 func TestScreenFedFromOutput(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	acc := collect(t, nil, out, "READY")
+	acc := collect(t, replay, out, "READY") // READY may already be in the replay
 	if a.ScreenState().Busy {
 		t.Fatal("Busy before any output of the busy marker")
 	}
@@ -481,9 +498,9 @@ func TestWriteReachesPTY(t *testing.T) {
 func TestHasDraft(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	collect(t, nil, out, "READY")
+	collect(t, replay, out, "READY")
 	if a.HasDraft() {
 		t.Fatal("no input box yet, HasDraft must be false")
 	}
@@ -549,8 +566,7 @@ func TestKillTypesNothing(t *testing.T) {
 }
 
 // Fix round 1 (3c): a stopped agent that was removed can be freed. The
-// screen's drain goroutine lives on (Screen has no Close), so it must not
-// keep the Agent (scrollback, emulator feed, PTY) reachable.
+// screen's drain goroutine must not keep the Agent (scrollback, emulator feed, PTY) reachable.
 func TestRemovedAgentIsCollected(t *testing.T) {
 	m := newMgr(t, nil)
 	wp := func() weak.Pointer[Agent] {
@@ -637,5 +653,79 @@ func TestSameDirSymlinkRejected(t *testing.T) {
 	defer a.Stop(time.Second)
 	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: link}); err != ErrAlreadyRunning {
 		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+// The screen is read a few ms before /exit is typed. A dialog that opens in
+// that gap must not get the Enter: the agent is killed instead.
+func TestStopDoesNotEnterIntoDialog(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, replay, out, "READY")
+	a.screen.Write([]byte("\x1b[2J\x1b[5;1H \u276f No, exit\x1b[6;1H   Yes, I trust this folder"))
+	begin := time.Now()
+	if err := a.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(begin) > 3*time.Second {
+		t.Fatal("Stop waited for the grace period instead of killing")
+	}
+	// fakeclaude exits 0 on a typed /exit plus Enter. A kill is not 0.
+	if a.ExitCode() == 0 {
+		t.Fatal("Enter reached the agent while a dialog was on screen")
+	}
+}
+
+// A hung claude with a full input buffer must not block Inject for good: it
+// runs under the delivery lock.
+func TestInjectTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	a := &Agent{
+		pty:           hungPty{release: release},
+		done:          make(chan struct{}),
+		injectTimeout: 50 * time.Millisecond,
+	}
+	begin := time.Now()
+	err := a.Inject([]byte("x"))
+	if !errors.Is(err, ErrInjectTimeout) {
+		t.Fatalf("err = %v, want ErrInjectTimeout", err)
+	}
+	if time.Since(begin) > 2*time.Second {
+		t.Fatal("Inject did not return near its timeout")
+	}
+	// A write queued behind the stuck one is dropped, never typed late.
+	if err := a.Inject([]byte("y")); !errors.Is(err, ErrInjectTimeout) {
+		t.Fatalf("second Inject err = %v", err)
+	}
+}
+
+// exitTyped must accept the real screens Claude Code draws once /exit is
+// typed: the slash-command list shows above the box.
+func TestExitTypedOnRealScreens(t *testing.T) {
+	for _, name := range []string{"prompt-slash-exit-100", "prompt-slash-exit-60"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join("..", "screen", "testdata")
+			raw, err := os.ReadFile(filepath.Join(dir, name+".raw"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sz, err := os.ReadFile(filepath.Join(dir, name+".size"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cols, rows int
+			if _, err := fmt.Sscanf(string(sz), "%d %d", &cols, &rows); err != nil {
+				t.Fatal(err)
+			}
+			a := &Agent{screen: screen.New(cols, rows, nil)}
+			defer a.screen.Close()
+			a.screen.Write(raw)
+			if !a.exitTyped() {
+				t.Fatalf("exitTyped false on a real /exit screen: %+v", a.screen.State())
+			}
+		})
 	}
 }

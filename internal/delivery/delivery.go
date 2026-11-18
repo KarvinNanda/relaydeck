@@ -5,8 +5,10 @@
 // nudge is confirmed and the agent is idle again with an empty input box, the
 // loop re-nudges it at most once per message, so an agent that ignores it
 // cannot cause a loop. A restart or a swallowed nudge requeues it, and a
-// queued message is always nudged, but the one re-nudge is never given back.
-// A DeliverNow request from the user always includes nudged messages.
+// queued message is nudged as soon as the hooks say idle and the screen shows
+// an empty input box with no overlay or dialog, but the one re-nudge is never
+// given back. A DeliverNow request from the user always includes nudged
+// messages and skips the draft check once.
 package delivery
 
 import (
@@ -34,6 +36,13 @@ const (
 	// maxNudges is how many times one message is nudged when the nudge keeps
 	// being swallowed (no UserPromptSubmit). After that it stays nudged.
 	maxNudges = 3
+	// stuckStatusAfter is how long a live process may show the hook status
+	// stopped or starting before the screen decides instead.
+	stuckStatusAfter = 15 * time.Second
+	// externalTTL is how long a "session open elsewhere" answer is reused.
+	externalTTL = 5 * time.Second
+	// ctrlU clears the input line.
+	ctrlU = "\x15"
 )
 
 // Agents is what the delivery loop needs from the agent manager.
@@ -48,6 +57,11 @@ type Agents interface {
 
 // Target is one agent: a folder inside a workspace.
 type Target struct{ WS, Folder string }
+
+// extResult is a cached ExternalOpen answer that held the messages.
+type extResult struct {
+	at time.Time
+}
 
 type nudge struct {
 	at  time.Time
@@ -77,6 +91,9 @@ type Deliverer struct {
 	extWarned  map[Target]time.Time       // last ExternalOpen warning
 	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
 	swallowed  map[Target]map[string]int  // swallowed nudges per message id
+	lastNudge  map[Target]string          // text of the last nudge typed, to spot a stranded one
+	stuck      map[Target]time.Time       // since when the hook status reads stopped or starting
+	extCache   map[Target]extResult       // last "held" answer of ExternalOpen
 
 	pmu     sync.Mutex
 	prompts map[Target]time.Time // when UserPromptSubmit last fired, not yet seen by Tick
@@ -99,6 +116,9 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		extWarned:  map[Target]time.Time{},
 		renudged:   map[Target]map[string]bool{},
 		swallowed:  map[Target]map[string]int{},
+		lastNudge:  map[Target]string{},
+		stuck:      map[Target]time.Time{},
+		extCache:   map[Target]extResult{},
 		prompts:    map[Target]time.Time{},
 		asks:       map[Target]time.Time{},
 	}, nil
@@ -162,12 +182,47 @@ func (d *Deliverer) Tick(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	seen := map[Target]bool{}
+	listed := map[Target]bool{}
 	for _, t := range d.targets() {
+		listed[t] = true
 		if seen[t] || ctx.Err() != nil {
 			continue
 		}
 		seen[t] = true
 		d.tickTarget(t)
+	}
+	d.prune(listed)
+}
+
+// prune drops state for targets that targets() no longer lists, so the maps
+// do not grow with every folder that was ever used.
+func (d *Deliverer) prune(listed map[Target]bool) {
+	d.pmu.Lock()
+	for t := range d.asks {
+		if !listed[t] {
+			delete(d.asks, t)
+		}
+	}
+	for t := range d.prompts {
+		if !listed[t] {
+			delete(d.prompts, t)
+		}
+	}
+	d.pmu.Unlock()
+	for t := range d.lastNudge {
+		if !listed[t] {
+			delete(d.lastNudge, t)
+		}
+	}
+	for t := range d.stuck {
+		if !listed[t] {
+			delete(d.stuck, t)
+		}
+	}
+	for t := range d.extCache {
+		if !listed[t] {
+			delete(d.extCache, t)
+		}
 	}
 }
 
@@ -225,6 +280,8 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.noStart, t)
 		delete(d.renudged, t)
 		delete(d.swallowed, t)
+		delete(d.lastNudge, t)
+		delete(d.stuck, t)
 		return
 	}
 	d.pruneRenudged(t, pending)
@@ -233,6 +290,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		d.notRunning(t, pending)
 		return
 	}
+	delete(d.extCache, t) // running here: a later stop is checked afresh
 
 	asked, forced := d.deliverNow[t] // the user asked with DeliverNow
 	if forced && !d.now().Before(asked.Add(deliverNowTTL)) {
@@ -264,13 +322,15 @@ func (d *Deliverer) tickTarget(t Target) {
 		}
 	}
 	if len(cand) == 0 {
+		delete(d.stuck, t)
 		return
 	}
 	if waiting {
+		delete(d.stuck, t)
 		return // a nudge awaits its prompt confirmation: one nudge per idle cycle
 	}
 
-	switch d.a.Status(t.WS, t.Folder) {
+	switch d.effectiveStatus(t) {
 	case agent.StatusIdle:
 	default:
 		return // starting, busy, attention, stopped: wait
@@ -283,6 +343,16 @@ func (d *Deliverer) tickTarget(t Target) {
 		return
 	}
 	draft := !scr.InputEmpty
+	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {
+		// Our own nudge is stranded in the box (its Enter was swallowed). A
+		// second nudge pasted after it would read as one garbled prompt, so
+		// clear the box first.
+		var ok bool
+		if scr, ok = d.clearBox(t); !ok {
+			return
+		}
+		draft = !scr.InputEmpty
+	}
 	if draft && !forced {
 		for _, m := range cand {
 			if m.State != notify.StateNudged { // keep "the agent was told" visible
@@ -297,6 +367,48 @@ func (d *Deliverer) tickTarget(t Target) {
 	if d.sendNudge(t, cand, unread) {
 		delete(d.deliverNow, t)
 	}
+}
+
+// effectiveStatus is the hook status, except that a live process stuck at
+// stopped or starting for stuckStatusAfter reads as idle, so the screen
+// decides. The hooks can leave that status behind (a SessionEnd handled after
+// a SessionStart on /clear, a lost SessionStart). Busy and attention are
+// never overridden.
+func (d *Deliverer) effectiveStatus(t Target) agent.Status {
+	st := d.a.Status(t.WS, t.Folder)
+	if st != agent.StatusStopped && st != agent.StatusStarting {
+		delete(d.stuck, t)
+		return st
+	}
+	since, ok := d.stuck[t]
+	if !ok {
+		d.stuck[t] = d.now()
+		return st
+	}
+	if !d.now().Before(since.Add(stuckStatusAfter)) {
+		return agent.StatusIdle
+	}
+	return st
+}
+
+// clearBox sends Ctrl-U and waits for the box to show empty. It returns the
+// screen and whether the box is empty and ready.
+func (d *Deliverer) clearBox(t Target) (screen.State, bool) {
+	if err := d.a.Inject(t.WS, t.Folder, []byte(ctrlU)); err != nil {
+		d.log.Error("delivery: inject ctrl-u failed", "ws", t.WS, "agent", t.Folder, "err", err)
+		return screen.State{}, false
+	}
+	d.sleep(d.enterDelay)
+	var scr screen.State
+	for i := 0; i < pollMax; i++ {
+		scr = d.a.Screen(t.WS, t.Folder)
+		if scr.InputVisible && scr.InputEmpty && !scr.Busy && !scr.Trust {
+			return scr, true
+		}
+		d.sleep(pollEvery)
+	}
+	d.log.Warn("delivery: stranded nudge not cleared, not nudging again", "ws", t.WS, "agent", t.Folder)
+	return scr, false
 }
 
 // pruneRenudged forgets re-nudge marks for messages that are no longer pending.
@@ -318,14 +430,8 @@ func (d *Deliverer) pruneRenudged(t Target, pending []notify.Message) {
 }
 
 func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
-	open, err := d.a.ExternalOpen(t.WS, t.Folder)
-	if err != nil {
-		if last, ok := d.extWarned[t]; !ok || !d.now().Before(last.Add(warnEvery)) {
-			d.extWarned[t] = d.now()
-			d.log.Warn("delivery: external session check failed, holding", "ws", t.WS, "agent", t.Folder, "err", err)
-		}
-		open = true
-	}
+	delete(d.stuck, t)
+	open := d.externalOpen(t)
 	if open {
 		for _, m := range pending {
 			if m.State != notify.StateHeldExternal {
@@ -354,15 +460,41 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 	delete(d.noStart, t)
 }
 
+// externalOpen reports whether the folder's session is open outside
+// relaydeck. The check lists agents and scans every process, so a "held"
+// answer (open, or the check failed) is reused for externalTTL. A "not open"
+// answer is never reused: a start follows it at once.
+func (d *Deliverer) externalOpen(t Target) bool {
+	if c, ok := d.extCache[t]; ok && d.now().Before(c.at.Add(externalTTL)) {
+		return true
+	}
+	open, err := d.a.ExternalOpen(t.WS, t.Folder)
+	if err != nil {
+		if last, ok := d.extWarned[t]; !ok || !d.now().Before(last.Add(warnEvery)) {
+			d.extWarned[t] = d.now()
+			d.log.Warn("delivery: external session check failed, holding", "ws", t.WS, "agent", t.Folder, "err", err)
+		}
+		open = true
+	}
+	if open {
+		d.extCache[t] = extResult{at: d.now()}
+	} else {
+		delete(d.extCache, t)
+	}
+	return open
+}
+
 // sendNudge pastes the nudge, waits for the paste to show on screen, then
 // sends Enter. The text counts every unread message; cand are the messages the
 // nudge is sent for. It reports whether Enter was sent.
 func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
-	text := "\x1b[200~" + notify.Nudge(unread) + "\x1b[201~"
+	nudgeText := notify.Nudge(unread)
+	text := "\x1b[200~" + nudgeText + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return false
 	}
+	d.lastNudge[t] = nudgeText
 	d.sleep(d.enterDelay)
 	// The PTY reader feeds the screen asynchronously, so poll until the box
 	// shows the paste. If an overlay or dialog shows instead, or the paste never

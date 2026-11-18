@@ -24,15 +24,17 @@ const (
 	// minRuleCells is the least number of rule characters in a rule that
 	// carries a label, so a short label line is not taken for a rule.
 	minRuleCells = 10
+	trustSpan    = 3 // rows between the two trust dialog options, at most
 	boxChars     = "│╭╮╰╯┌┐└┘├┤┬┴┼"
 )
 
 // State is what the screen shows right now.
 type State struct {
-	InputVisible bool // the input box is on screen with no overlay
-	InputEmpty   bool // no user text in the box (placeholder text does not count)
-	Busy         bool // footer shows "esc to interrupt"
-	Trust        bool // "Yes, I trust this folder" is on screen
+	InputVisible bool   // the input box is on screen with no overlay
+	InputEmpty   bool   // no user text in the box (placeholder text does not count)
+	Busy         bool   // footer shows "esc to interrupt"
+	Trust        bool   // the trust dialog (Yes, I trust this folder / No, exit) is on screen
+	Draft        string // text in the input box (empty when none)
 }
 
 // Ready reports whether it is safe to type a nudge.
@@ -50,19 +52,44 @@ type Screen struct {
 	// cols and rows are the size last asked for, so reset can rebuild the
 	// emulator even when the old one is too broken to ask.
 	cols, rows int
+	closed     bool
 }
 
 // New creates a screen of the given size. The emulator answers terminal
 // queries on its read side; those bytes are drained continuously and written
 // to reply (which may be nil to discard them). New starts a goroutine that
-// lives for the process, and reply must not block (a blocked reply stalls the
-// drain and then Write). vt.Emulator.Close races with a blocked Read (it writes
-// the closed flag unsynchronised), so Screen has no Close. One goroutine per
-// Screen is the cost.
+// lives until Close, and reply must not block (a blocked reply stalls the
+// drain and then Write).
 func New(cols, rows int, reply io.Writer) *Screen {
 	s := &Screen{reply: reply, cols: cols, rows: rows}
 	s.em = s.newEmulator(cols, rows)
 	return s
+}
+
+// Close ends the drain goroutine of the current emulator. It is safe to call
+// more than once, and Write, Resize and State stay safe after it (the
+// emulator answers no queries then).
+//
+// vt.Emulator.Close is not used: it writes its closed flag with no lock while
+// the drain goroutine reads it in Read, which is a data race. Instead the
+// emulator's input pipe is closed. That pipe is an io.Pipe, which is
+// synchronised: the drain's Read returns EOF and the goroutine ends, and a
+// later reply write fails with ErrClosedPipe instead of blocking.
+func (s *Screen) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	closeDrain(s.em)
+}
+
+// closeDrain ends the drain goroutine of em. It tolerates a nil emulator.
+func closeDrain(em *vt.SafeEmulator) {
+	if em == nil {
+		return
+	}
+	if pw, ok := em.InputPipe().(*io.PipeWriter); ok {
+		pw.CloseWithError(io.EOF)
+	}
 }
 
 // newEmulator creates an emulator and starts the goroutine that drains its
@@ -110,10 +137,14 @@ func (s *Screen) Write(p []byte) (n int, err error) {
 }
 
 // reset replaces a broken emulator with a blank one of the same size. The
-// old emulator's drain goroutine keeps running on the old instance; that is
-// the same one-goroutine cost New already documents.
+// old emulator's drain goroutine is ended first. After Close, the new
+// emulator's drain is ended at once too.
 func (s *Screen) reset() {
+	closeDrain(s.em)
 	s.em = s.newEmulator(s.cols, s.rows)
+	if s.closed {
+		closeDrain(s.em)
+	}
 }
 
 // Resize changes the emulator size. Claude Code redraws after a resize, so
@@ -160,7 +191,7 @@ func (s *Screen) State() (st State) {
 		first = 0
 	}
 	for y := 0; y < h; y++ {
-		if strings.Contains(rows[y], "Yes, I trust this folder") {
+		if strings.Contains(rows[y], "Yes, I trust this folder") && trustLayout(rows, y) {
 			st.Trust = true
 		}
 		if y >= first && strings.Contains(rows[y], "esc to interrupt") {
@@ -178,20 +209,33 @@ func (s *Screen) State() (st State) {
 			continue
 		}
 		st.InputVisible = true
-		st.InputEmpty = true
+		var draft strings.Builder
 		for x := 2; x < w; x++ {
 			c := s.em.CellAt(x, y)
-			if c == nil || strings.TrimSpace(c.Content) == "" {
+			if c == nil || c.Content == "" || c.Style.Attrs&uv.AttrFaint != 0 {
+				draft.WriteByte(' ')
 				continue
 			}
-			if c.Style.Attrs&uv.AttrFaint == 0 {
-				st.InputEmpty = false
-				break
-			}
+			draft.WriteString(c.Content)
 		}
+		st.Draft = strings.TrimSpace(draft.String())
+		st.InputEmpty = st.Draft == ""
 		break
 	}
 	return st
+}
+
+// trustLayout reports whether the "Yes, I trust this folder" row at y is an
+// option of the trust dialog: the other option, "No, exit", is within
+// trustSpan rows (a blank or description row may sit between the options).
+// Plain text that only says the same words has no such neighbour.
+func trustLayout(rows []string, y int) bool {
+	for n := y - trustSpan; n <= y+trustSpan; n++ {
+		if n != y && n >= 0 && n < len(rows) && strings.Contains(rows[n], "No, exit") {
+			return true
+		}
+	}
+	return false
 }
 
 // anchored reports whether the lower rule at row lower sits at the bottom of

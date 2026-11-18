@@ -2,11 +2,15 @@ package screen
 
 import (
 	"fmt"
+	"github.com/KarvinNanda/relaydeck/internal/notify"
+	"io"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T, name string) (data []byte, cols, rows int) {
@@ -445,5 +449,151 @@ func TestStateAndResizeRecoverFromPanic(t *testing.T) {
 	}
 	if st := s.State(); st != (State{}) {
 		t.Fatalf("blank screen State = %+v", st)
+	}
+}
+
+// Trust only matches the dialog layout: the option row sits next to "No, exit".
+// Plain text that happens to say the same thing (an agent working on this
+// repo) must not hold delivery.
+func TestTrustNeedsDialogLayout(t *testing.T) {
+	s := New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[1;1HYes, I trust this folder\r\n"))
+	if s.State().Trust {
+		t.Fatal("Trust set by plain text")
+	}
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[1;1HYes, I trust this folder\x1b[8;1HNo, exit"))
+	if s.State().Trust {
+		t.Fatal("Trust set when No, exit is far from the option row")
+	}
+	// The real dialog still counts, in both orders of the two options.
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[5;1H ❯ No, exit\x1b[6;1H   Yes, I trust this folder"))
+	if !s.State().Trust {
+		t.Fatal("Trust not set for the dialog layout")
+	}
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[5;1H ❯ Yes, I trust this folder\x1b[6;1H   No, exit"))
+	if !s.State().Trust {
+		t.Fatal("Trust not set for the dialog layout, Yes first")
+	}
+}
+
+func TestDraftText(t *testing.T) {
+	st := stateOf(t, "prompt-draft")
+	if st.Draft == "" {
+		t.Fatal("Draft empty for a draft fixture")
+	}
+	if st := stateOf(t, "prompt-empty"); st.Draft != "" {
+		t.Fatalf("Draft = %q for an empty box", st.Draft)
+	}
+}
+
+// Close ends the drain goroutine, also for the emulator that reset replaced.
+func TestCloseStopsDrainGoroutines(t *testing.T) {
+	runtime.GC()
+	base := runtime.NumGoroutine()
+	var screens []*Screen
+	for i := 0; i < 20; i++ {
+		s := New(80, 24, nil)
+		s.reset() // a replaced emulator adds a second drain
+		screens = append(screens, s)
+	}
+	if runtime.NumGoroutine() < base+20 {
+		t.Fatalf("expected drain goroutines to be running, base %d now %d", base, runtime.NumGoroutine())
+	}
+	for _, s := range screens {
+		s.Close()
+		s.Close() // idempotent
+	}
+	if !waitFor(func() bool { return runtime.NumGoroutine() <= base+1 }) {
+		t.Fatalf("goroutines after Close = %d, base %d", runtime.NumGoroutine(), base)
+	}
+}
+
+// After Close a query reply must not block Write (the drain is gone).
+func TestWriteAfterCloseDoesNotBlock(t *testing.T) {
+	s := New(80, 24, nil)
+	s.Close()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			s.Write([]byte("\x1b[c\x1b[6n"))
+		}
+		s.State()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Write blocked after Close")
+	}
+}
+
+// Real fixtures from claude 2.1.327 for the stop and Ctrl-U paths.
+func TestRealFixturesForStopAndCtrlU(t *testing.T) {
+	nudge := notify.Nudge(make([]notify.Message, 2)) // the fixture holds the 2 message nudge
+	tests := []struct {
+		name  string
+		empty bool
+		draft string
+	}{
+		// /exit typed: the slash-command list shows above the box.
+		{"prompt-slash-exit-100", false, "/exit"},
+		{"prompt-slash-exit-60", false, "/exit"},
+		// Ctrl-U: empty box with the placeholder, and a "ctrl+y to paste
+		// deleted text" hint above the box. Neither is a draft.
+		{"after-ctrlu-100", true, ""},
+		{"after-ctrlu-60", true, ""},
+		{"nudge-before-ctrlu-60", false, nudge},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stateOf(t, tc.name)
+			if !got.InputVisible {
+				t.Fatalf("InputVisible = false: %+v", got)
+			}
+			if got.InputEmpty != tc.empty || got.Draft != tc.draft {
+				t.Fatalf("InputEmpty = %v Draft = %q, want %v %q", got.InputEmpty, got.Draft, tc.empty, tc.draft)
+			}
+			if got.Trust {
+				t.Fatal("Trust set")
+			}
+		})
+	}
+}
+
+// Screen.Close relies on InputPipe being an *io.PipeWriter. If a library
+// update changes that, Close would silently stop ending the drain.
+func TestInputPipeIsPipeWriter(t *testing.T) {
+	s := New(80, 24, nil)
+	defer s.Close()
+	if _, ok := s.em.InputPipe().(*io.PipeWriter); !ok {
+		t.Fatalf("InputPipe is %T, Screen.Close needs *io.PipeWriter", s.em.InputPipe())
+	}
+}
+
+// The trust dialog may have blank rows or description rows between the two
+// options, so "No, exit" within 3 rows counts. Far away does not.
+func TestTrustOptionsSeparatedByRows(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"blank row between", "\x1b[5;1H ❯ No, exit\x1b[7;1H   Yes, I trust this folder", true},
+		{"description row between", "\x1b[5;1H ❯ Yes, I trust this folder\x1b[6;1H     Claude can read files here\x1b[7;1H   No, exit", true},
+		{"three rows apart", "\x1b[5;1H ❯ No, exit\x1b[8;1H   Yes, I trust this folder", true},
+		{"four rows apart", "\x1b[5;1H ❯ No, exit\x1b[9;1H   Yes, I trust this folder", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(100, 20, nil)
+			defer s.Close()
+			s.Write([]byte("\x1b[2J" + tc.input))
+			if got := s.State().Trust; got != tc.want {
+				t.Fatalf("Trust = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
