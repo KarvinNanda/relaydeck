@@ -27,7 +27,8 @@ import (
 //   - /: the UI bundle from static, behind Guard.Static (no token); a
 //     directory without index.html is 404
 //
-// Every request gets a request_id and one log line (logx.Middleware).
+// Every request gets a request_id and one log line (logx.Middleware), and
+// every response gets the security headers (securityHeaders).
 func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, picker FolderPicker, log *slog.Logger) http.Handler {
 	ui := &api{d: d, g: g, picker: picker, log: log}
 	agentMux := http.NewServeMux()
@@ -39,7 +40,26 @@ func New(d *daemon.Daemon, g *auth.Guard, static fs.FS, picker FolderPicker, log
 	mux.Handle("/api/", g.UI(ui.routes()))
 	mux.Handle("/ws/", g.UIWebSocket(ui.wsRoutes()))
 	mux.Handle("/", g.Static(staticFiles(static)))
-	return logx.Middleware(log, mux)
+	return logx.Middleware(log, securityHeaders(mux))
+}
+
+// contentSecurityPolicy allows only same-origin scripts, styles, fonts and
+// connections. Styles also allow 'unsafe-inline' because xterm.js injects a
+// <style> element; scripts never allow inline code or eval.
+const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+// securityHeaders sets the browser hardening headers on every response,
+// before any handler (or guard) can write one.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // staticFiles serves the UI bundle. A directory is served only through its

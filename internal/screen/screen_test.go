@@ -47,6 +47,12 @@ func TestStateFromFixtures(t *testing.T) {
 		{"ask-dialog", false, false, false, false, false},
 		{"after-cancel", true, true, false, false, true},
 		{"trust-dialog", false, false, false, true, false},
+		// Captured at 60 columns, the narrowest PTY width relaydeck uses.
+		{"prompt-empty-60", true, true, false, false, true},
+		{"prompt-draft-60", true, false, false, false, false},
+		{"nudge-pasted-60", true, false, false, false, false},
+		{"busy-60", true, true, true, false, false},
+		{"trust-dialog-60", false, false, false, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

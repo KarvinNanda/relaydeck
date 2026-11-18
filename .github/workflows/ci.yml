@@ -9,6 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  # The Vue UI: lint, unit tests, type check and build, then a Go build that
+  # embeds the built UI. The go job below does not need Node: without a
+  # build, internal/webui/dist holds only .gitkeep and the binary still builds.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test # eslint (vue/no-v-html is an error), then vitest
+      - run: npm run build # vue-tsc, vite build into internal/webui/dist, check-dist
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./cmd/relaydeck
+        working-directory: .
+
   go:
     strategy:
       fail-fast: false

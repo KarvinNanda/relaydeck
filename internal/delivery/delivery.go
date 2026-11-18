@@ -1,5 +1,12 @@
 // Package delivery decides when it is safe to type the fixed nudge into a
 // target agent so it calls read_messages. The message body is never typed.
+//
+// A nudged message stays unread until the agent calls read_messages. Once its
+// nudge is confirmed and the agent is idle again with an empty input box, the
+// loop re-nudges it at most once per message, so an agent that ignores it
+// cannot cause a loop. A restart or a swallowed nudge requeues it, and a
+// queued message is always nudged, but the one re-nudge is never given back.
+// A DeliverNow request from the user always includes nudged messages.
 package delivery
 
 import (
@@ -42,8 +49,12 @@ type nudge struct {
 	ids []string
 }
 
-// Deliverer moves pending messages toward their targets. All state is guarded
-// by one mutex, so Tick may be called from several goroutines.
+// Deliverer moves pending messages toward their targets. Delivery state is
+// guarded by mu, so Tick may be called from several goroutines. Tick holds mu
+// for a long time (process checks, paste polling), so prompt confirmations
+// from the hook handler and DeliverNow requests from the UI go through the
+// small pmu instead, and tickTarget takes them from there. Lock order is
+// always mu then pmu.
 type Deliverer struct {
 	r          *notify.Router
 	a          Agents
@@ -56,9 +67,14 @@ type Deliverer struct {
 
 	mu         sync.Mutex
 	nudges     map[Target]nudge
-	deliverNow map[Target]time.Time // when DeliverNow was asked
-	noStart    map[Target]time.Time // do not call Start before this time
-	extWarned  map[Target]time.Time // last ExternalOpen warning
+	deliverNow map[Target]time.Time       // DeliverNow asks taken from pmu, by ask time
+	noStart    map[Target]time.Time       // do not call Start before this time
+	extWarned  map[Target]time.Time       // last ExternalOpen warning
+	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
+
+	pmu     sync.Mutex
+	prompts map[Target]time.Time // when UserPromptSubmit last fired, not yet seen by Tick
+	asks    map[Target]time.Time // when DeliverNow was asked, not yet seen by Tick
 }
 
 // New builds a Deliverer. targets lists the agents to check on each Tick (the
@@ -75,6 +91,9 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		deliverNow: map[Target]time.Time{},
 		noStart:    map[Target]time.Time{},
 		extWarned:  map[Target]time.Time{},
+		renudged:   map[Target]map[string]bool{},
+		prompts:    map[Target]time.Time{},
+		asks:       map[Target]time.Time{},
 	}, nil
 }
 
@@ -101,18 +120,21 @@ func (d *Deliverer) Run(ctx context.Context) {
 	}
 }
 
-// PromptSubmitted confirms a nudge: the hook UserPromptSubmit fired.
+// PromptSubmitted records that the hook UserPromptSubmit fired. The next Tick
+// uses it to confirm a waiting nudge. It never waits for a running Tick.
 func (d *Deliverer) PromptSubmitted(ws, folder string) {
-	d.mu.Lock()
-	delete(d.nudges, Target{ws, folder})
-	d.mu.Unlock()
+	d.pmu.Lock()
+	d.prompts[Target{ws, folder}] = d.now()
+	d.pmu.Unlock()
+	d.Kick()
 }
 
-// DeliverNow makes the next delivery to this target skip the draft check once.
+// DeliverNow makes the next delivery to this target skip the draft check once
+// and include nudged messages. It never waits for a running Tick.
 func (d *Deliverer) DeliverNow(ws, folder string) {
-	d.mu.Lock()
-	d.deliverNow[Target{ws, folder}] = d.now()
-	d.mu.Unlock()
+	d.pmu.Lock()
+	d.asks[Target{ws, folder}] = d.now()
+	d.pmu.Unlock()
 	d.Kick()
 }
 
@@ -141,6 +163,20 @@ func (d *Deliverer) set(m notify.Message, s notify.State) {
 }
 
 func (d *Deliverer) tickTarget(t Target) {
+	d.pmu.Lock()
+	promptAt, prompted := d.prompts[t]
+	delete(d.prompts, t)
+	if at, ok := d.asks[t]; ok {
+		d.deliverNow[t] = at // the TTL runs from the ask, not from this tick
+		delete(d.asks, t)
+	}
+	d.pmu.Unlock()
+	if n, ok := d.nudges[t]; ok && prompted && !promptAt.Before(n.at) {
+		// The prompt came after the nudge time: the nudge was submitted. An
+		// older prompt (a late hook for something else) confirms nothing.
+		delete(d.nudges, t)
+	}
+
 	if n, ok := d.nudges[t]; ok && !d.now().Before(n.at.Add(confirmWindow)) {
 		// No UserPromptSubmit: the nudge was swallowed. Queue it again.
 		delete(d.nudges, t)
@@ -158,30 +194,49 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.nudges, t)
 		delete(d.deliverNow, t)
 		delete(d.noStart, t)
+		delete(d.renudged, t)
 		return
 	}
+	d.pruneRenudged(t, pending)
 
 	if !d.a.Running(t.WS, t.Folder) {
 		d.notRunning(t, pending)
 		return
 	}
 
+	asked, forced := d.deliverNow[t] // the user asked with DeliverNow
+	if forced && !d.now().Before(asked.Add(deliverNowTTL)) {
+		delete(d.deliverNow, t)
+		forced = false
+	}
+	_, waiting := d.nudges[t]
+
 	// Running here means relaydeck owns the session, so external holds are over.
-	var cand []notify.Message
+	// unread is everything read_messages will return, so the nudge counts it
+	// all. cand is what this nudge is sent for.
+	var unread, cand []notify.Message
 	for _, m := range pending {
-		switch m.State {
-		case notify.StateHeldExternal:
+		if m.State == notify.StateHeldExternal {
 			d.set(m, notify.StateQueued)
 			m.State = notify.StateQueued
-			cand = append(cand, m)
+		}
+		unread = append(unread, m)
+		switch m.State {
 		case notify.StateQueued, notify.StateHeldDraft:
 			cand = append(cand, m)
+		case notify.StateNudged:
+			// Told but still unread: one more nudge once its nudge is
+			// confirmed (see waiting below), or any number when the user
+			// asks with DeliverNow.
+			if forced || !d.renudged[t][m.ID] {
+				cand = append(cand, m)
+			}
 		}
 	}
 	if len(cand) == 0 {
-		return // only nudged messages: the agent was told, never nudge again
+		return
 	}
-	if _, waiting := d.nudges[t]; waiting {
+	if waiting {
 		return // a nudge awaits its prompt confirmation: one nudge per idle cycle
 	}
 
@@ -198,22 +253,36 @@ func (d *Deliverer) tickTarget(t Target) {
 		return
 	}
 	draft := !scr.InputEmpty
-	asked, ok := d.deliverNow[t]
-	if ok && !d.now().Before(asked.Add(deliverNowTTL)) {
-		delete(d.deliverNow, t)
-		ok = false
-	}
-	if draft && !ok {
+	if draft && !forced {
 		for _, m := range cand {
-			d.set(m, notify.StateHeldDraft)
+			if m.State != notify.StateNudged { // keep "the agent was told" visible
+				d.set(m, notify.StateHeldDraft)
+			}
 		}
 		return
 	}
 	if !draft && !scr.Ready() {
 		return
 	}
-	if d.sendNudge(t, cand) {
+	if d.sendNudge(t, cand, unread) {
 		delete(d.deliverNow, t)
+	}
+}
+
+// pruneRenudged forgets re-nudge marks for messages that are no longer pending.
+func (d *Deliverer) pruneRenudged(t Target, pending []notify.Message) {
+	r := d.renudged[t]
+	if len(r) == 0 {
+		return
+	}
+	live := make(map[string]bool, len(pending))
+	for _, m := range pending {
+		live[m.ID] = true
+	}
+	for id := range r {
+		if !live[id] {
+			delete(r, id)
+		}
 	}
 }
 
@@ -254,9 +323,10 @@ func (d *Deliverer) notRunning(t Target, pending []notify.Message) {
 }
 
 // sendNudge pastes the nudge, waits for the paste to show on screen, then
-// sends Enter. It reports whether Enter was sent.
-func (d *Deliverer) sendNudge(t Target, cand []notify.Message) bool {
-	text := "\x1b[200~" + notify.Nudge(cand) + "\x1b[201~"
+// sends Enter. The text counts every unread message; cand are the messages the
+// nudge is sent for. It reports whether Enter was sent.
+func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
+	text := "\x1b[200~" + notify.Nudge(unread) + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return false
@@ -279,15 +349,24 @@ func (d *Deliverer) sendNudge(t Target, cand []notify.Message) bool {
 		d.log.Warn("delivery: paste not confirmed on screen, not sending Enter", "ws", t.WS, "agent", t.Folder)
 		return false
 	}
+	// Take the nudge time before Enter: the hook can arrive within
+	// milliseconds, and a prompt earlier than this time is not a confirmation.
+	at := d.now()
 	if err := d.a.Inject(t.WS, t.Folder, []byte("\r")); err != nil {
 		d.log.Error("delivery: inject enter failed", "ws", t.WS, "agent", t.Folder, "err", err)
 		return false
 	}
 	ids := make([]string, 0, len(cand))
 	for _, m := range cand {
+		if m.State == notify.StateNudged {
+			if d.renudged[t] == nil {
+				d.renudged[t] = map[string]bool{}
+			}
+			d.renudged[t][m.ID] = true
+		}
 		d.set(m, notify.StateNudged)
 		ids = append(ids, m.ID)
 	}
-	d.nudges[t] = nudge{at: d.now(), ids: ids}
+	d.nudges[t] = nudge{at: at, ids: ids}
 	return true
 }

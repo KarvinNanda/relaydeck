@@ -106,6 +106,7 @@ type rigOptions struct {
 	static    fstest.MapFS
 	cswapPath string
 	mapped    func(ctx context.Context, path, dir string) (string, bool, error)
+	external  func(ctx context.Context, dir, sid string, own map[int]bool) (bool, error)
 }
 
 func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
@@ -135,6 +136,10 @@ func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
 		t.Fatal(err)
 	}
 	log := logx.New(r.logs)
+	external := func(context.Context, string, string, map[int]bool) (bool, error) { return false, nil }
+	if o.external != nil {
+		external = o.external
+	}
 	d, err := daemon.New(daemon.Options{
 		ConfigPath:   r.cfgPath,
 		Config:       cfg,
@@ -144,7 +149,7 @@ func newRigWith(t *testing.T, mutate func(*rigOptions)) *rig {
 		RuntimeRoot:  filepath.Join(base, "runtime"),
 		BaseEnv:      []string{"FAKECLAUDE_DIR=" + r.out},
 		ClaudeHome:   r.home,
-		ExternalOpen: func(context.Context, string, string, map[int]bool) (bool, error) { return false, nil },
+		ExternalOpen: external,
 		OwnPIDs:      func() map[int]bool { return nil },
 		CswapStatus:  func(context.Context, string) (cswap.Info, error) { return cswap.Info{}, cswap.ErrUnknownFormat },
 		EnterDelay:   10 * time.Millisecond,
@@ -297,5 +302,76 @@ func TestStaticDirWithoutIndexIsNotFound(t *testing.T) {
 		if strings.Contains(body, ".gitkeep") || strings.Contains(body, "app.js\"") {
 			t.Errorf("GET %s lists the directory: %q", path, body)
 		}
+	}
+}
+
+// Task 15: every response carries the security headers, whatever route and
+// whatever outcome (static file, static 404, API success and 401, WebSocket
+// upgrade refused, agent 401, wrong Host).
+func TestSecurityHeadersOnEveryResponse(t *testing.T) {
+	r := newRig(t, fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>relaydeck</title>")}})
+	want := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"X-Frame-Options":         "DENY",
+		"Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+	}
+	cases := []struct {
+		name, method, path, host, bearer string
+		code                             int
+	}{
+		{"static index", "GET", "/", "", "", 200},
+		{"static missing", "GET", "/missing.js", "", "", 404},
+		{"api ok", "GET", "/api/state", "", uiToken, 200},
+		{"api no token", "GET", "/api/state", "", "", 401},
+		{"api unknown route", "GET", "/api/nope", "", uiToken, 404},
+		{"ws no ticket", "GET", "/ws/events", "", "", 403}, // no Origin header: refused before the ticket check
+		{"agent no token", "POST", "/agent/hook", "", "", 401},
+		{"wrong host", "GET", "/", fmt.Sprintf("evil.example:%d", r.port), "", 421},
+	}
+	for _, c := range cases {
+		req, err := http.NewRequest(c.method, r.srv.URL+c.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.host != "" {
+			req.Host = c.host
+		}
+		if c.bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+c.bearer)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.code {
+			t.Errorf("%s: %s %s = %d, want %d", c.name, c.method, c.path, resp.StatusCode, c.code)
+		}
+		for k, v := range want {
+			if got := resp.Header.Get(k); got != v {
+				t.Errorf("%s: %s = %q, want %q", c.name, k, got, v)
+			}
+		}
+	}
+}
+
+// A WebSocket upgrade that passes the Origin check but has a bad ticket is
+// refused by the ticket check, and that 401 also carries the headers.
+func TestSecurityHeadersOnWebSocketUpgrade(t *testing.T) {
+	r := newRig(t, nil)
+	origin := fmt.Sprintf("http://127.0.0.1:%d", r.port)
+	req, _ := http.NewRequest("GET", r.srv.URL+"/ws/events?ticket=made-up", nil)
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad ticket = %d, want 401", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("bad ticket X-Frame-Options = %q", got)
 	}
 }

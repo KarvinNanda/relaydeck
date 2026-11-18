@@ -168,13 +168,20 @@ func TestIntegrationHooksNotifyDelivery(t *testing.T) {
 		t.Fatal("message body was typed into the PTY")
 	}
 
-	// The nudge's own prompt confirms it: no requeue after the 3 s window,
-	// no second nudge.
+	// The nudge's own prompt confirms it: no requeue after the 3 s window.
 	if c := hook(infoB.Token, "UserPromptSubmit", ""); c != 204 {
 		t.Fatalf("B UserPromptSubmit = %d", c)
 	}
 	if st := r.folder("b").Status; st != agent.StatusBusy {
 		t.Fatalf("B status = %s, want busy", st)
+	}
+	// B ends its turn without reading: the loop nudges it one more time.
+	hook(infoB.Token, "Stop", "")
+	waitFor(t, "re-nudge typed into B", 5*time.Second, func() bool { return strings.Count(r.lines(ab.ID()), nudge) == 2 })
+	// B submits the re-nudge and again ends its turn without reading: no
+	// third nudge, the message stays nudged.
+	if c := hook(infoB.Token, "UserPromptSubmit", ""); c != 204 {
+		t.Fatalf("B second UserPromptSubmit = %d", c)
 	}
 	hook(infoB.Token, "Stop", "")
 	// Confirm window (3 s) plus one tick (1 s) plus margin.
@@ -182,7 +189,7 @@ func TestIntegrationHooksNotifyDelivery(t *testing.T) {
 	if m := r.message(t, msgID); m.State != notify.StateNudged {
 		t.Fatalf("after the confirm window state = %s, want nudged", m.State)
 	}
-	if n := strings.Count(r.lines(ab.ID()), nudge); n != 1 {
+	if n := strings.Count(r.lines(ab.ID()), nudge); n != 2 {
 		t.Fatalf("nudged %d times", n)
 	}
 
