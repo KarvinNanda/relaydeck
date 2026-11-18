@@ -185,6 +185,8 @@ Open up to 4 panels. The **Layout** buttons (1, 2, 3, 4) in the top bar choose h
 
 Each agent already knows its workspace, the names of the other folders, and the tools `list_folders`, `notify` and `read_messages`. You talk to it in plain words.
 
+The folder names are given to the agent when its session starts. If you add a folder later, a running agent does not know it yet: ask it to "check list_folders" first, or it may say the target does not exist. Add every folder of the workspace before you start the agents to avoid this.
+
 Example prompts, typed in the `be` panel:
 
 - "When the API is running, tell fe-admin and fe-customer."
