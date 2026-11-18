@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/KarvinNanda/relaydeck/internal/cswap"
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
 	"github.com/KarvinNanda/relaydeck/internal/hook"
+	"github.com/KarvinNanda/relaydeck/internal/launch"
 )
 
 func TestAddWorkspaceAndFolder(t *testing.T) {
@@ -36,7 +38,12 @@ func TestAddWorkspaceAndFolder(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Skip("symlinks not available:", err)
 	}
-	f, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: link, Account: "2"})
+	// Per-folder accounts are refused on windows, so only ask for one elsewhere.
+	wantAccount := ""
+	if e.opts.GOOS != "windows" {
+		wantAccount = "2"
+	}
+	f, err := e.d.AddFolder("v", config.Folder{Name: "c", Path: link, Account: wantAccount})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +53,6 @@ func TestAddWorkspaceAndFolder(t *testing.T) {
 	c, err := config.Load(e.cfgPath)
 	if err != nil {
 		t.Fatal(err)
-	}
-	// Ruling 17: the account is kept on darwin and linux, dropped on windows.
-	wantAccount := "2"
-	if e.opts.GOOS == "windows" {
-		wantAccount = ""
 	}
 	_, saved, ok := c.Folder("v", "c")
 	if !ok || saved.Path != real || saved.Account != wantAccount || f.Account != wantAccount {
@@ -82,15 +84,55 @@ func TestAddWorkspaceAndFolder(t *testing.T) {
 	}
 }
 
-// Ruling 17: the account is dropped on windows.
-func TestAddFolderDropsAccountOnWindows(t *testing.T) {
+// Per-folder accounts are disabled on windows in v1: a non-empty account is
+// refused with ErrInvalid (not dropped silently), an empty one is fine.
+func TestAddFolderRejectsAccountOnWindows(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.GOOS = "windows" })
-	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB, Account: "2"})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB, Account: "2"}); !errors.Is(err, launch.ErrBadInput) {
+		t.Fatalf("account on windows: err = %v, want launch.ErrBadInput", err)
 	}
-	if f.Account != "" || e.savedFolder(t, "c").Account != "" {
-		t.Fatal("account kept on windows")
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB}); err != nil {
+		t.Fatalf("no account on windows: %v", err)
+	}
+}
+
+// An account name that launch would refuse is refused when the folder is
+// added, and nothing is saved. The cheap checks run before `cswap map`, so a
+// refused add never starts cswap.
+func TestAddFolderValidatesBeforeCswap(t *testing.T) {
+	asked := 0
+	e := newEnv(t, func(o *Options) {
+		o.GOOS = "linux"
+		o.CswapPath = "/opt/cswap"
+		o.CswapMapped = func(context.Context, string, string) (string, bool, error) {
+			asked++
+			return "3", true, nil
+		}
+	})
+	cases := []struct {
+		name string
+		ws   string
+		f    config.Folder
+		want error
+	}{
+		{"bad account", "w", config.Folder{Name: "c", Path: e.dirB, Account: "-x"}, launch.ErrBadInput},
+		{"spaces in account", "w", config.Folder{Name: "c", Path: e.dirB, Account: "a b"}, launch.ErrBadInput},
+		{"unknown workspace", "nope", config.Folder{Name: "c", Path: e.dirB}, ErrNotFound},
+		{"duplicate name", "w", config.Folder{Name: "a", Path: e.dirB}, ErrConflict},
+		{"bad name", "w", config.Folder{Name: "UPPER", Path: e.dirB}, ErrInvalid},
+		{"bad mode", "w", config.Folder{Name: "c", Path: e.dirB, PermissionMode: "yolo"}, ErrInvalid},
+		{"missing path", "w", config.Folder{Name: "c", Path: filepath.Join(e.dirB, "missing")}, ErrInvalid},
+	}
+	for _, tc := range cases {
+		if _, err := e.d.AddFolder(tc.ws, tc.f); !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	if asked != 0 {
+		t.Fatalf("cswap map ran %d times for refused adds", asked)
+	}
+	if _, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB}); err != nil || asked != 1 {
+		t.Fatalf("valid add: err %v, cswap asked %d times, want 1", err, asked)
 	}
 }
 
@@ -394,4 +436,21 @@ func TestAgentStartRefreshesAccount(t *testing.T) {
 		return calls == 1
 	})
 	eventually(t, "account known", func() bool { return e.d.State().Account.Known })
+}
+
+// An account returned by `cswap map` goes through the same check as a typed
+// one: a bad name is not saved, and the folder is added without an account.
+func TestAddFolderDropsUnusableMappedAccount(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.GOOS = "linux"
+		o.CswapPath = "/opt/cswap"
+		o.CswapMapped = func(context.Context, string, string) (string, bool, error) { return "-bad name", true, nil }
+	})
+	f, err := e.d.AddFolder("w", config.Folder{Name: "c", Path: e.dirB})
+	if err != nil || f.Account != "" || e.savedFolder(t, "c").Account != "" {
+		t.Fatalf("mapped bad account: %+v err %v", f, err)
+	}
+	if !strings.Contains(e.logs.String(), "unusable account") || strings.Contains(e.logs.String(), "-bad name") {
+		t.Fatalf("warning missing, or it logs the account: %s", e.logs.String())
+	}
 }

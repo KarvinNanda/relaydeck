@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -72,7 +73,7 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 		open, err := d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, d.opts.OwnPIDs())
 		if err != nil {
 			// Same safe direction as delivery: if we cannot tell, do not resume.
-			return fmt.Errorf("check for a session open outside relaydeck: %w", err)
+			return fmt.Errorf("%w: %v", ErrExternalCheck, err)
 		}
 		if open {
 			return ErrExternalOpen
@@ -113,6 +114,9 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 		os.RemoveAll(runtimeDir)
 		if errors.Is(err, agent.ErrAlreadyRunning) {
 			return fmt.Errorf("%w: another agent uses the same folder path", ErrRunning)
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			return ErrClaudeNotFound
 		}
 		return err
 	}
