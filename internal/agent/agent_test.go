@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -224,9 +225,19 @@ func TestResize(t *testing.T) {
 	collect(t, nil, out, "SIZE:90x30")
 }
 
+// drawInputBox paints the empty input box at the bottom of the agent's screen
+// and parks the cursor on the prompt row, so the terminal echo of what is
+// typed lands in the box like it does in Claude Code.
+func drawInputBox(a *Agent) {
+	rule := strings.Repeat("─", defaultCols)
+	a.screen.Write([]byte("\x1b[2J\x1b[37;1H" + rule + "\x1b[38;1H❯\u00a0\x1b[2mTry something\x1b[22m" +
+		"\x1b[39;1H" + rule + "\x1b[40;3H? for shortcuts\x1b[38;3H\x1b[K"))
+}
+
 func TestStopSendsExit(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
+	drawInputBox(a)
 	start := time.Now()
 	if err := a.Stop(5 * time.Second); err != nil {
 		t.Fatal(err)
@@ -549,8 +560,7 @@ func TestKillTypesNothing(t *testing.T) {
 }
 
 // Fix round 1 (3c): a stopped agent that was removed can be freed. The
-// screen's drain goroutine lives on (Screen has no Close), so it must not
-// keep the Agent (scrollback, emulator feed, PTY) reachable.
+// screen's drain goroutine must not keep the Agent (scrollback, emulator feed, PTY) reachable.
 func TestRemovedAgentIsCollected(t *testing.T) {
 	m := newMgr(t, nil)
 	wp := func() weak.Pointer[Agent] {
@@ -637,5 +647,51 @@ func TestSameDirSymlinkRejected(t *testing.T) {
 	defer a.Stop(time.Second)
 	if _, err := m.Start("b", launch.Command{Argv: []string{fakeBin}, Env: os.Environ(), Dir: link}); err != ErrAlreadyRunning {
 		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+// The screen is read a few ms before /exit is typed. A dialog that opens in
+// that gap must not get the Enter: the agent is killed instead.
+func TestStopDoesNotEnterIntoDialog(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	_, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, nil, out, "READY")
+	a.screen.Write([]byte("\x1b[2J\x1b[5;1H \u276f No, exit\x1b[6;1H   Yes, I trust this folder"))
+	begin := time.Now()
+	if err := a.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(begin) > 3*time.Second {
+		t.Fatal("Stop waited for the grace period instead of killing")
+	}
+	// fakeclaude exits 0 on a typed /exit plus Enter. A kill is not 0.
+	if a.ExitCode() == 0 {
+		t.Fatal("Enter reached the agent while a dialog was on screen")
+	}
+}
+
+// A hung claude with a full input buffer must not block Inject for good: it
+// runs under the delivery lock.
+func TestInjectTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	a := &Agent{
+		pty:           hungPty{release: release},
+		done:          make(chan struct{}),
+		injectTimeout: 50 * time.Millisecond,
+	}
+	begin := time.Now()
+	err := a.Inject([]byte("x"))
+	if !errors.Is(err, ErrInjectTimeout) {
+		t.Fatalf("err = %v, want ErrInjectTimeout", err)
+	}
+	if time.Since(begin) > 2*time.Second {
+		t.Fatal("Inject did not return near its timeout")
+	}
+	// A write queued behind the stuck one is dropped, never typed late.
+	if err := a.Inject([]byte("y")); !errors.Is(err, ErrInjectTimeout) {
+		t.Fatalf("second Inject err = %v", err)
 	}
 }
