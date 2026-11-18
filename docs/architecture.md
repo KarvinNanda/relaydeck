@@ -116,7 +116,7 @@ What an agent receives (`internal/launch/launch.go:Build`):
 - argv flags: `--permission-mode <mode>` (default `auto`), `--mcp-config <runtime dir>/mcp.json`, `--settings <runtime dir>/settings.json`, `--append-system-prompt <text>`, `--resume <id>` or `--session-id <new uuid>`, `--name <workspace>/<folder>`.
 - `settings.json` holds only the five hooks, each running `"<relaydeck exe>" hook <Event>`. relaydeck never edits `~/.claude/settings.json`.
 - `mcp.json` holds one stdio server: `<relaydeck exe> mcp`.
-- environment: the daemon environment minus the Claude Code session markers (`CLAUDECODE`, `CLAUDE_CODE_*` session variables, `CLAUDE_PID`, `CLAUDE_EFFORT`) and minus any `RELAYDECK_*`, plus `RELAYDECK_URL`, `RELAYDECK_AGENT_ID` and `RELAYDECK_AGENT_TOKEN`. The agent token is never in argv, because argv is visible to other local users through `ps`. The UI token is never given to an agent.
+- environment: the daemon environment minus the Claude Code session markers (exactly these 10 names: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID`, `CLAUDE_EFFORT`, from `sessionMarkers` in `internal/launch/launch.go`; other `CLAUDE_*` variables pass through) and minus any `RELAYDECK_*`, plus `RELAYDECK_URL`, `RELAYDECK_AGENT_ID` and `RELAYDECK_AGENT_TOKEN`. The agent token is never in argv, because argv is visible to other local users through `ps`. The UI token is never given to an agent.
 
 ### 2.3 Shutdown order
 
@@ -161,7 +161,7 @@ relaydeck has two kinds of caller. The UI holder of the UI token is fully truste
 
 | Check | Where | Notes |
 |---|---|---|
-| The agent identity comes only from the token, never from the path or body | `auth.Guard.Agent` puts the id in the context. `hook.Handler` and `mcpserver.Handlers` read it with `auth.AgentID`. | An unknown or revoked token gives 401. An id with no owner gives 403 `unknown agent`. |
+| The agent identity comes only from the token, never from the path or body | `auth.Guard.Agent` puts the id in the context. `hook.Handler` and `mcpserver.Handlers` read it with `auth.AgentID`. | An unknown or revoked token gives 401. An id with no owner: on the tools path the answer is 403 `unknown agent` (`mcpserver.Handlers`). On the hook path the report is silently ignored (`daemon.onHook` returns) and the answer is still 204. |
 | An agent can notify only a folder in its own workspace, and not itself | `notify.Router.Send` (target must be in `Directory.Folders(ws)`) | `from` and `ws` come from `Daemon.WhoAmI(agentID)`. |
 | `read_messages` returns only the caller's own messages | `notify.Router.ReadN(ws, agent, ...)` | |
 | A hook report changes only the calling agent's status and its folder's session id | `daemon.onHook` | The session id is kept only when it is a lowercase UUID. |
@@ -445,6 +445,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 - **Draft detection reads the screen**, so it sees only what Claude Code draws. Placeholder text (faint style) is not a draft. relaydeck's own stranded paste (nudge text with no Enter) reads as a draft.
 - **External session detection is best effort.** `claude agents --json` is the main source. When it fails, a process scan matches by working directory only and cannot see the session id. A `claude` process whose directory cannot be read counts as "open". Not yet verified end to end (Task 19). The check runs for every not-running target on each delivery tick (about 1 s) while the delivery lock is held (deferred: cache the process list).
 - **No remove or rename for workspaces and folders.** Edit `config.yaml` with the daemon stopped. A hand edit made while it runs is overwritten.
+- **NFC and NFD path names.** The case fix in `paths.Canonicalize` and the same-folder guard in `internal/agent/manager.go:Manager.Start` compare names with plain string equality or `strings.EqualFold`, which does not treat the NFC and NFD spellings of one name as equal (macOS can hold either). Two spellings of one folder can therefore be stored as two paths, and both agents can run at once. The same holds for the external session check (`extsession.samePath`).
 - **Hand-edited paths are not canonicalized.** Only `Config.Validate` runs on load.
 - **Session titles** come from scanning up to 8 MiB of each session file (`sessions.maxScan`). A very large session is slow to list.
 
