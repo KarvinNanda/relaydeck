@@ -28,7 +28,7 @@ jobs:
       - run: npm ci
       - run: npm test # eslint (vue/no-v-html is an error), then vitest
       - run: npm run build # vue-tsc, vite build into internal/webui/dist, check-dist
-      - run: node scripts/check-mermaid.mjs # every Mermaid block in docs/architecture.md must parse
+      - run: node scripts/check-mermaid.mjs docs/architecture.md docs/guide.md # every Mermaid block in these docs must parse
         working-directory: .
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
