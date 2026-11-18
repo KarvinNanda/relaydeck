@@ -52,6 +52,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
   <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lc</string><string>exec "$HOME/KV/relaydeck/relaydeck" serve</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>USER_HOME/Library/Logs/relaydeck/serve.out</string>
   <key>StandardErrorPath</key><string>USER_HOME/Library/Logs/relaydeck/relaydeck.log</string>
 </dict></plist>
@@ -59,7 +60,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 
 It runs through `zsh -lc` because launchd starts jobs with a minimal PATH. The agents need your login PATH to find `claude`, `node` and `docker`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
 
-`serve.out` holds the startup line, which contains the UI token, so keep it private. Use `relaydeck open` to get into the UI.
+`serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) makes launchd create both log files readable by your user only. Use `relaydeck open` to get into the UI.
 
 - Load: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist`
 - Restart after a rebuild: `launchctl kickstart -k gui/$(id -u)/com.karvinnanda.relaydeck`
