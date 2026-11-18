@@ -104,8 +104,10 @@ func TestTwoSubscribersSeeSameOutput(t *testing.T) {
 func TestReplayAfterLateSubscribe(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, o, c := a.Subscribe()
-	collect(t, nil, o, "READY")
+	// READY may already be in the scrollback when the first Subscribe runs,
+	// so the first replay counts too.
+	r, o, c := a.Subscribe()
+	collect(t, r, o, "READY")
 	c()
 	replay, _, c2 := a.Subscribe()
 	defer c2()
