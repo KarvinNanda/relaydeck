@@ -51,7 +51,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.karvinnanda.relaydeck</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lc</string><string>exec "$HOME/KV/relaydeck/relaydeck" serve</string></array>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lic</string><string>exec "$HOME/KV/relaydeck/relaydeck" serve</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>Umask</key><integer>63</integer>
@@ -60,7 +60,7 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 </dict></plist>
 ```
 
-It runs through `zsh -lc` because launchd starts jobs with a minimal PATH. The agents need your login PATH to find `claude`, `node` and `docker`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
+It runs through `zsh -lic` because launchd starts jobs with a minimal PATH, and the agents need your PATH to find `claude`, `node` and `docker`. `-l` makes a login shell, which reads only `.zprofile`. Most setups put `~/.local/bin` (where `claude` lives), Homebrew and fnm or nvm in `.zshrc`, which only an interactive shell (`-i`) reads. So both flags are needed. Check it with `env -i HOME="$HOME" /bin/zsh -lic 'command -v claude'`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
 
 `serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) applies to files relaydeck creates, but launchd opens the two log files itself with the default mode (0644), so the 0700 log directory is what keeps them private. Also run `chmod 600` on both files once they exist. Use `relaydeck open` to get into the UI.
 
