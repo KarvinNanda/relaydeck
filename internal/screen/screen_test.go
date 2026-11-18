@@ -5,8 +5,10 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T, name string) (data []byte, cols, rows int) {
@@ -445,5 +447,83 @@ func TestStateAndResizeRecoverFromPanic(t *testing.T) {
 	}
 	if st := s.State(); st != (State{}) {
 		t.Fatalf("blank screen State = %+v", st)
+	}
+}
+
+// Trust only matches the dialog layout: the option row sits next to "No, exit".
+// Plain text that happens to say the same thing (an agent working on this
+// repo) must not hold delivery.
+func TestTrustNeedsDialogLayout(t *testing.T) {
+	s := New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[1;1HYes, I trust this folder\r\n"))
+	if s.State().Trust {
+		t.Fatal("Trust set by plain text")
+	}
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[1;1HYes, I trust this folder\x1b[8;1HNo, exit"))
+	if s.State().Trust {
+		t.Fatal("Trust set when No, exit is far from the option row")
+	}
+	// The real dialog still counts, in both orders of the two options.
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[5;1H ❯ No, exit\x1b[6;1H   Yes, I trust this folder"))
+	if !s.State().Trust {
+		t.Fatal("Trust not set for the dialog layout")
+	}
+	s = New(100, 20, nil)
+	s.Write([]byte("\x1b[2J\x1b[5;1H ❯ Yes, I trust this folder\x1b[6;1H   No, exit"))
+	if !s.State().Trust {
+		t.Fatal("Trust not set for the dialog layout, Yes first")
+	}
+}
+
+func TestDraftText(t *testing.T) {
+	st := stateOf(t, "prompt-draft")
+	if st.Draft == "" {
+		t.Fatal("Draft empty for a draft fixture")
+	}
+	if st := stateOf(t, "prompt-empty"); st.Draft != "" {
+		t.Fatalf("Draft = %q for an empty box", st.Draft)
+	}
+}
+
+// Close ends the drain goroutine, also for the emulator that reset replaced.
+func TestCloseStopsDrainGoroutines(t *testing.T) {
+	runtime.GC()
+	base := runtime.NumGoroutine()
+	var screens []*Screen
+	for i := 0; i < 20; i++ {
+		s := New(80, 24, nil)
+		s.reset() // a replaced emulator adds a second drain
+		screens = append(screens, s)
+	}
+	if runtime.NumGoroutine() < base+20 {
+		t.Fatalf("expected drain goroutines to be running, base %d now %d", base, runtime.NumGoroutine())
+	}
+	for _, s := range screens {
+		s.Close()
+		s.Close() // idempotent
+	}
+	if !waitFor(func() bool { return runtime.NumGoroutine() <= base+1 }) {
+		t.Fatalf("goroutines after Close = %d, base %d", runtime.NumGoroutine(), base)
+	}
+}
+
+// After Close a query reply must not block Write (the drain is gone).
+func TestWriteAfterCloseDoesNotBlock(t *testing.T) {
+	s := New(80, 24, nil)
+	s.Close()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			s.Write([]byte("\x1b[c\x1b[6n"))
+		}
+		s.State()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Write blocked after Close")
 	}
 }
