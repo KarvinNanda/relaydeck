@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/KarvinNanda/relaydeck/internal/agent"
@@ -108,6 +110,8 @@ func (a *api) term(w http.ResponseWriter, r *http.Request) {
 	log.Info("terminal attached")
 	defer log.Info("terminal detached")
 
+	seat := a.seats.join(ag.ID())
+	defer a.seats.leave(ag.ID(), seat)
 	replay, out, cancel := ag.Subscribe()
 	defer cancel()
 	// Not the request context: after the upgrade it does not end when the
@@ -120,7 +124,7 @@ func (a *api) term(w http.ResponseWriter, r *http.Request) {
 	replayAt := time.Now()
 	go func() {
 		defer stop()
-		termInput(ctx, c, ag, replayAt, log)
+		termInput(ctx, c, ag, replayAt, func() bool { return a.seats.newest(ag.ID(), seat) }, log)
 	}()
 
 	for {
@@ -151,9 +155,53 @@ type termFrame struct {
 	Rows int    `json:"rows"`
 }
 
+// termSeats orders the terminal sockets of each agent. When two browser tabs
+// show the same agent, both xterm.js instances answer terminal queries, and
+// the agent would get every reply twice. Only the newest socket may send
+// frames that are query replies (see queryReplyRe).
+type termSeats struct {
+	mu   sync.Mutex
+	next uint64
+	by   map[string][]uint64 // agent id to seat numbers, oldest first
+}
+
+func (s *termSeats) join(agentID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.by == nil {
+		s.by = map[string][]uint64{}
+	}
+	s.next++
+	s.by[agentID] = append(s.by[agentID], s.next)
+	return s.next
+}
+
+func (s *termSeats) leave(agentID string, seat uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.by[agentID]
+	i := slices.Index(cur, seat)
+	if i < 0 {
+		return
+	}
+	cur = slices.Delete(cur, i, i+1)
+	if len(cur) == 0 {
+		delete(s.by, agentID)
+	} else {
+		s.by[agentID] = cur
+	}
+}
+
+func (s *termSeats) newest(agentID string, seat uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.by[agentID]
+	return len(cur) > 0 && cur[len(cur)-1] == seat
+}
+
 // termInput applies client frames until the socket ends. It never logs what
 // was typed.
-func termInput(ctx context.Context, c *websocket.Conn, ag *agent.Agent, replayAt time.Time, log *slog.Logger) {
+func termInput(ctx context.Context, c *websocket.Conn, ag *agent.Agent, replayAt time.Time, isNewest func() bool, log *slog.Logger) {
 	for {
 		typ, p, err := c.Read(ctx)
 		if err != nil {
@@ -169,7 +217,7 @@ func termInput(ctx context.Context, c *websocket.Conn, ag *agent.Agent, replayAt
 		}
 		switch f.Type {
 		case "input":
-			if time.Since(replayAt) < queryReplyWindow && queryReplyRe.MatchString(f.Data) {
+			if queryReplyRe.MatchString(f.Data) && (time.Since(replayAt) < queryReplyWindow || !isNewest()) {
 				continue
 			}
 			if err := ag.Write([]byte(f.Data)); err != nil && !errors.Is(err, agent.ErrStopped) {

@@ -5,6 +5,7 @@ package notify
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,12 @@ const (
 	HopLimit = 3
 	// MaxPendingPerTarget caps unread messages (including held ones) per target agent.
 	MaxPendingPerTarget = 50
+	// MaxFinishedPerWorkspace caps delivered and rejected messages kept per workspace.
+	// The oldest are dropped when a new message arrives. Pending messages are never dropped.
+	MaxFinishedPerWorkspace = 500
+	// MaxRequeues caps how often one message goes back to queued after the agent
+	// that read it exited. Past it the message stays delivered (poison message).
+	MaxRequeues = 3
 )
 
 type Message struct {
@@ -41,6 +48,11 @@ type Message struct {
 	Hop       int       `json:"hop"`
 	Created   time.Time `json:"created"`
 	State     State     `json:"state"`
+
+	// reading is set while the agent has read the message but its turn has not
+	// ended (see Confirm and Requeue). Such a message is never pruned.
+	reading  bool
+	requeues int
 }
 
 // Errors of Approve and Reject, so the HTTP layer can tell 404 from 409.
@@ -55,6 +67,9 @@ type Directory interface{ Folders(ws string) []string }
 type agentKey struct{ ws, agent string }
 
 type Router struct {
+	// Log (may be nil) gets a warning when a message hits MaxRequeues.
+	Log *slog.Logger
+
 	dir   Directory
 	now   func() time.Time
 	newID func() string
@@ -63,6 +78,8 @@ type Router struct {
 	msgs    []*Message // creation order
 	byID    map[string]*Message
 	hop     map[agentKey]int
+	closed  map[string]bool       // agent ids whose process is gone: later reads are untracked
+	reads   map[string][]*Message // by agent id: read since that agent's last turn start, not yet confirmed
 	subs    map[int]chan Message
 	nextSub int
 }
@@ -70,9 +87,11 @@ type Router struct {
 func NewRouter(dir Directory, now func() time.Time, newID func() string) *Router {
 	return &Router{
 		dir: dir, now: now, newID: newID,
-		byID: map[string]*Message{},
-		hop:  map[agentKey]int{},
-		subs: map[int]chan Message{},
+		byID:   map[string]*Message{},
+		hop:    map[agentKey]int{},
+		reads:  map[string][]*Message{},
+		closed: map[string]bool{},
+		subs:   map[int]chan Message{},
 	}
 }
 
@@ -125,41 +144,112 @@ func (r *Router) Send(ws, from, to, body string) (Message, error) {
 	m.ID = r.newID()
 	r.msgs = append(r.msgs, m)
 	r.byID[m.ID] = m
+	r.prune(ws)
 	r.publish(*m)
 	return *m, nil
 }
 
-// Read returns the caller's queued, held_draft and nudged messages and marks them
-// delivered. The caller's handling hop becomes the highest hop it read.
-func (r *Router) Read(ws, agent string) []Message {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []Message
-	maxHop := 0
+// prune drops the oldest delivered or rejected messages of ws beyond
+// MaxFinishedPerWorkspace. Messages still being read are kept. Caller holds r.mu.
+func (r *Router) prune(ws string) {
+	finished := 0
 	for _, m := range r.msgs {
-		if m.Workspace != ws || m.To != agent {
+		if m.Workspace == ws && finishedState(m.State) {
+			finished++
+		}
+	}
+	excess := finished - MaxFinishedPerWorkspace
+	if excess <= 0 {
+		return
+	}
+	kept := r.msgs[:0]
+	for _, m := range r.msgs {
+		if excess > 0 && m.Workspace == ws && finishedState(m.State) && !m.reading {
+			delete(r.byID, m.ID)
+			excess--
 			continue
 		}
-		if m.State != StateQueued && m.State != StateHeldDraft && m.State != StateNudged {
-			continue
-		}
-		m.State = StateDelivered
-		if m.Hop > maxHop {
-			maxHop = m.Hop
-		}
-		out = append(out, *m)
-		r.publish(*m)
+		kept = append(kept, m)
 	}
-	if len(out) > 0 {
-		r.hop[agentKey{ws, agent}] = maxHop
+	for i := len(kept); i < len(r.msgs); i++ {
+		r.msgs[i] = nil
 	}
-	return out
+	r.msgs = kept
 }
 
-// ReadN is Read with a byte budget. It returns the oldest pending messages while the
-// sum of len(Envelope(m)) stays within maxBytes (always at least one), marks only
-// those delivered, and reports how many remain pending for the next call.
+func finishedState(s State) bool { return s == StateDelivered || s == StateRejected }
+
+// markRead marks m delivered and, with an agent id, remembers it for Confirm
+// and Requeue. Caller holds r.mu.
+func (r *Router) markRead(agentID string, m *Message) {
+	m.State = StateDelivered
+	if agentID == "" || r.closed[agentID] {
+		return
+	}
+	m.reading = true
+	r.reads[agentID] = append(r.reads[agentID], m)
+}
+
+// Confirm ends the turn of agent process agentID as far as reading goes: the
+// messages it read are final and will not be requeued. Call it on the Stop
+// hook and on a new UserPromptSubmit.
+func (r *Router) Confirm(agentID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.reads[agentID] {
+		m.reading = false
+	}
+	delete(r.reads, agentID)
+}
+
+// Requeue is for agent process agentID that exited before its turn ended: every
+// message it read since the last Confirm goes back to queued, unless it was
+// rejected meanwhile, and at most MaxRequeues times per message. The id is then
+// closed: a read that arrives later for the same id is not tracked. The hop
+// counter is left as it is.
+func (r *Router) Requeue(agentID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed[agentID] = true
+	for _, m := range r.reads[agentID] {
+		m.reading = false
+		if m.State != StateDelivered {
+			continue
+		}
+		if m.requeues >= MaxRequeues {
+			if r.Log != nil {
+				r.Log.Warn("message not requeued: requeue limit reached", "message_id", m.ID, "requeues", m.requeues)
+			}
+			continue
+		}
+		m.requeues++
+		m.State = StateQueued
+		r.publish(*m)
+	}
+	delete(r.reads, agentID)
+}
+
+// Read is ReadN without a budget and without read tracking (no agent id): the
+// messages are final at once. Production code uses ReadAs.
+func (r *Router) Read(ws, agent string) []Message {
+	msgs, _ := r.ReadAs(ws, agent, "", 1<<62)
+	return msgs
+}
+
+// ReadN is ReadAs without read tracking.
 func (r *Router) ReadN(ws, agent string, maxBytes int) (msgs []Message, remaining int) {
+	return r.ReadAs(ws, agent, "", maxBytes)
+}
+
+// ReadAs returns the oldest pending (queued, held_draft, nudged) messages of
+// folder `agent` while the sum of len(Envelope(m)) stays within maxBytes (always
+// at least one), marks only those delivered, and reports how many remain pending
+// for the next call. The caller's handling hop becomes the highest hop it read.
+//
+// With a non-empty agentID the messages stay requeueable until Confirm(agentID)
+// (see Requeue). The id is the running agent process, not the folder, so an old
+// process can never requeue what a newer process of the same folder read.
+func (r *Router) ReadAs(ws, agent, agentID string, maxBytes int) (msgs []Message, remaining int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	used, maxHop := 0, 0
@@ -179,7 +269,7 @@ func (r *Router) ReadN(ws, agent string, maxBytes int) (msgs []Message, remainin
 			continue
 		}
 		used += size
-		m.State = StateDelivered
+		r.markRead(agentID, m)
 		if m.Hop > maxHop {
 			maxHop = m.Hop
 		}
