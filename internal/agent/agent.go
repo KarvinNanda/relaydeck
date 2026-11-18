@@ -56,6 +56,14 @@ type Agent struct {
 	injectTimeout time.Duration
 	injectMu      sync.Mutex // one injected write at a time, in order
 
+	// touched is set by every user input through Write that is not only
+	// neutral terminal chatter, and cleared by ResetTyped (a prompt was
+	// submitted) or ClearTypedIf (empty box, user quiet). See UserTyped.
+	typedMu   sync.Mutex
+	touched   bool
+	lastInput time.Time
+	lastEnter time.Time // when the last Enter (CR) in user input was written
+
 	replyCh   chan []byte
 	done      chan struct{} // closed when the process is gone and output is drained
 	readDone  chan struct{}
@@ -216,10 +224,29 @@ func (a *Agent) isStopped() bool {
 }
 
 // Write sends user keystrokes to the PTY. Each "\r" is the user pressing
-// Enter and fires the OnUserEnter callback.
+// Enter and fires the OnUserEnter callback. It also records whether typed text
+// is waiting for Enter (see UserTyped).
 func (a *Agent) Write(p []byte) error {
 	if a.isStopped() {
 		return ErrStopped
+	}
+	// The flag goes up before the bytes reach the PTY: the echo can come
+	// back to the screen before this function returns, and the delivery loop
+	// must not see that text as something the user never touched. Write only
+	// ever sets the flag, so concurrent writers cannot lose an update.
+	if !neutralOnly(p) {
+		a.typedMu.Lock()
+		now := time.Now()
+		a.touched = true
+		a.lastInput = now
+		if i := bytes.LastIndexByte(p, '\r'); i >= 0 {
+			a.lastEnter = now
+			if i < len(p)-1 {
+				// Bytes follow the Enter in this write: they are newer.
+				a.lastEnter = now.Add(-time.Nanosecond)
+			}
+		}
+		a.typedMu.Unlock()
 	}
 	if _, err := a.pty.Write(p); err != nil {
 		return err
@@ -276,10 +303,63 @@ func (a *Agent) Inject(p []byte) error {
 // ScreenState returns the current reading of the terminal screen.
 func (a *Agent) ScreenState() screen.State { return a.screen.State() }
 
-// HasDraft reports whether the input box holds text the user has typed.
+// HasDraft reports whether the input box shows text. That text may be a
+// prompt suggestion the user never typed: use UserTyped to tell.
 func (a *Agent) HasDraft() bool {
 	st := a.screen.State()
 	return st.InputVisible && !st.InputEmpty
+}
+
+// UserTyped reports whether the user touched the input through Write since
+// the flag was last cleared. Claude Code draws a prompt suggestion in the empty
+// box as plain text, so the screen alone cannot tell a draft from a
+// suggestion. Any key counts (text, paste, Enter, Esc, arrows, Ctrl and Alt
+// keys), because Claude Code can put text in the box itself after a key (history
+// recall, an image paste, a slash menu). Only focus, mouse and terminal query
+// replies do not count. Enter does not clear it. Inject never changes it.
+func (a *Agent) UserTyped() bool {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	return a.touched
+}
+
+// LastInput returns when the user last touched the input through Write (the
+// zero time if never).
+func (a *Agent) LastInput() time.Time {
+	_, last := a.TypedState()
+	return last
+}
+
+// TypedState returns the flag and the last input time in one locked reading.
+func (a *Agent) TypedState() (bool, time.Time) {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	return a.touched, a.lastInput
+}
+
+// ResetTyped clears the flag when the agent's own UserPromptSubmit hook fires:
+// a prompt was really submitted. It clears only if nothing was typed after the
+// last Enter. A prompt queued while the agent was busy is submitted later, and
+// a draft the user typed in between must stay a draft.
+func (a *Agent) ResetTyped() {
+	a.typedMu.Lock()
+	if !a.lastInput.After(a.lastEnter) {
+		a.touched = false
+	}
+	a.typedMu.Unlock()
+}
+
+// ClearTypedIf clears the flag only if the last input is still the one the
+// caller saw, so input that arrived after its reading is never wiped. It
+// reports whether it cleared.
+func (a *Agent) ClearTypedIf(last time.Time) bool {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	if !a.lastInput.Equal(last) {
+		return false
+	}
+	a.touched = false
+	return true
 }
 
 // Resize resizes the PTY and the screen emulator.

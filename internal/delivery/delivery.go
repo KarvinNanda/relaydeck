@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,9 @@ const (
 	stuckStatusAfter = 15 * time.Second
 	// externalTTL is how long a "session open elsewhere" answer is reused.
 	externalTTL = 5 * time.Second
+	// typedQuiet is how long the user must be quiet, with an empty box, before
+	// the "user touched the input" flag is cleared.
+	typedQuiet = 2 * time.Second
 	// ctrlU clears the input line.
 	ctrlU = "\x15"
 )
@@ -53,6 +57,12 @@ type Agents interface {
 	Start(ws, folder string) error // resume current session or new
 	ExternalOpen(ws, folder string) (bool, error)
 	Inject(ws, folder string, p []byte) error
+	// UserTyped reports whether the user touched this agent's input since the
+	// flag was last cleared, and when they last did. The screen cannot tell a
+	// draft from a prompt suggestion.
+	UserTyped(ws, folder string) (bool, time.Time)
+	// ClearTyped clears the flag if the last input is still last.
+	ClearTyped(ws, folder string, last time.Time)
 }
 
 // Target is one agent: a folder inside a workspace.
@@ -92,6 +102,7 @@ type Deliverer struct {
 	renudged   map[Target]map[string]bool // message ids that used their one re-nudge
 	swallowed  map[Target]map[string]int  // swallowed nudges per message id
 	lastNudge  map[Target]string          // text of the last nudge typed, to spot a stranded one
+	quiet      map[Target]time.Time       // last input seen on a quiet, empty-box reading
 	stuck      map[Target]time.Time       // since when the hook status reads stopped or starting
 	extCache   map[Target]extResult       // last "held" answer of ExternalOpen
 
@@ -117,6 +128,7 @@ func New(r *notify.Router, a Agents, enterDelay time.Duration, now func() time.T
 		renudged:   map[Target]map[string]bool{},
 		swallowed:  map[Target]map[string]int{},
 		lastNudge:  map[Target]string{},
+		quiet:      map[Target]time.Time{},
 		stuck:      map[Target]time.Time{},
 		extCache:   map[Target]extResult{},
 		prompts:    map[Target]time.Time{},
@@ -219,6 +231,11 @@ func (d *Deliverer) prune(listed map[Target]bool) {
 			delete(d.stuck, t)
 		}
 	}
+	for t := range d.quiet {
+		if !listed[t] {
+			delete(d.quiet, t)
+		}
+	}
 	for t := range d.extCache {
 		if !listed[t] {
 			delete(d.extCache, t)
@@ -282,6 +299,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		delete(d.swallowed, t)
 		delete(d.lastNudge, t)
 		delete(d.stuck, t)
+		delete(d.quiet, t)
 		return
 	}
 	d.pruneRenudged(t, pending)
@@ -342,7 +360,34 @@ func (d *Deliverer) tickTarget(t Target) {
 	if scr.Busy {
 		return
 	}
-	draft := !scr.InputEmpty
+	// Text in the box is a draft only when the user touched the input, or
+	// when it holds our own nudge. Claude Code draws a prompt suggestion as
+	// plain text, so a box with text and no user input counts as empty.
+	typed, lastInput := d.a.UserTyped(t.WS, t.Folder)
+	recent := typed && d.now().Before(lastInput.Add(typedQuiet))
+	if typed && scr.InputEmpty && !recent {
+		// An empty box and a quiet user. Clear only on the second reading in
+		// a row with the same last input, so a keystroke between two ticks
+		// is never wiped.
+		if seen, ok := d.quiet[t]; ok && seen.Equal(lastInput) {
+			d.a.ClearTyped(t.WS, t.Folder, lastInput)
+			delete(d.quiet, t)
+			typed = false
+		} else {
+			d.quiet[t] = lastInput
+		}
+	} else {
+		delete(d.quiet, t)
+	}
+	// Input within the last typedQuiet holds the message even when the box
+	// reads empty: the echo of a keystroke may not have reached the screen.
+	// A box that still holds our own nudge, alone or with text around it, is
+	// a draft too, so an unconfirmed nudge is never pasted twice.
+	isDraft := func(scr screen.State) bool {
+		n := d.lastNudge[t]
+		return recent || (!scr.InputEmpty && (typed || (n != "" && strings.Contains(scr.Draft, n))))
+	}
+	draft := isDraft(scr)
 	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {
 		// Our own nudge is stranded in the box (its Enter was swallowed). A
 		// second nudge pasted after it would read as one garbled prompt, so
@@ -351,7 +396,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		if scr, ok = d.clearBox(t); !ok {
 			return
 		}
-		draft = !scr.InputEmpty
+		draft = isDraft(scr)
 	}
 	if draft && !forced {
 		for _, m := range cand {
@@ -359,9 +404,6 @@ func (d *Deliverer) tickTarget(t Target) {
 				d.set(m, notify.StateHeldDraft)
 			}
 		}
-		return
-	}
-	if !draft && !scr.Ready() {
 		return
 	}
 	if d.sendNudge(t, cand, unread) {
@@ -489,6 +531,7 @@ func (d *Deliverer) externalOpen(t Target) bool {
 // nudge is sent for. It reports whether Enter was sent.
 func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	nudgeText := notify.Nudge(unread)
+	_, inputBefore := d.a.UserTyped(t.WS, t.Folder)
 	text := "\x1b[200~" + nudgeText + "\x1b[201~"
 	if err := d.a.Inject(t.WS, t.Folder, []byte(text)); err != nil {
 		d.log.Error("delivery: inject failed", "ws", t.WS, "agent", t.Folder, "err", err)
@@ -497,13 +540,16 @@ func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	d.lastNudge[t] = nudgeText
 	d.sleep(d.enterDelay)
 	// The PTY reader feeds the screen asynchronously, so poll until the box
-	// shows the paste. If an overlay or dialog shows instead, or the paste never
-	// appears, Enter could pick an option or submit nothing: leave the messages
+	// shows the nudge itself. "Not empty" is not enough: a prompt suggestion
+	// is already in the box as plain text. The Draft is one input row, so a
+	// nudge that wraps is never confirmed (the box is not even detected). If
+	// an overlay or dialog shows instead, or the nudge never appears, Enter
+	// could pick an option or submit the suggestion: leave the messages
 	// queued. (This does not detect user typing during the wait.)
 	ready := false
 	for i := 0; i < pollMax; i++ {
 		scr := d.a.Screen(t.WS, t.Folder)
-		if scr.InputVisible && !scr.InputEmpty && !scr.Busy && !scr.Trust {
+		if scr.InputVisible && !scr.Busy && !scr.Trust && strings.TrimSpace(scr.Draft) == nudgeText {
 			ready = true
 			break
 		}
@@ -511,6 +557,13 @@ func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	}
 	if !ready {
 		d.log.Warn("delivery: paste not confirmed on screen, not sending Enter", "ws", t.WS, "agent", t.Folder)
+		return false
+	}
+	// The user may have typed while the paste landed: Enter would submit
+	// their text with the nudge. The nudge stays in the box, and the draft
+	// rule holds the message from now on.
+	if _, now := d.a.UserTyped(t.WS, t.Folder); !now.Equal(inputBefore) {
+		d.log.Warn("delivery: user typed during the paste, not sending Enter", "ws", t.WS, "agent", t.Folder)
 		return false
 	}
 	// Take the nudge time before Enter: the hook can arrive within

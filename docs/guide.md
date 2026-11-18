@@ -211,7 +211,7 @@ Click **Messages** in the top bar. The drawer shows a timeline (newest first) wi
 | Label in the timeline | Meaning | What you do |
 |---|---|---|
 | `queued` | Stored. Waiting until the target is idle. | Nothing. |
-| `waiting (draft)` | The target has unsent text in its input box, so relaydeck does not type into it. | Finish or clear the draft, or click **Deliver now**. |
+| `waiting (draft)` | You typed text in the target's input box and did not send it, so relaydeck does not type into it. A suggestion that Claude Code shows by itself in an empty box is not a draft. | Finish or clear the draft, or click **Deliver now**. |
 | `held: session open in terminal` | The target is not running in relaydeck, and its session is open in a terminal outside relaydeck. | Close that terminal session, click **Start new session**, or click **Wait**. |
 | `nudged` | The nudge was typed. The agent has not read the message yet. | Nothing. relaydeck nudges once more if needed. |
 | `delivered (read)` | The agent called `read_messages`. | Nothing. |
@@ -233,7 +233,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 ## 8. Stopping and restarting
 
 - **Stop button** (square icon in the panel header). On an idle agent, one click stops it. On a busy agent, the first click changes the button to "Stop? It is working", and a second click stops it.
-- **Unsent draft.** If the agent has a draft, a normal stop is refused and the panel shows "This agent has an unsent draft. Stop anyway discards it and ends the current turn." Click **Stop anyway** to discard the draft and stop.
+- **Unsent draft.** If you typed text that is still unsent, a normal stop is refused and the panel shows "This agent has an unsent draft. Stop anyway discards it and ends the current turn." Click **Stop anyway** to discard the draft and stop.
 - **Close panel** (x icon). This only hides the panel. The agent keeps running.
 - **A stop is a stop.** After you stop an agent, messages that were already waiting do not start it again. A new message, **Approve**, **Deliver now** or starting it yourself does.
 - **Stop the daemon** with Ctrl-C in the `serve` terminal. relaydeck stops every agent, then exits. A second Ctrl-C forces the exit if it hangs.
@@ -254,7 +254,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 | `port 7341 is already in use` when you run `serve`. | Another relaydeck or program holds the port. Stop it, or run `./relaydeck serve --port 7400`, or set `port` in `config.yaml`. |
 | The browser says "Open relaydeck from the link printed by relaydeck serve". | The token is missing or old. Use the link from the `serve` output, or run `./relaydeck open`. Do not use a bookmark. |
 | A message stays `queued`. | The target is busy, a dialog is open in its panel (for example the trust dialog or a permission question), or the screen is not recognized. Answer the dialog in the panel, or wait for the agent to be idle. relaydeck types only when the agent is idle with an empty input box. |
-| A message shows `waiting (draft)`. | There is unsent text in the target's input box. Send or clear it, or click **Deliver now**. The draft is submitted together with the nudge. |
+| A message shows `waiting (draft)`. | You typed text in the target's input box and did not send it. Send or clear it, or click **Deliver now**. The draft is submitted together with the nudge. |
 | A message shows `held: session open in terminal`. | The target's session is open in a terminal outside relaydeck. Close it there (relaydeck notices within about 5 seconds), or click **Start new session** in the drawer. |
 | The agent did not act on a message. | This is expected. Agents treat messages as information. Tell the receiving agent in its own panel what to do when such a message arrives (see [section 6](#6-making-agents-talk-to-each-other)). After a nudge the agent can also ignore the message. It stays `nudged` until the agent reads it, or you click **Deliver now**. |
 | The page is blank or answers 404. | The web UI was not built. Run `cd web && npm ci && npm run build`, then `go build -o relaydeck ./cmd/relaydeck` again, and restart. |

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -727,5 +728,181 @@ func TestExitTypedOnRealScreens(t *testing.T) {
 				t.Fatalf("exitTyped false on a real /exit screen: %+v", a.screen.State())
 			}
 		})
+	}
+}
+
+// agentTouched is what the review found: a lone Esc, and Esc followed by text,
+// must never hide the next keystrokes. Each case is one agent.
+func TestUserTypedTouchedByInput(t *testing.T) {
+	m := newMgr(t, nil)
+	cases := []struct {
+		name   string
+		writes []string
+		want   bool
+	}{
+		{"printable", []string{"abc"}, true},
+		{"lone Esc then text", []string{"\x1b", "Please"}, true},
+		{"ESC P then text", []string{"\x1bP", "abc"}, true},
+		{"up arrow alone", []string{"\x1b[A"}, true},
+		{"Enter alone", []string{"\r"}, true},
+		{"focus in", []string{"\x1b[I"}, false},
+		{"mouse report", []string{"\x1b[<0;10;5M"}, false},
+		{"query reply", []string{"\x1b[12;5R"}, false},
+	}
+	for i, c := range cases {
+		a := start(t, m, fmt.Sprintf("a%d", i))
+		for _, w := range c.writes {
+			a.Write([]byte(w)) // the flag goes up before the PTY write
+		}
+		if got := a.UserTyped(); got != c.want {
+			t.Errorf("%s: UserTyped = %v, want %v", c.name, got, c.want)
+		}
+		if got := !a.LastInput().IsZero(); got != c.want {
+			t.Errorf("%s: LastInput set = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The classifier decides on one whole write. Pure, so the table is large.
+func TestNeutralOnly(t *testing.T) {
+	neutral := []string{
+		"\x1b[M\u00e9!!", "\x1b[I", "\x1b[O", "\x1b[<0;10;5M", "\x1b[<0;10;5m", "\x1b[M !!",
+		"\x1b[12;5R", "\x1b[?62;4c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[?2004;1$y",
+		"\x1b]11;rgb:0000/0000/0000\x07", "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1bP1$r0m\x1b\\",
+		"\x1b[I\x1b[<0;1;1M\x1b[12;5R",
+	}
+	touching := []string{
+		"", "abc", "\x1b", "\x1b[A", "\x1bOP", "\x1bb", "\r", "\t", "\x03", "\x12", "\x16", "\x15", "\x7f",
+		"\x1b[M\r!!", "\x1b[M !\x01", "\x1b[M\x7f!!", "\\\r", "caf\u00e9", "\x1b[200~pasted\x1b[201~", "\x1b[Ix", "\x1b[12;5R\x1b[A",
+		"\x1b[<0;10;5", "\x1bP", "\x1b]", "\x1b[", "\x1b]11;rgb:0/0/0", "\x1b[M !",
+	}
+	for _, w := range neutral {
+		if !neutralOnly([]byte(w)) {
+			t.Errorf("%q: want neutral", w)
+		}
+	}
+	for _, w := range touching {
+		if neutralOnly([]byte(w)) {
+			t.Errorf("%q: want touching", w)
+		}
+	}
+}
+
+// Enter does not clear the flag: only a submitted prompt (the hook), a quiet
+// empty box, or a restart does.
+func TestUserTypedStaysAfterEnter(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("abc\r"))
+	if !a.UserTyped() {
+		t.Fatal("abc then Enter cleared UserTyped")
+	}
+	a.ResetTyped()
+	if a.UserTyped() {
+		t.Fatal("ResetTyped did not clear")
+	}
+}
+
+// A write that ends in the middle of a sequence leaves no state behind.
+func TestUserTypedNoStateAcrossWrites(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("\x1b[<0;1"))
+	a.ResetTyped()
+	a.Write([]byte("0;5M"))
+	if !a.UserTyped() {
+		t.Fatal("a split sequence must count as touched, never as neutral")
+	}
+}
+
+func TestClearTypedIfOnlyWhenNoNewInput(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("a"))
+	last := a.LastInput()
+	time.Sleep(2 * time.Millisecond)
+	a.Write([]byte("b"))
+	if a.ClearTypedIf(last) || !a.UserTyped() {
+		t.Fatal("cleared although the user typed after the reading")
+	}
+	if !a.ClearTypedIf(a.LastInput()) || a.UserTyped() {
+		t.Fatal("did not clear with the current LastInput")
+	}
+}
+
+func TestWriteConcurrentKeepsFlag(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				a.Write([]byte("x"))
+				a.Write([]byte("\x1b[I"))
+			}
+		}()
+	}
+	wg.Wait()
+	if !a.UserTyped() {
+		t.Fatal("flag lost under concurrent writes")
+	}
+}
+
+func TestInjectDoesNotSetUserTyped(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	if err := a.Inject([]byte("\x1b[200~[relaydeck] 1 new message. Call read_messages.\x1b[201~")); err != nil {
+		t.Fatal(err)
+	}
+	if a.UserTyped() {
+		t.Fatal("Inject set UserTyped")
+	}
+	a.Write([]byte("x"))
+	a.Inject([]byte("\r"))
+	if !a.UserTyped() {
+		t.Fatal("Inject cleared UserTyped")
+	}
+}
+
+// Round 2: the hook clears the flag only when nothing was typed after the last
+// Enter. A prompt queued while the agent was busy is submitted later, and the
+// draft the user typed in between must stay a draft.
+func TestResetTypedKeepsInputAfterEnter(t *testing.T) {
+	m := newMgr(t, nil)
+	for name, writes := range map[string][]string{
+		"typing after Enter":          {"abc\r", "def"},
+		"text after Enter, one write": {"abc\rdef"},
+		"another Esc after Enter":     {"abc\r", "\x1b[A"},
+	} {
+		a := start(t, m, "k"+strings.ReplaceAll(name, " ", ""))
+		for _, w := range writes {
+			a.Write([]byte(w))
+			time.Sleep(time.Millisecond)
+		}
+		a.ResetTyped()
+		if !a.UserTyped() {
+			t.Errorf("%s: ResetTyped wiped input typed after the last Enter", name)
+		}
+	}
+	a := start(t, m, "plain")
+	a.Write([]byte("abc\r"))
+	a.ResetTyped()
+	if a.UserTyped() {
+		t.Error("Enter was the last input, but ResetTyped did not clear")
+	}
+}
+
+func TestTypedStateIsOneReading(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	if typed, last := a.TypedState(); typed || !last.IsZero() {
+		t.Fatalf("fresh agent: %v %v", typed, last)
+	}
+	a.Write([]byte("x"))
+	typed, last := a.TypedState()
+	if !typed || last.IsZero() || !last.Equal(a.LastInput()) {
+		t.Fatalf("after input: %v %v", typed, last)
 	}
 }
