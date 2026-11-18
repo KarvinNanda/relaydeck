@@ -56,7 +56,13 @@ var sessionMarkers = []string{
 	"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
 	"CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
 	"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "CLAUDE_EFFORT",
+	// IDE integration: with these an agent could attach to the IDE session of
+	// the terminal that started the daemon.
+	"CLAUDE_CODE_SSE_PORT", "ENABLE_IDE_INTEGRATION",
 }
+
+// Variable name prefixes that are dropped as well (all IDE integration knobs).
+var sessionMarkerPrefixes = []string{"CLAUDE_CODE_IDE_"}
 
 var hookEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"}
 
@@ -188,7 +194,7 @@ func buildEnv(in Input, windows bool) []string {
 	env := make([]string, 0, len(in.BaseEnv)+3)
 	for _, e := range in.BaseEnv {
 		k, _, _ := strings.Cut(e, "=")
-		if drop[norm(k)] || strings.HasPrefix(norm(k), "RELAYDECK_") {
+		if drop[norm(k)] || strings.HasPrefix(norm(k), "RELAYDECK_") || hasAnyPrefix(norm(k), sessionMarkerPrefixes) {
 			continue
 		}
 		env = append(env, e)
@@ -198,4 +204,13 @@ func buildEnv(in Input, windows bool) []string {
 		"RELAYDECK_AGENT_ID="+in.AgentID,
 		"RELAYDECK_AGENT_TOKEN="+in.AgentToken,
 	)
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }

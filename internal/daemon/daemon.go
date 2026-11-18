@@ -215,6 +215,7 @@ func New(o Options) (*Daemon, error) {
 		}
 		return id
 	})
+	d.router.Log = o.Log
 	d.mgr = agent.NewManager(o.Log, d.onUserEnter)
 	deliv, err := delivery.New(d.router, agentsAdapter{d}, o.EnterDelay, time.Now, d.deliveryTargets)
 	if err != nil {

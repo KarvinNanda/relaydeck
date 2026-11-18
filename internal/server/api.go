@@ -36,6 +36,9 @@ type api struct {
 
 	// pickMu is held while a folder dialog is open: one dialog at a time.
 	pickMu sync.Mutex
+
+	// seats decides which terminal socket of an agent may send query replies.
+	seats termSeats
 }
 
 func (a *api) routes() http.Handler {
