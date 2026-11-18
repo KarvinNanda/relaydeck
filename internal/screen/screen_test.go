@@ -57,6 +57,9 @@ func TestStateFromFixtures(t *testing.T) {
 		// that name inside the top rule of the input box.
 		{"prompt-empty-named-77", true, true, false, false, true},
 		{"prompt-draft-named-77", true, false, false, false, false},
+		// After a turn Claude Code sets the window title with a UTF-8 spinner
+		// glyph; the emulator printed the rest of that OSC onto the prompt row.
+		{"prompt-idle-titled-100", true, true, false, false, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -309,5 +312,49 @@ func TestDialogRowBetweenLabelledRulesNotReady(t *testing.T) {
 	}
 	if s.State().Ready() {
 		t.Fatalf("dialog row must not be Ready: %+v", s.State())
+	}
+}
+
+func TestOSCWithUTF8IsNotPrinted(t *testing.T) {
+	row := func(s *Screen) string { return strings.TrimSpace(rowText(s.em, 4, 40)) }
+	tests := map[string][]string{
+		"title BEL":           {"\x1b[5;3H\x1b]0;✳ demo/x\x07"},
+		"title ST":            {"\x1b[5;3H\x1b]0;✳ demo/x\x1b\\"},
+		"split after ESC":     {"\x1b[5;3H\x1b", "]0;✳ demo/x\x07"},
+		"split inside glyph":  {"\x1b[5;3H\x1b]0;\xe2\x9c", "\xb3 demo/x\x07"},
+		"split before ST end": {"\x1b[5;3H\x1b]0;✳ demo/x\x1b", "\\"},
+	}
+	for name, parts := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := New(40, 10, nil)
+			for _, p := range parts {
+				if n, err := s.Write([]byte(p)); err != nil || n != len(p) {
+					t.Fatalf("Write = %d, %v", n, err)
+				}
+			}
+			if got := row(s); got != "" {
+				t.Fatalf("row 5 = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestPlainTextAndASCIIOSCStillReachEmulator(t *testing.T) {
+	s := New(40, 10, nil)
+	// An ASCII title is passed through (the emulator handles it), and text
+	// after it, including an ESC that starts a CSI, is not lost.
+	s.Write([]byte("\x1b]0;plain\x07\x1b[5;3Hhello ✳"))
+	if got := strings.TrimSpace(rowText(s.em, 4, 40)); got != "hello ✳" {
+		t.Fatalf("row 5 = %q, want %q", got, "hello ✳")
+	}
+}
+
+func TestUnterminatedOSCIsBounded(t *testing.T) {
+	s := New(40, 10, nil)
+	s.Write([]byte("\x1b]0;✳ " + strings.Repeat("x", 10000)))
+	// After the cap the filter gives up on the sequence; later output shows.
+	s.Write([]byte("\x07\x1b[5;1Hafter"))
+	if got := strings.TrimSpace(rowText(s.em, 4, 40)); got != "after" {
+		t.Fatalf("row 5 = %q, want %q", got, "after")
 	}
 }

@@ -46,6 +46,7 @@ type Screen struct {
 	mu    sync.Mutex
 	em    *vt.SafeEmulator
 	reply io.Writer
+	osc   oscFilter
 }
 
 // New creates a screen of the given size. The emulator answers terminal
@@ -99,7 +100,10 @@ func (s *Screen) Write(p []byte) (n int, err error) {
 			n, err = len(p), nil
 		}
 	}()
-	return s.em.Write(p)
+	if _, err := s.em.Write(s.osc.filter(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // reset replaces a broken emulator with a blank one of the same size. The
