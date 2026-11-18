@@ -14,7 +14,9 @@
 //     (a session that cannot be resumed, a crash on start).
 //
 // The PTY stays in canonical mode, so typed or pasted text is echoed into the
-// input box by the terminal itself, which the detector reads as a draft.
+// input box by the terminal itself, which the detector reads as a draft. The
+// echo of control characters is off, so a bracketed paste shows only its text,
+// like in Claude Code.
 package main
 
 import (
@@ -51,6 +53,7 @@ func main() {
 	if os.Getenv("FAKECLAUDE_EXIT_AT_ONCE") != "" {
 		os.Exit(1)
 	}
+	rawControlEcho()
 	draw()
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,9 @@ type Agents interface {
 	Start(ws, folder string) error // resume current session or new
 	ExternalOpen(ws, folder string) (bool, error)
 	Inject(ws, folder string, p []byte) error
+	// UserTyped reports whether the user typed text in this agent since the
+	// last Enter. The screen cannot tell a draft from a prompt suggestion.
+	UserTyped(ws, folder string) bool
 }
 
 // Target is one agent: a folder inside a workspace.
@@ -342,7 +346,13 @@ func (d *Deliverer) tickTarget(t Target) {
 	if scr.Busy {
 		return
 	}
-	draft := !scr.InputEmpty
+	// Text in the box is a draft only when the user typed it, or when it is
+	// our own stranded nudge. Claude Code draws a prompt suggestion as plain
+	// text, so a box with text the user never typed counts as empty.
+	isDraft := func(scr screen.State) bool {
+		return !scr.InputEmpty && (d.a.UserTyped(t.WS, t.Folder) || (scr.Draft != "" && scr.Draft == d.lastNudge[t]))
+	}
+	draft := isDraft(scr)
 	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {
 		// Our own nudge is stranded in the box (its Enter was swallowed). A
 		// second nudge pasted after it would read as one garbled prompt, so
@@ -351,7 +361,7 @@ func (d *Deliverer) tickTarget(t Target) {
 		if scr, ok = d.clearBox(t); !ok {
 			return
 		}
-		draft = !scr.InputEmpty
+		draft = isDraft(scr)
 	}
 	if draft && !forced {
 		for _, m := range cand {
@@ -359,9 +369,6 @@ func (d *Deliverer) tickTarget(t Target) {
 				d.set(m, notify.StateHeldDraft)
 			}
 		}
-		return
-	}
-	if !draft && !scr.Ready() {
 		return
 	}
 	if d.sendNudge(t, cand, unread) {
@@ -497,13 +504,16 @@ func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	d.lastNudge[t] = nudgeText
 	d.sleep(d.enterDelay)
 	// The PTY reader feeds the screen asynchronously, so poll until the box
-	// shows the paste. If an overlay or dialog shows instead, or the paste never
-	// appears, Enter could pick an option or submit nothing: leave the messages
+	// shows the nudge itself. "Not empty" is not enough: a prompt suggestion
+	// is already in the box as plain text. The Draft is one input row, so a
+	// nudge that wraps is never confirmed (the box is not even detected). If
+	// an overlay or dialog shows instead, or the nudge never appears, Enter
+	// could pick an option or submit the suggestion: leave the messages
 	// queued. (This does not detect user typing during the wait.)
 	ready := false
 	for i := 0; i < pollMax; i++ {
 		scr := d.a.Screen(t.WS, t.Folder)
-		if scr.InputVisible && !scr.InputEmpty && !scr.Busy && !scr.Trust {
+		if scr.InputVisible && !scr.Busy && !scr.Trust && strings.TrimSpace(scr.Draft) == nudgeText {
 			ready = true
 			break
 		}

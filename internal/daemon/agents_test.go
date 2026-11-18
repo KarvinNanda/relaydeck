@@ -229,6 +229,61 @@ func TestStopAgentDraft(t *testing.T) {
 	}
 }
 
+// Claude Code draws a prompt suggestion in the empty box as plain text. The
+// user never typed it, so a normal stop is not refused. (Inject does not
+// count as typing, and the terminal echoes it into the box like a suggestion.)
+func TestStopAgentSuggestionIsNotDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	if err := a.Inject([]byte("cek pesan dari api lagi")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "suggestion on screen", a.HasDraft)
+	if a.UserTyped() {
+		t.Fatal("UserTyped set by Inject")
+	}
+	if err := e.d.StopAgent("w", "a", false); err != nil {
+		t.Fatalf("stop with a suggestion on screen: %v", err)
+	}
+	select {
+	case <-a.Done():
+	default:
+		t.Fatal("agent still running after a normal stop")
+	}
+	if strings.Contains(e.lines(id), "cek pesan") {
+		t.Fatalf("the suggestion was submitted: %q", e.lines(id))
+	}
+}
+
+// The same text typed by the user is a draft and refuses a normal stop.
+func TestStopAgentTypedTextIsDraft(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.d.Agent("w", "a")
+	eventually(t, "empty prompt", func() bool { return a.ScreenState().Ready() })
+	if err := a.Write([]byte("cek pesan dari api lagi")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "draft", a.HasDraft)
+	if err := e.d.StopAgent("w", "a", false); !errors.Is(err, ErrDraft) {
+		t.Fatalf("stop with typed text: %v, want ErrDraft", err)
+	}
+	select {
+	case <-a.Done():
+		t.Fatal("agent stopped despite the draft")
+	default:
+	}
+}
+
 // Ruling 2: token revoked on any exit; runtime dir removed; a restart drops
 // the old agent from the manager.
 func TestStopRevokesAndRestartReplaces(t *testing.T) {

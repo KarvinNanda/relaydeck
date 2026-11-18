@@ -56,6 +56,9 @@ type Agent struct {
 	injectTimeout time.Duration
 	injectMu      sync.Mutex // one injected write at a time, in order
 
+	typedMu sync.Mutex
+	scan    typedScanner // what the user typed through Write; see UserTyped
+
 	replyCh   chan []byte
 	done      chan struct{} // closed when the process is gone and output is drained
 	readDone  chan struct{}
@@ -216,13 +219,29 @@ func (a *Agent) isStopped() bool {
 }
 
 // Write sends user keystrokes to the PTY. Each "\r" is the user pressing
-// Enter and fires the OnUserEnter callback.
+// Enter and fires the OnUserEnter callback. It also records whether typed text
+// is waiting for Enter (see UserTyped).
 func (a *Agent) Write(p []byte) error {
 	if a.isStopped() {
 		return ErrStopped
 	}
+	// The flag goes up before the bytes reach the PTY: the echo can come
+	// back to the screen before this function returns, and the delivery loop
+	// must not see that text as something the user never typed. An Enter
+	// takes the flag down only after the write, for the same reason.
+	a.typedMu.Lock()
+	was := a.scan.typed
+	saw := a.scan.feed(p)
+	final := a.scan.typed
+	a.scan.typed = was || saw
+	a.typedMu.Unlock()
 	if _, err := a.pty.Write(p); err != nil {
 		return err
+	}
+	if !final {
+		a.typedMu.Lock()
+		a.scan.typed = false
+		a.typedMu.Unlock()
 	}
 	if a.onUserEnter != nil {
 		for i := bytes.Count(p, []byte{'\r'}); i > 0; i-- {
@@ -276,10 +295,22 @@ func (a *Agent) Inject(p []byte) error {
 // ScreenState returns the current reading of the terminal screen.
 func (a *Agent) ScreenState() screen.State { return a.screen.State() }
 
-// HasDraft reports whether the input box holds text the user has typed.
+// HasDraft reports whether the input box shows text. That text may be a
+// prompt suggestion the user never typed: use UserTyped to tell.
 func (a *Agent) HasDraft() bool {
 	st := a.screen.State()
 	return st.InputVisible && !st.InputEmpty
+}
+
+// UserTyped reports whether the user typed text (or pasted it) through Write
+// since the last Enter. Claude Code draws a prompt suggestion in the empty box
+// as plain text, so the screen alone cannot tell a draft from a suggestion.
+// Backspace, Ctrl-U and Ctrl-C do not clear it: a stale true only makes a
+// message wait. Inject never changes it.
+func (a *Agent) UserTyped() bool {
+	a.typedMu.Lock()
+	defer a.typedMu.Unlock()
+	return a.scan.typed
 }
 
 // Resize resizes the PTY and the screen emulator.

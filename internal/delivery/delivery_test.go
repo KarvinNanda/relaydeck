@@ -26,6 +26,8 @@ type fakeAgents struct {
 	status      agent.Status
 	scr         screen.State
 	pasted      bool
+	pastedText  string         // what the last paste put in the box
+	typed       bool           // the user typed since the last Enter
 	scrSeq      []screen.State // consumed first, one per Screen call
 	external    bool
 	externalErr error
@@ -57,9 +59,15 @@ func (f *fakeAgents) Screen(ws, folder string) screen.State {
 	if f.pasted {
 		s := f.scr
 		s.InputEmpty = false // the box holds the paste until Enter
+		s.Draft = f.pastedText
 		return s
 	}
 	return f.scr
+}
+func (f *fakeAgents) UserTyped(ws, folder string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.typed
 }
 func (f *fakeAgents) Start(ws, folder string) error {
 	f.mu.Lock()
@@ -85,6 +93,7 @@ func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 		f.scr.Draft = ""
 	} else {
 		f.pasted = string(p) != "\r"
+		f.pastedText = strings.TrimSuffix(strings.TrimPrefix(string(p), "\x1b[200~"), "\x1b[201~")
 	}
 	f.injected = append(f.injected, append([]byte(nil), p...))
 	return nil
@@ -92,6 +101,9 @@ func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 
 func (f *fakeAgents) set(fn func(f *fakeAgents)) { f.mu.Lock(); defer f.mu.Unlock(); fn(f) }
 func (f *fakeAgents) nInjected() int             { f.mu.Lock(); defer f.mu.Unlock(); return len(f.injected) }
+
+// nudge1 is the nudge text for one unread message.
+const nudge1 = "[relaydeck] 1 new message. Call read_messages."
 
 var readyScreen = screen.State{InputVisible: true, InputEmpty: true}
 
@@ -259,7 +271,7 @@ func TestStartBackoff(t *testing.T) {
 func TestDraftHolds(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
-	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false}; f.typed = true })
 	g.tick()
 	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldDraft {
 		t.Fatalf("state %s", g.state(m.ID))
@@ -328,7 +340,7 @@ func TestPromptSubmittedKeepsNudged(t *testing.T) {
 func TestDeliverNowSkipsDraftOnce(t *testing.T) {
 	g := newRig()
 	g.send(t, "x")
-	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false}; f.typed = true })
 	g.tick()
 	g.d.DeliverNow("ws", "fe")
 	g.tick()
@@ -463,6 +475,7 @@ func TestDeliverNowExpires(t *testing.T) {
 	g.fa.set(func(f *fakeAgents) {
 		f.status = agent.StatusIdle
 		f.scr = screen.State{InputVisible: true, InputEmpty: false}
+		f.typed = true // the user typed this text
 	})
 	g.tick()
 	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldDraft {
@@ -492,7 +505,7 @@ func TestEnterSentWhenBoxHoldsPaste(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) {
-		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
+		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false, Draft: nudge1}}
 	})
 	g.tick()
 	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
@@ -517,7 +530,7 @@ func TestSetStateErrorSkipped(t *testing.T) {
 	m := g.send(t, "x")
 	d := g.with(readerAgents{g.fa, g.r})
 	g.fa.set(func(f *fakeAgents) {
-		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false}}
+		f.scrSeq = []screen.State{readyScreen, {InputVisible: true, InputEmpty: false, Draft: nudge1}}
 	})
 	d.Tick(context.Background())
 	if g.state(m.ID) != notify.StateDelivered {
@@ -567,7 +580,7 @@ func TestEnterWaitsForPasteEcho(t *testing.T) {
 	m := g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) {
 		// poll 0 is the pre-check; the paste shows up on the 3rd poll after it
-		f.scrSeq = []screen.State{readyScreen, readyScreen, readyScreen, {InputVisible: true, InputEmpty: false}}
+		f.scrSeq = []screen.State{readyScreen, readyScreen, readyScreen, {InputVisible: true, InputEmpty: false, Draft: nudge1}}
 	})
 	g.tick()
 	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
@@ -590,6 +603,7 @@ func TestDeliverNowKeptWhenEnterSkipped(t *testing.T) {
 	g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) {
 		f.scr = screen.State{InputVisible: true, InputEmpty: false}
+		f.typed = true // the user typed this text
 		f.scrSeq = append([]screen.State{f.scr}, repeat(screen.State{InputVisible: false}, 60)...)
 	})
 	g.d.DeliverNow("ws", "fe")
@@ -808,7 +822,7 @@ func TestNudgedStaysNudgedBehindDraft(t *testing.T) {
 	m := g.send(t, "x")
 	g.tick()
 	g.confirm()
-	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false}; f.typed = true })
 	g.tick()
 	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
 		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
@@ -870,7 +884,7 @@ func TestRenudgeMarkSurvivesRestart(t *testing.T) {
 func TestDeliverNowTTLFromAsk(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
-	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false}; f.typed = true })
 	g.d.DeliverNow("ws", "fe")
 	g.c.add(6 * time.Second) // no tick saw the ask before it expired
 	g.tick()
@@ -1023,6 +1037,7 @@ func TestDeliverNowKeepsUserDraft(t *testing.T) {
 	g.send(t, "x")
 	g.fa.set(func(f *fakeAgents) {
 		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: "half typed thought"}
+		f.typed = true // the user typed this text
 	})
 	g.d.DeliverNow("ws", "fe")
 	g.tick()
@@ -1143,5 +1158,81 @@ func TestLastNudgeSetOnlyAfterPasteSucceeds(t *testing.T) {
 	g.tick()
 	if got := g.d.lastNudge[Target{"ws", "fe"}]; got != "" {
 		t.Fatalf("lastNudge = %q after a failed paste", got)
+	}
+}
+
+const suggestion = "cek pesan dari api lagi"
+
+// Claude Code draws a prompt suggestion in the empty box as plain text. The
+// user never typed it, so it is not a draft: the nudge is pasted.
+func TestSuggestionIsNotDraft(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: suggestion}
+	})
+	g.tick()
+	if g.state(m.ID) != notify.StateNudged || g.fa.nInjected() != 2 || g.fa.enters() != 1 {
+		t.Fatalf("state %s injected %q", g.state(m.ID), g.fa.injected)
+	}
+}
+
+// The same text, typed by the user, is a draft.
+func TestTypedTextIsDraft(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: suggestion}
+		f.typed = true
+	})
+	g.tick()
+	if g.state(m.ID) != notify.StateHeldDraft || g.fa.nInjected() != 0 {
+		t.Fatalf("state %s injected %q", g.state(m.ID), g.fa.injected)
+	}
+}
+
+// With a suggestion already in the box, "box not empty" proves nothing about
+// the paste. Enter waits until the box shows the nudge itself.
+func TestEnterWaitsForNudgeNotSuggestion(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	sug := screen.State{InputVisible: true, InputEmpty: false, Draft: suggestion}
+	nudgeShown := screen.State{InputVisible: true, InputEmpty: false, Draft: notify.Nudge([]notify.Message{m})}
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = sug
+		// poll 0 is the pre-check; the paste lands after 3 polls of the suggestion
+		f.scrSeq = append(repeat(sug, 4), nudgeShown)
+	})
+	g.tick()
+	if g.fa.enters() != 1 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("enters %d state %s", g.fa.enters(), g.state(m.ID))
+	}
+	if n := len(g.fa.scrSeq); n != 0 {
+		t.Fatalf("Enter went out with %d screens unread: it did not wait for the nudge", n)
+	}
+}
+
+// If only the suggestion stays on screen, the paste did not land: no Enter.
+func TestSuggestionStaysNoEnter(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	sug := screen.State{InputVisible: true, InputEmpty: false, Draft: suggestion}
+	g.fa.set(func(f *fakeAgents) { f.scrSeq = repeat(sug, 60) })
+	g.tick()
+	if g.fa.enters() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("enters %d state %s", g.fa.enters(), g.state(m.ID))
+	}
+}
+
+// The nudge text in the box must be the whole nudge: a nudge that landed after
+// other text is not confirmed.
+func TestEnterNotSentWhenBoxHoldsNudgePlusText(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	mixed := screen.State{InputVisible: true, InputEmpty: false, Draft: suggestion + " " + notify.Nudge([]notify.Message{m})}
+	g.fa.set(func(f *fakeAgents) { f.scrSeq = append([]screen.State{readyScreen}, repeat(mixed, 60)...) })
+	g.tick()
+	if g.fa.enters() != 0 || g.state(m.ID) != notify.StateQueued {
+		t.Fatalf("enters %d state %s", g.fa.enters(), g.state(m.ID))
 	}
 }

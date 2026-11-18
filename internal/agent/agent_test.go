@@ -729,3 +729,91 @@ func TestExitTypedOnRealScreens(t *testing.T) {
 		})
 	}
 }
+
+func TestUserTypedTracksKeystrokes(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	steps := []struct {
+		name  string
+		write string
+		want  bool
+	}{
+		{"fresh agent", "", false},
+		{"printable", "abc", true},
+		{"enter clears", "\r", false},
+		{"enter after text in one write", "abc\r", false},
+		{"text after enter in one write", "\rabc", true},
+		{"backspace does not clear", "\x7f", true},
+		{"ctrl-u does not clear", "\x15", true},
+		{"ctrl-c does not clear", "\x03", true},
+		{"enter clears again", "\r", false},
+		{"focus in", "\x1b[I", false},
+		{"focus out", "\x1b[O", false},
+		{"sgr mouse press", "\x1b[<0;10;5M", false},
+		{"sgr mouse release", "\x1b[<0;10;5m", false},
+		{"legacy mouse report", "\x1b[M !!", false},
+		{"cursor position reply", "\x1b[12;5R", false},
+		{"device attributes reply", "\x1b[?62;4c", false},
+		{"arrow key", "\x1b[A", false},
+		{"ss3 key", "\x1bOP", false},
+		{"osc reply with BEL", "\x1b]11;rgb:0000/0000/0000\x07", false},
+		{"osc reply with ST", "\x1b]11;rgb:0000/0000/0000\x1b\\", false},
+		{"dcs reply", "\x1bP1$r0m\x1b\\", false},
+		{"alt key", "\x1bb", false},
+		{"utf-8 text", "café", true},
+		{"enter", "\r", false},
+		{"control bytes only", "\x01\x02\x05\t", false},
+		{"bracketed paste", "\x1b[200~pasted text\x1b[201~", true},
+		{"enter after paste", "\r", false},
+		{"text after a focus report", "\x1b[Ix", true},
+		{"enter", "\r", false},
+		{"empty paste", "\x1b[200~\x1b[201~", false},
+		{"enter inside a paste does not clear", "x\x1b[200~a\rb\x1b[201~", true},
+	}
+	for _, s := range steps {
+		if s.write != "" {
+			if err := a.Write([]byte(s.write)); err != nil {
+				t.Fatalf("%s: %v", s.name, err)
+			}
+		}
+		if got := a.UserTyped(); got != s.want {
+			t.Fatalf("%s: UserTyped = %v, want %v", s.name, got, s.want)
+		}
+	}
+}
+
+// A browser can split one escape sequence over two writes.
+func TestUserTypedSequenceSplitOverWrites(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	for _, part := range []string{"\x1b[<0;1", "0;5M", "\x1b", "[I", "\x1b]11;rgb:0/0/0", "\x07"} {
+		if err := a.Write([]byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		if a.UserTyped() {
+			t.Fatalf("UserTyped set after %q", part)
+		}
+	}
+	for _, part := range []string{"\x1b[20", "0~hi", "\x1b[20", "1~"} {
+		a.Write([]byte(part))
+	}
+	if !a.UserTyped() {
+		t.Fatal("split bracketed paste did not set UserTyped")
+	}
+}
+
+func TestInjectDoesNotSetUserTyped(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	if err := a.Inject([]byte("\x1b[200~[relaydeck] 1 new message. Call read_messages.\x1b[201~")); err != nil {
+		t.Fatal(err)
+	}
+	if a.UserTyped() {
+		t.Fatal("Inject set UserTyped")
+	}
+	a.Write([]byte("x"))
+	a.Inject([]byte("\r"))
+	if !a.UserTyped() {
+		t.Fatal("Inject cleared UserTyped")
+	}
+}

@@ -155,9 +155,10 @@ func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, sta
 	}
 }
 
-// StopAgent stops the folder's agent. A draft in the input box refuses a
-// normal stop (ErrDraft), because /exit would be appended to the draft and
-// submitted. force kills at once without typing anything. Otherwise see
+// StopAgent stops the folder's agent. A draft the user typed in the input box
+// refuses a normal stop (ErrDraft), because /exit would be appended to the
+// draft and submitted. Text the user never typed (a prompt suggestion) is not
+// a draft. force kills at once without typing anything. Otherwise see
 // stopAgent. After a user stop, delivery does not start the folder again
 // for messages that were already waiting.
 func (d *Daemon) StopAgent(ws, folder string, force bool) error {
@@ -169,7 +170,7 @@ func (d *Daemon) StopAgent(ws, folder string, force bool) error {
 	if a == nil {
 		return ErrNotRunning
 	}
-	if !force && a.HasDraft() {
+	if !force && a.HasDraft() && a.UserTyped() {
 		return ErrDraft
 	}
 	// Before the stop, so no Tick can restart it in between: delivery does
@@ -280,6 +281,11 @@ func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
 		return false, err
 	}
 	return x.d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, x.d.opts.OwnPIDs())
+}
+
+func (x agentsAdapter) UserTyped(ws, folder string) bool {
+	a := x.d.running(delivery.Target{WS: ws, Folder: folder})
+	return a != nil && a.UserTyped()
 }
 
 func (x agentsAdapter) Inject(ws, folder string, p []byte) error {
