@@ -218,9 +218,10 @@ func TestSetStatusEmitsEvent(t *testing.T) {
 func TestResize(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	// READY may already be in the scrollback, so the replay counts too.
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	collect(t, nil, out, "READY")
+	collect(t, replay, out, "READY")
 	if err := a.Resize(90, 30); err != nil {
 		t.Fatal(err)
 	}
@@ -497,9 +498,9 @@ func TestWriteReachesPTY(t *testing.T) {
 func TestHasDraft(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	collect(t, nil, out, "READY")
+	collect(t, replay, out, "READY")
 	if a.HasDraft() {
 		t.Fatal("no input box yet, HasDraft must be false")
 	}
