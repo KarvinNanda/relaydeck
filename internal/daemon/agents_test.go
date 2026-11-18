@@ -239,6 +239,13 @@ func TestStopRevokesAndRestartReplaces(t *testing.T) {
 	}
 	id1 := e.agentID(t, "a")
 	fi := e.waitInfo(t, id1)
+	// A normal stop types /exit only once the empty box is on screen (it
+	// falls back to Kill otherwise), so wait for the fake to draw it.
+	a1, ok := e.d.Agent("w", "a")
+	if !ok {
+		t.Fatal("Agent not found")
+	}
+	eventually(t, "empty prompt", func() bool { return a1.ScreenState().Ready() })
 	if err := e.d.StopAgent("w", "a", false); err != nil {
 		t.Fatal(err)
 	}
