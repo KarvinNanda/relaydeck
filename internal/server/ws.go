@@ -39,6 +39,10 @@ const (
 //   - DCS replies: ESC P ... ESC \ (DECRQSS, XTGETTCAP);
 //   - OSC 10, 11 and 12 color reports, ended by BEL or ESC \.
 //
+// Shift+F3 and Ctrl+F3 send ESC [ 1 ; 2 R (or 5 R), which looks like a cursor
+// position reply. They are dropped only inside the 1 s window after a replay
+// (queryReplyWindow), never later.
+//
 // The OSC and DCS bodies cannot contain ESC or BEL, so a reply never swallows
 // typed text that follows it.
 var queryReplyRe = regexp.MustCompile(

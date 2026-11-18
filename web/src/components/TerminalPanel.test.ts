@@ -415,6 +415,27 @@ describe('TerminalPanel terminal', () => {
     expect([MIN_COLS, MIN_ROWS]).toEqual([60, 10])
   })
 
+  it('shows an edge fade while the terminal scrolls sideways, and hides it at the end', async () => {
+    fx.propose = { cols: 42, rows: 12 }
+    await mountPanel()
+    const el = w!.find('.term').element as HTMLElement
+    const set = (scrollWidth: number, clientWidth: number, scrollLeft: number) => {
+      Object.defineProperty(el, 'scrollWidth', { value: scrollWidth, configurable: true })
+      Object.defineProperty(el, 'clientWidth', { value: clientWidth, configurable: true })
+      Object.defineProperty(el, 'scrollLeft', { value: scrollLeft, configurable: true })
+    }
+    expect(w!.find('.term-fade').exists()).toBe(false)
+    set(432, 327, 0)
+    for (const cb of roCallbacks) cb()
+    vi.advanceTimersByTime(100)
+    await flushPromises()
+    expect(w!.find('.term-fade').exists()).toBe(true)
+    set(432, 327, 105)
+    el.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(w!.find('.term-fade').exists()).toBe(false)
+  })
+
   it('leaves xterm alone when the panel is bigger than the minimum', async () => {
     fx.propose = { cols: 100, rows: 30 }
     await mountPanel()
@@ -458,6 +479,22 @@ describe('TerminalPanel terminal', () => {
     await mountPanel()
     sock().frame(new TextEncoder().encode('old screen with a DA2 query').buffer)
     // xterm answers the query inside the replay before the write finishes
+    term().dataCb!('\x1b[>0;276;0c')
+    expect(sock().frames().filter((f) => f.type === 'input')).toEqual([])
+    fx.writeCbs.splice(0).forEach((cb) => cb())
+    term().dataCb!('x')
+    expect(sock().frames().filter((f) => f.type === 'input')).toEqual([{ type: 'input', data: 'x' }])
+  })
+
+  it('a late replay write callback from an old socket does not open the gate of a new one', async () => {
+    await mountPanel()
+    sock().frame(new TextEncoder().encode('old screen').buffer)
+    const late = fx.writeCbs.splice(0)
+    sock().drop()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(sockets).toHaveLength(2)
+    sock().frame(new TextEncoder().encode('new screen').buffer)
+    late.forEach((cb) => cb()) // the old socket's write finishes while the new replay is still parsing
     term().dataCb!('\x1b[>0;276;0c')
     expect(sock().frames().filter((f) => f.type === 'input')).toEqual([])
     fx.writeCbs.splice(0).forEach((cb) => cb())
@@ -623,6 +660,16 @@ describe('TerminalPanel header layout', () => {
     for (const cb of roCallbacks) cb()
     await flushPromises()
     expect(w!.find('.pane').classes()).not.toContain('tight')
+  })
+
+  it('the compact chip is still read as "1 message waiting"', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1 })
+    paneWidth(380)
+    await mountPanel()
+    expect(w!.find('.pane').classes()).toContain('tight')
+    expect(w!.find('.waiting .chip').text()).toBe('1 message waiting')
+    expect(w!.find('.waiting .chip .opt').exists()).toBe(true)
   })
 
   it('follows the panel when it is resized', async () => {

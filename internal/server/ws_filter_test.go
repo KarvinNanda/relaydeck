@@ -25,16 +25,24 @@ func TestQueryReplyRe(t *testing.T) {
 		}
 	}
 	keep := map[string]string{
-		"typing":           "hi\r",
-		"arrow key":        "\x1b[A",
-		"reply plus typed": "\x1b[1;1Rhi",
-		"empty":            "",
-		"OSC 8 hyperlink":  "\x1b]8;;http://x\a",
-		"OSC 52 clipboard": "\x1b]52;c;aGk=\a",
-		"OSC 13":           "\x1b]13;rgb:0/0/0\a",
-		"unterminated DCS": "\x1bP1$r0m",
-		"bare ESC":         "\x1b",
-		"alt-x":            "\x1bx",
+		"typing":            "hi\r",
+		"arrow key":         "\x1b[A",
+		"reply plus typed":  "\x1b[1;1Rhi",
+		"empty":             "",
+		"OSC 8 hyperlink":   "\x1b]8;;http://x\a",
+		"OSC 52 clipboard":  "\x1b]52;c;aGk=\a",
+		"OSC 13":            "\x1b]13;rgb:0/0/0\a",
+		"unterminated DCS":  "\x1bP1$r0m",
+		"bare ESC":          "\x1b",
+		"alt-x":             "\x1bx",
+		"F5":                "\x1b[15~",
+		"shift-tab":         "\x1b[Z",
+		"focus in":          "\x1b[I",
+		"focus out":         "\x1b[O",
+		"SGR mouse":         "\x1b[<0;10;5M",
+		"bracketed paste":   "\x1b[200~hi\x1b[201~",
+		"alt-p":             "\x1bp",
+		"DCS no terminator": "\x1bPfoo",
 	}
 	for name, in := range keep {
 		if queryReplyRe.MatchString(in) {

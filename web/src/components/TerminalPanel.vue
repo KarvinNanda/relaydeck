@@ -115,6 +115,14 @@ const showWaiting = computed(() => status.value === 'idle' && (f.value?.pending 
 const NARROW = 760
 const TIGHT = 460
 const narrow = ref(false)
+// More terminal to the right than the box shows (xterm is at least MIN_COLS
+// wide): a fade on the right edge says it scrolls. Overlay scrollbars hide
+// themselves, so the scrollbar alone is not a cue.
+const moreRight = ref(false)
+function measureScroll(): void {
+  const el = host.value
+  moreRight.value = !!el && el.scrollWidth - el.clientWidth - el.scrollLeft > 1
+}
 const tight = ref(false)
 function measure(): void {
   const w = pane.value?.getBoundingClientRect().width ?? 0
@@ -330,7 +338,7 @@ function attach(s: WebSocket): void {
       // parsed it, which is when its automatic replies are over.
       gotReplay = true
       if (data.length === 0) replaying = false
-      else term.write(data, () => (replaying = false))
+      else term.write(data, () => { if (sock === s) replaying = false })
       return
     }
     attempt = 0
@@ -371,6 +379,7 @@ function fitNow(): void {
     term.resize(Math.max(term.cols, MIN_COLS), Math.max(term.rows, MIN_ROWS))
   }
   send({ type: 'resize', cols: d.cols, rows: d.rows })
+  measureScroll()
 }
 
 function fitSoon(): void {
@@ -387,6 +396,7 @@ watch(running, (r) => {
 onMounted(() => {
   msgs.start()
   measure()
+  host.value?.addEventListener('scroll', measureScroll, { passive: true })
   if (typeof ResizeObserver !== 'undefined' && pane.value) {
     paneRo = new ResizeObserver(() => measure())
     paneRo.observe(pane.value)
@@ -409,6 +419,7 @@ onBeforeUnmount(() => {
   clearTimeout(fitTimer)
   ro?.disconnect()
   paneRo?.disconnect()
+  host.value?.removeEventListener('scroll', measureScroll)
   term?.dispose()
   term = null
   fit = null
@@ -518,6 +529,7 @@ onBeforeUnmount(() => {
 
     <div class="body">
       <div v-show="running" ref="host" class="term"></div>
+      <div v-if="running && moreRight" class="term-fade" aria-hidden="true"></div>
       <div v-if="!running" class="stopped">
         <div class="big c-stop"><Icon name="stop" />Stopped</div>
         <div class="c-muted">{{ lastLine }}</div>
@@ -575,13 +587,24 @@ onBeforeUnmount(() => {
 .ph-2 b { color: var(--text); font-weight: 500; }
 .warn-inline { color: var(--amber); }
 
-/* Row 2 is tight in a very narrow panel: the chip says "3 waiting" (the word
-   "messages" stays for screen readers) and the row-2 icons go. */
-.tight .ph-2 { gap: var(--s-4); }
+/* Deliver now is the drawer's button (same text color), trimmed to the chip's
+   height so the two line up. Row 2 text is muted, so the color is set here. */
+.waiting .chip { height: 24px; }
+.waiting .btn.act { height: 24px; padding: 0 var(--s-4); color: var(--text); position: relative; }
+/* The tap area stays 44px high on a phone without a taller box. */
+@media (max-width: 767px) {
+  .waiting .btn.act::after { content: ""; position: absolute; inset: -10px -4px; }
+}
+
+/* A very narrow panel: the chip says "3 waiting" (the word "messages" stays
+   for screen readers) and drops its icon. If chip and button still do not
+   fit next to the account, they take their own line at the right. */
+.tight .ph-2 { flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
+.tight .waiting { gap: var(--s-4); }
 .tight .waiting .opt {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
-.tight .ph-2 .waiting .i { display: none; }
+.tight .waiting .chip .i { display: none; }
 
 /* inline error under the header */
 .p-alert {
@@ -601,13 +624,24 @@ onBeforeUnmount(() => {
 /* terminal body: padding sits here, never on the xterm host, so the fit
    addon measures the real box */
 .body {
+  position: relative;
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   background: var(--term); border-radius: 0 0 var(--r) var(--r);
   padding: var(--s-3) var(--s-2) var(--s-2) var(--s-5);
 }
 /* When the panel is smaller than the PTY minimum, xterm draws the minimum
    and the overflow scrolls here, never the page. */
-.term { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
+.term {
+  flex: 1; min-height: 0; min-width: 0; overflow: auto;
+  /* a thin visible scrollbar, so a terminal wider than its box shows it can scroll */
+  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+}
+
+.term-fade {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 28px; pointer-events: none;
+  border-radius: 0 0 var(--r) 0;
+  background: linear-gradient(to right, transparent, var(--border-strong));
+}
 
 .stopped {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-3);
