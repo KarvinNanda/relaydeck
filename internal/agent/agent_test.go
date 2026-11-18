@@ -237,6 +237,9 @@ func drawInputBox(a *Agent) {
 func TestStopSendsExit(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, replay, out, "READY") // READY is printed at the cursor, so wait for it first
 	drawInputBox(a)
 	start := time.Now()
 	if err := a.Stop(5 * time.Second); err != nil {
@@ -655,9 +658,9 @@ func TestSameDirSymlinkRejected(t *testing.T) {
 func TestStopDoesNotEnterIntoDialog(t *testing.T) {
 	m := newMgr(t, nil)
 	a := start(t, m, "a")
-	_, out, cancel := a.Subscribe()
+	replay, out, cancel := a.Subscribe()
 	defer cancel()
-	collect(t, nil, out, "READY")
+	collect(t, replay, out, "READY")
 	a.screen.Write([]byte("\x1b[2J\x1b[5;1H \u276f No, exit\x1b[6;1H   Yes, I trust this folder"))
 	begin := time.Now()
 	if err := a.Stop(5 * time.Second); err != nil {
