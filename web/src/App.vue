@@ -4,7 +4,7 @@
 // 18 own, so this file does not change when they fill them in.
 import { computed } from 'vue'
 import { store } from './stores/state'
-import Icon, { type IconName } from './components/Icon.vue'
+import Icon from './components/Icon.vue'
 import NoToken from './components/NoToken.vue'
 import Sidebar from './components/Sidebar.vue'
 import PanelGrid from './components/PanelGrid.vue'
@@ -17,14 +17,15 @@ const workspace = computed(() => store.activeWorkspace())
 // Messages held at the hop limit in this workspace: they wait for the user.
 const awaiting = computed(() => (workspace.value?.folders ?? []).reduce((n, f) => n + f.awaiting_approval, 0))
 
-const conn = computed<{ icon: IconName; cls: string }>(() => {
+// The word carries the meaning; color and dot shape only repeat it.
+const connClass = computed(() => {
   switch (store.state.connection) {
     case 'connected':
-      return { icon: 'link', cls: 'c-busy' }
+      return 'c-busy'
     case 'connecting':
-      return { icon: 'busy', cls: 'c-start' }
+      return 'c-start'
     default:
-      return { icon: 'unlink', cls: 'c-stop' }
+      return 'c-stop'
   }
 })
 
@@ -57,8 +58,8 @@ function toggleMessages(): void {
         <span v-if="awaiting > 0" class="count" aria-hidden="true">{{ awaiting }}</span>
         <span v-if="awaiting > 0" class="sr-only">, {{ awaiting }} awaiting approval</span>
       </button>
-      <div class="conn" :class="conn.cls" role="status" :title="`relaydeck server on ${host}`">
-        <Icon :name="conn.icon" :class="{ spin: store.state.connection === 'connecting' }" />
+      <div class="conn" :class="connClass" role="status" :title="`relaydeck server on ${host}`">
+        <span class="dot" :class="store.state.connection" aria-hidden="true"></span>
         <b>{{ store.state.connection }}</b>
         <span class="host">{{ host }}</span>
       </div>
@@ -107,9 +108,9 @@ function toggleMessages(): void {
 .conn { display: flex; align-items: center; gap: var(--s-3); white-space: nowrap; }
 .conn b { font-weight: 500; }
 .conn .host { color: var(--text-muted); }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+/* filled dot when connected or disconnected, a ring while connecting */
+.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.dot.connecting { background: transparent; border: 2px solid currentColor; }
 
 /* sidebar */
 .side {
@@ -143,6 +144,6 @@ function toggleMessages(): void {
   .layout-slot { order: 4; width: 100%; }
   .side { border-right: 0; border-bottom: 1px solid var(--border); padding: var(--s-6) var(--s-3); }
   .main { display: flex; flex-direction: column; }
-  .drawer { height: auto; }
+  .drawer { height: auto; border-bottom: 1px solid var(--border); }
 }
 </style>

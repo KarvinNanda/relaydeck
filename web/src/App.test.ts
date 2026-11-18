@@ -73,5 +73,14 @@ describe('App', () => {
     store.state.connection = 'disconnected'
     const w = mount(App)
     expect(w.find('[role="status"]').text()).toContain('disconnected')
+    expect(w.find('[role="status"] .dot').classes()).toContain('disconnected')
+  })
+
+  it('the drawer collapse button is labelled, says it is expanded, and closes the drawer', async () => {
+    const w = mount(App)
+    const btn = w.find('#messages button[aria-label="Collapse Messages"]')
+    expect(btn.attributes('aria-expanded')).toBe('true')
+    await btn.trigger('click')
+    expect(store.ui.messagesOpen).toBe(false)
   })
 })

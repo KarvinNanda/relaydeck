@@ -63,6 +63,14 @@ describe('api', () => {
     expect(err.message).toBe('request failed (HTTP 500)')
   })
 
+  it('throws ApiError when a 2xx body is not JSON', async () => {
+    fetchMock.mockResolvedValue(new Response('<!doctype html><p>hi</p>', { status: 200, headers: { 'Content-Type': 'text/html' } }))
+    const err = (await api('GET', '/api/state').catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(200)
+    expect(err.message).toBe('invalid response from relaydeck')
+  })
+
   it('throws ApiError with status 0 when the daemon is not reachable', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
     const err = (await api('GET', '/api/state').catch((e: unknown) => e)) as ApiError

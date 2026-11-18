@@ -68,3 +68,9 @@
   --side-w: 248px;
   --drawer-h: 232px;
 }
+
+/* Phones: chrome text one step larger (ruling, Task 15 review). Terminal
+   text keeps --fs-term. */
+@media (max-width: 767px) {
+  :root { --fs-base: 14px; }
+}

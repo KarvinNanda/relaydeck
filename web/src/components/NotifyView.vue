@@ -8,7 +8,15 @@ import Icon from './Icon.vue'
 
 <template>
   <div class="dh">
-    <button class="ib" type="button" aria-label="Collapse Messages" title="Collapse Messages" @click="store.ui.messagesOpen = false">
+    <button
+      class="btn-sq"
+      type="button"
+      aria-label="Collapse Messages"
+      title="Collapse Messages"
+      aria-controls="messages"
+      :aria-expanded="store.ui.messagesOpen"
+      @click="store.ui.messagesOpen = false"
+    >
       <Icon name="down" />
     </button>
     <h2>Messages</h2>
@@ -19,7 +27,7 @@ import Icon from './Icon.vue'
 <style scoped>
 .dh {
   display: flex; align-items: center; gap: var(--s-5); min-height: 34px;
-  padding: 0 var(--s-5) 0 var(--s-2); border-bottom: 1px solid var(--border);
+  padding: var(--s-1) var(--s-5) var(--s-1) var(--s-2); border-bottom: 1px solid var(--border);
 }
 .dh h2 { font-weight: 700; }
 @media (max-width: 767px) {

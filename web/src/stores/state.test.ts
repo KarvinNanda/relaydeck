@@ -136,6 +136,24 @@ describe('state store', () => {
     expect(store.state.connection).toBe('disconnected')
   })
 
+  it('caps the reconnect delay at 10 s', async () => {
+    const { store, openSocket, sockets } = rig()
+    store.start()
+    await flush()
+    openSocket.mockRejectedValue(new ApiError(0, 'down'))
+    sockets[0].drop()
+    // Attempts 2 to 7 come after 0.5, 1, 2, 4, 8 and 10 s.
+    for (const delay of [500, 1000, 2000, 4000, 8000, 10_000]) await vi.advanceTimersByTimeAsync(delay)
+    expect(openSocket).toHaveBeenCalledTimes(7)
+    // Attempts 8 and 9: still 10 s each, never longer.
+    for (let n = 8; n <= 9; n++) {
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(openSocket).toHaveBeenCalledTimes(n - 1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(openSocket).toHaveBeenCalledTimes(n)
+    }
+  })
+
   it('marks the store unauthorized on a 401 and stops trying', async () => {
     const { store, api, openSocket } = rig()
     api.mockRejectedValue(new ApiError(401, 'unauthorized'))

@@ -33,7 +33,12 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   }
   if (!res.ok) throw new ApiError(res.status, await errorText(res))
   const text = await res.text()
-  return (text === '' ? undefined : JSON.parse(text)) as T
+  if (text === '') return undefined as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiError(res.status, 'invalid response from relaydeck')
+  }
 }
 
 // errorText reads the server's {"error": "..."} body, or the short plain

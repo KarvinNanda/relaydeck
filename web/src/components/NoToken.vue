@@ -29,4 +29,5 @@ const origin = window.location.origin
 .brand .i { width: 16px; height: 16px; color: var(--green); }
 h1 { font-size: var(--fs-lg); font-weight: 700; line-height: 1.5; }
 p { margin: 0; overflow-wrap: anywhere; }
+code { padding: 0 var(--s-2); border-radius: var(--r-sm); background: var(--muted); color: var(--text); font-weight: 500; }
 </style>

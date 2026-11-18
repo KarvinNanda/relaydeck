@@ -55,6 +55,15 @@ code { font: inherit; color: var(--text); }
 .ib:hover:not(:disabled) { background: var(--muted); color: var(--text); }
 .ib[aria-expanded="true"] { background: var(--muted); border-color: var(--border-strong); color: var(--text); }
 
+/* square icon button with a border, same frame as .btn (drawer collapse) */
+.btn-sq {
+  width: var(--control-h); height: var(--control-h); padding: 0;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--border-strong); border-radius: var(--r);
+  background: var(--muted); color: var(--text); cursor: pointer;
+}
+.btn-sq:hover { border-color: var(--text-muted); }
+
 /* small counter on a button */
 .count {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
@@ -86,4 +95,5 @@ code { font: inherit; color: var(--text); }
 @media (max-width: 767px) {
   .btn, .ib { height: var(--touch-h); }
   .ib { min-width: var(--touch-h); }
+  .btn-sq { width: var(--touch-h); height: var(--touch-h); }
 }

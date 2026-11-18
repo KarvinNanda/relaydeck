@@ -96,18 +96,6 @@ const icons = {
     { tag: 'path', d: 'M10 3 8 21' },
     { tag: 'path', d: 'M16 3l-2 18' },
   ],
-  link: [
-    { tag: 'path', d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' },
-    { tag: 'path', d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
-  ],
-  unlink: [
-    { tag: 'path', d: 'm18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71' },
-    { tag: 'path', d: 'm5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71' },
-    { tag: 'path', d: 'M8 2v3' },
-    { tag: 'path', d: 'M2 8h3' },
-    { tag: 'path', d: 'M16 22v-3' },
-    { tag: 'path', d: 'M22 16h-3' },
-  ],
 } satisfies Record<string, Shape[]>
 
 export type IconName = keyof typeof icons

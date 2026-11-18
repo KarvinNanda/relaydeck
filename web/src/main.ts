@@ -1,8 +1,9 @@
 import { createApp } from 'vue'
-import '@fontsource/jetbrains-mono/400.css'
-import '@fontsource/jetbrains-mono/500.css'
-import '@fontsource/jetbrains-mono/600.css'
-import '@fontsource/jetbrains-mono/700.css'
+// Latin subset only; other scripts fall back to the system monospace font.
+import '@fontsource/jetbrains-mono/latin-400.css'
+import '@fontsource/jetbrains-mono/latin-500.css'
+import '@fontsource/jetbrains-mono/latin-600.css'
+import '@fontsource/jetbrains-mono/latin-700.css'
 import './styles/tokens.css'
 import './styles/base.css'
 import App from './App.vue'
