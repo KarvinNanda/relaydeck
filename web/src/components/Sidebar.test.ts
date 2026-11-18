@@ -1,0 +1,241 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { api, ApiError } from '../api'
+import { store } from '../stores/state'
+import { panelStore } from '../stores/panels'
+import Sidebar from './Sidebar.vue'
+import AddFolderDialog from './AddFolderDialog.vue'
+import type { FolderState, State } from '../types'
+
+vi.mock('../api', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../api')>()
+  return { ...real, api: vi.fn() }
+})
+const apiMock = vi.mocked(api)
+
+function folder(name: string, over: Partial<FolderState> = {}): FolderState {
+  return {
+    name,
+    path: `/x/${name}`,
+    permission_mode: 'auto',
+    status: 'stopped',
+    on_default_login: false,
+    pending: 0,
+    awaiting_approval: 0,
+    ...over,
+  }
+}
+
+function snapshot(platform = 'darwin'): State {
+  return {
+    platform,
+    account: { cswap: true, known: true, default: '1' },
+    workspaces: [
+      {
+        name: 'game-lounge',
+        folders: [
+          folder('be', { status: 'busy', account: 'work-2' }),
+          folder('fe-admin', { status: 'idle', account: 'work-2', pending: 1 }),
+          folder('fe-customer', { status: 'attention', account: 'personal-1', on_default_login: true }),
+          folder('worker', { pending: 2, awaiting_approval: 3 }),
+        ],
+      },
+      { name: 'infra-tools', folders: [folder('tf'), folder('ci', { status: 'attention' })] },
+    ],
+  }
+}
+
+function closeAll(): void {
+  for (const p of [...panelStore.panels]) panelStore.closePanel(p.ws, p.folder)
+}
+
+function row(w: ReturnType<typeof mount>, name: string) {
+  const r = w.findAll('li.node').find((li) => li.find('.node-name').text() === name)
+  if (!r) throw new Error(`no row ${name}`)
+  return r
+}
+
+beforeEach(() => {
+  closeAll()
+  store.state.data = snapshot()
+  store.ui.workspace = null
+  apiMock.mockReset()
+  apiMock.mockImplementation(async (method: string, path: string) => {
+    if (method === 'GET' && path === '/api/state') return snapshot()
+    throw new Error(`unexpected ${method} ${path}`)
+  })
+})
+
+afterEach(() => {
+  store.state.data = null
+  store.ui.workspace = null
+  closeAll()
+  document.body.innerHTML = ''
+})
+
+describe('Sidebar', () => {
+  it('lists workspaces with a folder count', () => {
+    const w = mount(Sidebar)
+    const heads = w.findAll('button.ws-row')
+    expect(heads.map((h) => h.find('.name').text())).toEqual(['game-lounge', 'infra-tools'])
+    expect(heads[0].find('.meta').text()).toContain('4 folders')
+    expect(heads[1].find('.meta').text()).toContain('2 folders')
+  })
+
+  it('says 1 folder, singular', () => {
+    store.state.data = { ...snapshot(), workspaces: [{ name: 'solo', folders: [folder('a')] }] }
+    const w = mount(Sidebar)
+    expect(w.find('button.ws-row .meta').text()).toContain('1 folder')
+    expect(w.find('button.ws-row .meta').text()).not.toContain('folders')
+  })
+
+  it('collapses and expands a workspace', async () => {
+    const w = mount(Sidebar)
+    const head = w.findAll('button.ws-row')[0]
+    expect(head.attributes('aria-expanded')).toBe('true')
+    expect(w.text()).toContain('fe-admin')
+    await head.trigger('click')
+    expect(head.attributes('aria-expanded')).toBe('false')
+    expect(w.text()).not.toContain('fe-admin')
+    await head.trigger('click')
+    expect(w.text()).toContain('fe-admin')
+  })
+
+  it('a collapsed workspace still shows when a folder needs attention', async () => {
+    const w = mount(Sidebar)
+    const head = w.findAll('button.ws-row')[1]
+    await head.trigger('click')
+    expect(head.attributes('aria-expanded')).toBe('false')
+    expect(head.find('.meta').text()).toContain('1 needs attention')
+  })
+
+  it('shows each folder with status icon, name, status word and account', () => {
+    const w = mount(Sidebar)
+    const be = row(w, 'be')
+    expect(be.find('.node-name svg.i').classes()).toContain('c-busy')
+    expect(be.find('.node-meta').text()).toBe('busy · work-2')
+    expect(be.find('.node-meta .st').classes()).toContain('c-busy')
+    expect(row(w, 'fe-customer').find('.node-meta').text()).toBe('needs attention · personal-1')
+    expect(row(w, 'worker').find('.node-meta').text()).toBe('stopped · no account')
+  })
+
+  it('never shows the account on windows', () => {
+    const s = snapshot('windows')
+    s.workspaces[0].folders[0].account = 'work-2' // even if the server sent one
+    store.state.data = s
+    const w = mount(Sidebar)
+    expect(row(w, 'be').find('.node-meta').text()).toBe('busy')
+    expect(row(w, 'worker').find('.node-meta').text()).toBe('stopped')
+    expect(w.text()).not.toContain('no account')
+    expect(w.text()).not.toContain('work-2')
+  })
+
+  it('shows the default login note only when on_default_login is set', () => {
+    const w = mount(Sidebar)
+    expect(row(w, 'fe-customer').find('.note').text()).toBe('On default login: a cswap switch will move it')
+    expect(row(w, 'be').find('.note').exists()).toBe(false)
+    expect(w.findAll('.note')).toHaveLength(1)
+  })
+
+  it('shows chips for waiting messages and messages awaiting approval', () => {
+    const w = mount(Sidebar)
+    expect(row(w, 'fe-admin').find('.chip').text()).toBe('1 message waiting')
+    const chips = row(w, 'worker').findAll('.chip').map((c) => c.text())
+    expect(chips).toEqual(['2 messages waiting', '3 awaiting approval'])
+    expect(row(w, 'be').find('.chip').exists()).toBe(false)
+  })
+
+  it('clicking a folder opens its panel, selects it and makes its workspace active', async () => {
+    const w = mount(Sidebar)
+    await row(w, 'tf').find('button.node-btn').trigger('click')
+    expect(panelStore.panels).toEqual([{ ws: 'infra-tools', folder: 'tf' }])
+    expect(store.ui.workspace).toBe('infra-tools')
+    expect(row(w, 'tf').find('button.node-btn').attributes('aria-current')).toBe('true')
+    expect(row(w, 'be').find('button.node-btn').attributes('aria-current')).toBeUndefined()
+  })
+
+  it('shows the refusal reason in a dismissible alert when 4 panels are open', async () => {
+    const w = mount(Sidebar)
+    for (const n of ['be', 'fe-admin', 'fe-customer', 'worker']) await row(w, n).find('button.node-btn').trigger('click')
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+    await row(w, 'tf').find('button.node-btn').trigger('click')
+    const alert = w.find('[role="alert"]')
+    expect(alert.text()).toContain('At most 4 terminals can be open. Close one first.')
+    await alert.find('button[aria-label="Dismiss"]').trigger('click')
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+    // a later successful open clears an old alert as well
+    await row(w, 'tf').find('button.node-btn').trigger('click')
+    panelStore.closePanel('game-lounge', 'be')
+    await row(w, 'tf').find('button.node-btn').trigger('click')
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('Add folder opens the dialog for that workspace', async () => {
+    const w = mount(Sidebar)
+    expect(w.findComponent(AddFolderDialog).exists()).toBe(false)
+    await w.findAll('button.add-folder')[1].trigger('click')
+    const dlg = w.findComponent(AddFolderDialog)
+    expect(dlg.exists()).toBe(true)
+    expect(dlg.props('ws')).toBe('infra-tools')
+    dlg.vm.$emit('close')
+    await flushPromises()
+    expect(w.findComponent(AddFolderDialog).exists()).toBe(false)
+  })
+
+  it('Add workspace checks the name in the client', async () => {
+    const w = mount(Sidebar)
+    await w.find('button.add-ws').trigger('click')
+    await w.find('input#new-ws').setValue('Bad Name')
+    await w.find('form.ws-form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).not.toHaveBeenCalled()
+    expect(w.find('input#new-ws').attributes('aria-invalid')).toBe('true')
+    expect(w.find('form.ws-form').text()).toContain('lowercase')
+  })
+
+  it('Add workspace posts the name and refreshes the state', async () => {
+    apiMock.mockImplementation(async (method: string, path: string) => {
+      if (method === 'POST' && path === '/api/workspaces') return { name: 'tools' }
+      return snapshot()
+    })
+    const w = mount(Sidebar)
+    await w.find('button.add-ws').trigger('click')
+    await w.find('input#new-ws').setValue('tools')
+    await w.find('form.ws-form').trigger('submit')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('POST', '/api/workspaces', { name: 'tools' })
+    expect(apiMock).toHaveBeenCalledWith('GET', '/api/state')
+    expect(w.find('form.ws-form').exists()).toBe(false)
+  })
+
+  it('Add workspace shows the server error text', async () => {
+    apiMock.mockImplementation(async () => {
+      throw new ApiError(409, 'workspace "tools" already exists')
+    })
+    const w = mount(Sidebar)
+    await w.find('button.add-ws').trigger('click')
+    await w.find('input#new-ws').setValue('tools')
+    await w.find('form.ws-form').trigger('submit')
+    await flushPromises()
+    expect(w.find('form.ws-form [role="alert"]').text()).toContain('workspace "tools" already exists')
+  })
+
+  it('shows the status key with all five statuses', () => {
+    const w = mount(Sidebar)
+    expect(w.find('.legend-title').text()).toBe('Status')
+    expect(w.findAll('.legend span').map((s) => s.text())).toEqual([
+      'busy',
+      'idle',
+      'starting',
+      'stopped',
+      'needs attention',
+    ])
+  })
+
+  it('says so when there are no workspaces', () => {
+    store.state.data = { ...snapshot(), workspaces: [] }
+    const w = mount(Sidebar)
+    expect(w.text()).toContain('No workspaces yet')
+    expect(w.find('button.add-ws').exists()).toBe(true)
+  })
+})
