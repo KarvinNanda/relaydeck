@@ -10,15 +10,11 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// ownerFile is written into each per-agent runtime dir with the daemon's pid.
+// ownerFile is written into each per-agent runtime dir (StartAgent adds it
+// to the files the manager writes) with the daemon's pid.
 // CleanStaleRuntime leaves a dir alone while that process is alive, so a
 // second relaydeck on another port does not lose its live agents' files.
 const ownerFile = "owner.pid"
-
-// writeOwner records this process as the owner of a runtime dir.
-func writeOwner(dir string) error {
-	return os.WriteFile(filepath.Join(dir, ownerFile), []byte(strconv.Itoa(os.Getpid())), 0o600)
-}
 
 // CleanStaleRuntime removes per-agent runtime dirs left behind by a daemon
 // that was killed. It only touches direct children of root whose name is an
