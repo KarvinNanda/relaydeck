@@ -1,0 +1,70 @@
+/* Design tokens from mockup A "Console" (task14-pick/variant-a.html).
+   Every component uses these; no raw colors in components. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #0F172A;
+  --surface: #1B2336;
+  --muted: #272F42;
+  --muted-hover: #313A50;
+  --term: #0B1222;
+  --term-user: #1E293B;
+  --border: #334155;
+  --border-strong: #475569;
+
+  /* text */
+  --text: #F8FAFC;
+  --text-muted: #94A3B8;
+  --on-accent: #0F172A; /* text on a green or amber fill */
+
+  /* status: always paired with an icon and a word */
+  --green: #22C55E; /* busy, connected, primary action */
+  --blue: #60A5FA; /* idle, focus ring */
+  --amber: #FBBF24; /* needs attention, held, awaiting approval */
+  --red: #F87171; /* stopped, disconnected, danger */
+  --starting: #CBD5E1; /* starting, connecting */
+  --coral: #FB923C; /* "Working" line in a terminal */
+  --violet: #C4B5FD; /* permission mode footer */
+
+  /* tints for chips, badges and pressed buttons */
+  --green-tint: rgba(34, 197, 94, 0.10);
+  --green-line: rgba(34, 197, 94, 0.50);
+  --blue-tint: rgba(96, 165, 250, 0.10);
+  --blue-line: rgba(96, 165, 250, 0.45);
+  --amber-tint: rgba(251, 191, 36, 0.08);
+  --amber-line: rgba(251, 191, 36, 0.45);
+  --red-tint: rgba(248, 113, 113, 0.10);
+  --red-line: rgba(248, 113, 113, 0.50);
+
+  /* type */
+  --font: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --fs-term: 12px;
+  --fs-base: 13px;
+  --fs-lg: 14px;
+  --lh: 1.4;
+  --lh-term: 17px;
+
+  /* spacing (4 and 2 px steps, compact console) */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 10px;
+  --s-6: 12px;
+  --s-8: 16px;
+  --gutter-mobile: 16px;
+
+  /* shape and size */
+  --r: 5px;
+  --r-sm: 4px;
+  --icon: 14px;
+  --control-h: 30px; /* desktop buttons */
+  --touch-h: 44px; /* phone buttons */
+  --row-h: 32px;
+
+  /* frame */
+  --top-h: 40px;
+  --side-w: 248px;
+  --drawer-h: 232px;
+}

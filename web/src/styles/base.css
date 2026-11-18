@@ -1,0 +1,89 @@
+/* Base and shared component classes from mockup A. Tasks 16 to 18 use
+   these classes so every region looks the same. */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: var(--fs-base)/var(--lh) var(--font);
+  font-variant-ligatures: contextual;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3 { margin: 0; font-size: inherit; }
+code { font: inherit; color: var(--text); }
+
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* icons (components/Icon.vue) */
+.i {
+  width: var(--icon); height: var(--icon); flex: none;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* status colors: never alone, always with an icon and a word */
+.c-busy { color: var(--green); }
+.c-idle { color: var(--blue); }
+.c-attn { color: var(--amber); }
+.c-stop { color: var(--red); }
+.c-start { color: var(--starting); }
+.c-muted { color: var(--text-muted); }
+
+/* buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: var(--s-3);
+  height: var(--control-h); padding: 0 var(--s-5);
+  border: 1px solid var(--border-strong); border-radius: var(--r);
+  background: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.btn:hover { border-color: var(--text-muted); }
+.btn[aria-pressed="true"] { border-color: var(--green); background: var(--green-tint); }
+.btn-primary { background: var(--green); border-color: var(--green); color: var(--on-accent); font-weight: 600; }
+.btn-danger { background: transparent; border-color: var(--red-line); color: var(--red); }
+
+/* icon button (panel header, drawer header) */
+.ib {
+  height: var(--control-h); min-width: var(--control-h); padding: 0 7px;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s-3);
+  border: 1px solid transparent; border-radius: var(--r); background: none; cursor: pointer; color: var(--text-muted);
+}
+.ib:disabled { opacity: .45; cursor: default; }
+.ib:hover:not(:disabled) { background: var(--muted); color: var(--text); }
+.ib[aria-expanded="true"] { background: var(--muted); border-color: var(--border-strong); color: var(--text); }
+
+/* small counter on a button */
+.count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--amber); color: var(--on-accent); font-weight: 700;
+  display: inline-grid; place-items: center;
+}
+
+/* status badge and info chip */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: var(--r-sm);
+  border: 1px solid currentColor; white-space: nowrap; font-weight: 500;
+}
+.badge.c-busy { background: var(--green-tint); border-color: var(--green-line); }
+.badge.c-idle { background: var(--blue-tint); border-color: var(--blue-line); }
+.badge.c-attn { background: var(--amber-tint); border-color: var(--amber-line); }
+.badge.c-stop { background: var(--red-tint); border-color: var(--red-line); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: var(--r-sm); white-space: nowrap;
+  border: 1px solid var(--blue-line); background: var(--blue-tint); color: var(--blue);
+}
+.note {
+  padding: var(--s-3) var(--s-4); border-radius: var(--r-sm);
+  border: 1px solid var(--amber-line); background: var(--amber-tint); color: var(--amber);
+}
+
+/* an empty region: one muted line, sized to its content */
+.empty { color: var(--text-muted); padding: var(--s-4) var(--s-5); }
+
+@media (max-width: 767px) {
+  .btn, .ib { height: var(--touch-h); }
+  .ib { min-width: var(--touch-h); }
+}
