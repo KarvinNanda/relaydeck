@@ -23,8 +23,8 @@ const (
 	// once; only a hung process with a full input buffer blocks.
 	defaultInjectTimeout = 2 * time.Second
 	// exitConfirmPolls and exitConfirmEvery bound the wait for "/exit" to
-	// show in the input box before Stop sends Enter (500 ms).
-	exitConfirmPolls = 20
+	// show in the input box before Stop sends Enter (2 s; usually a few ms).
+	exitConfirmPolls = 80
 	exitConfirmEvery = 25 * time.Millisecond
 )
 
