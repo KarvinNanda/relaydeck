@@ -151,6 +151,15 @@ func (g *rig) with(a Agents) *Deliverer {
 	return d
 }
 
+// confirm plays the hook UserPromptSubmit (busy first, like hooks.go), lets
+// the loop see it, then plays Stop (idle).
+func (g *rig) confirm() {
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
+	g.d.PromptSubmitted("ws", "fe")
+	g.tick()
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusIdle })
+}
+
 func TestIdleTargetGetsOneNudge(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "secret body")
@@ -297,23 +306,13 @@ func TestPromptSubmittedKeepsNudged(t *testing.T) {
 	g := newRig()
 	m := g.send(t, "x")
 	g.tick()
+	// The hook handler sets busy before PromptSubmitted, as hooks.go does.
+	g.fa.set(func(f *fakeAgents) { f.status = agent.StatusBusy })
 	g.d.PromptSubmitted("ws", "fe")
 	g.c.add(10 * time.Second)
 	g.tick()
 	if g.state(m.ID) != notify.StateNudged || g.fa.nInjected() != 2 {
 		t.Fatalf("state %s injected %d", g.state(m.ID), g.fa.nInjected())
-	}
-}
-
-func TestNudgedNotRenudged(t *testing.T) {
-	g := newRig()
-	m := g.send(t, "x")
-	g.tick()
-	g.d.PromptSubmitted("ws", "fe")
-	g.tick()
-	g.tick()
-	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
-		t.Fatalf("injected %d", g.fa.nInjected())
 	}
 }
 
@@ -696,5 +695,89 @@ func TestPromptRightAfterEnterConfirms(t *testing.T) {
 	d.Tick(context.Background())
 	if g.state(m.ID) != notify.StateNudged {
 		t.Fatalf("confirmed nudge treated as swallowed: state %s", g.state(m.ID))
+	}
+}
+
+func TestConfirmedNudgeRenudgedOnce(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.confirm()
+	g.tick()
+	if g.fa.nInjected() != 4 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("want one re-nudge: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+	g.confirm()
+	g.tick()
+	g.tick()
+	if g.fa.nInjected() != 4 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("want no second re-nudge: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+	g.r.Read("ws", "fe")
+	g.tick()
+	if n := len(g.d.renudged[Target{"ws", "fe"}]); n != 0 {
+		t.Fatalf("renudged not pruned: %d", n)
+	}
+}
+
+func TestRenudgeWaitsForConfirmation(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.c.add(time.Second)
+	g.tick() // nudge not confirmed yet: no re-nudge
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestRenudgeCountsOldAndNew(t *testing.T) {
+	g := newRig()
+	old := g.send(t, "x")
+	g.tick()
+	g.confirm()
+	g.tick() // re-nudge used
+	g.confirm()
+	m := g.send(t, "y")
+	g.tick()
+	if g.fa.nInjected() != 6 {
+		t.Fatalf("injected %d", g.fa.nInjected())
+	}
+	want := "\x1b[200~[relaydeck] 2 new messages. Call read_messages.\x1b[201~"
+	if got := string(g.fa.injected[4]); got != want {
+		t.Fatalf("nudge %q, want %q", got, want)
+	}
+	if g.state(old.ID) != notify.StateNudged || g.state(m.ID) != notify.StateNudged {
+		t.Fatal("both must be nudged")
+	}
+}
+
+func TestDeliverNowIncludesNudged(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.confirm()
+	g.tick() // re-nudge used
+	g.confirm()
+	g.tick()
+	if g.fa.nInjected() != 4 {
+		t.Fatalf("injected %d", g.fa.nInjected())
+	}
+	g.d.DeliverNow("ws", "fe")
+	g.tick()
+	if g.fa.nInjected() != 6 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+}
+
+func TestNudgedStaysNudgedBehindDraft(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick()
+	g.confirm()
+	g.fa.set(func(f *fakeAgents) { f.scr = screen.State{InputVisible: true, InputEmpty: false} })
+	g.tick()
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("injected %d state %s", g.fa.nInjected(), g.state(m.ID))
 	}
 }
