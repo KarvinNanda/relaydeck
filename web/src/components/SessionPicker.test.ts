@@ -153,7 +153,7 @@ describe('SessionPicker', () => {
     await flushPromises()
     // the agent is not started for a panel that cannot be shown
     expect(apiMock).not.toHaveBeenCalledWith('POST', expect.anything(), expect.anything())
-    expect(w.find('[role="alert"]').text()).toContain('At most 4 terminals can be open. Close one first.')
+    expect(w.find('[role="alert"]').text()).toContain('At most 4 panels can be open. Close one first.')
     expect(w.emitted('close')).toBeFalsy()
     w.unmount()
   })

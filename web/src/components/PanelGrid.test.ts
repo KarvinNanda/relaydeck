@@ -1,5 +1,5 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 import { MAX_PANELS, panelStore, tooManyPanels } from '../stores/panels'
 import PanelGrid from './PanelGrid.vue'
@@ -146,5 +146,37 @@ describe('PanelGrid', () => {
     await w!.find('.tp .restore').trigger('click')
     expect(cells().map((c) => c.folder)).toEqual(['be', 'fe-admin', 'fe-customer'])
     expect(w!.findAll('.tp').every((t) => t.attributes('data-max') === 'false')).toBe(true)
+  })
+
+  it('binds the rendered grid areas from the exported templates', async () => {
+    const { templateAreas } = await import('./PanelGrid.vue')
+    open('be', 'fe-admin', 'fe-customer')
+    await mountGrid()
+    const grid = () => w!.find('.grid').element as HTMLElement
+    expect(grid().style.getPropertyValue('--areas')).toBe(templateAreas[3])
+    layoutButtons()[1].click()
+    await nextTick()
+    expect(grid().style.getPropertyValue('--areas')).toBe(templateAreas[2])
+  })
+
+  describe('on a phone', () => {
+    beforeEach(() => {
+      vi.stubGlobal('matchMedia', (q: string) => ({
+        matches: q.includes('max-width: 767px'),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }))
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('stacks every open panel whatever layout is picked, with no maximize', async () => {
+      open('be', 'fe-admin', 'fe-customer', 'worker')
+      await mountGrid()
+      layoutButtons()[0].click()
+      await nextTick()
+      expect(cells().map((c) => c.folder)).toEqual(['be', 'fe-admin', 'fe-customer', 'worker'])
+      expect(w!.findAll('.tp').every((t) => t.attributes('data-max') === 'false')).toBe(true)
+      expect(slot.querySelector('.count-only')?.textContent).toBe('4 panels open')
+    })
   })
 })

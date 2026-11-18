@@ -1,3 +1,17 @@
+<script lang="ts">
+// The smallest terminal the server gives a PTY: internal/server/ws.go clamps
+// every resize to minCols and minRows. Keep these two in step with it. The
+// panel still sends the size it really fits, then sizes xterm to at least
+// this, so xterm draws the same grid the PTY has.
+export const MIN_COLS = 60
+export const MIN_ROWS = 10
+
+// The text of daemon.ErrDraft (internal/daemon/daemon.go): the 409 that
+// POST .../stop answers when the input box holds an unsent draft. Other 409s
+// (for example "not running") must not offer Stop anyway.
+export const DRAFT_ERROR = 'agent has an unsent draft; clear it or use force'
+</script>
+
 <script setup lang="ts">
 // One terminal panel of mockup A: a two-row header (folder, status, waiting
 // messages, Sessions / Stop / Maximize / Close; then account, default login
@@ -6,8 +20,8 @@
 // Socket protocol (internal/server/ws.go): the server sends the scrollback
 // replay and then live output as binary frames; the panel sends text JSON
 // {"type":"input","data":...} and {"type":"resize","cols":...,"rows":...}.
-// The server clamps sizes (at least 60 columns), so the panel always sends
-// the size it really fits.
+// The server clamps sizes (see MIN_COLS and MIN_ROWS), so the panel always
+// sends the size it really fits.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
@@ -85,10 +99,28 @@ const msgs = createMessages({
   api,
   store: { state: store.state, activeWorkspace: () => ({ name: props.ws, folders: [] }), onEvent: store.onEvent },
 })
+// The chip counts held_draft messages only. The sidebar's pending count also
+// includes nudged messages, so the two numbers can differ.
 const heldByDraft = computed(
   () => msgs.newestFirst.value.filter((m) => m.to === props.folder && m.state === 'held_draft').length,
 )
+const loadFailed = computed(() => msgs.error.value !== '')
 const showWaiting = computed(() => status.value === 'idle' && (f.value?.pending ?? 0) > 0 && heldByDraft.value > 0)
+
+// A narrow panel moves the waiting chip and Deliver now from the end of row 1
+// to the end of row 2, so the header never gets a third row. 0 means "not
+// laid out yet" and keeps the chip on row 1.
+// Under TIGHT (a phone, or a 2x2 panel in a small window) the chip also
+// drops its icons and the word "messages", so row 2 still fits.
+const NARROW = 760
+const TIGHT = 460
+const narrow = ref(false)
+const tight = ref(false)
+function measure(): void {
+  const w = pane.value?.getBoundingClientRect().width ?? 0
+  narrow.value = w > 0 && w <= NARROW
+  tight.value = w > 0 && w <= TIGHT
+}
 
 // ---- header actions ----
 const alert = ref('')
@@ -113,7 +145,10 @@ async function act(fn: () => Promise<unknown>): Promise<ApiError | null> {
 
 async function stop(force = false): Promise<void> {
   const err = await act(() => api('POST', `${base.value}/stop${force ? '?force=true' : ''}`))
-  if (err?.status === 409 && !force) canForce.value = true
+  if (err?.status === 409 && err.message === DRAFT_ERROR && !force) {
+    alert.value = 'This agent has an unsent draft. Stop anyway discards it and ends the current turn.'
+    canForce.value = true
+  }
 }
 
 function start(body: { session_id: string } | { new: true }): void {
@@ -169,7 +204,11 @@ let attempt = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let fitTimer: ReturnType<typeof setTimeout> | undefined
 let ro: ResizeObserver | null = null
+let paneRo: ResizeObserver | null = null
 let alive = true
+let replaying = true // until xterm has written the first frame of this socket
+let stableTimer: ReturnType<typeof setTimeout> | undefined
+let gotReplay = false // the first frame of this socket has arrived
 
 function token(name: string): string | undefined {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined
@@ -194,8 +233,20 @@ async function createTerm(el: HTMLElement): Promise<void> {
   term = new Terminal({
     fontFamily: token('--font'),
     fontSize: parseFloat(token('--fs-term') ?? '') || 12,
-    lineHeight: 1, // more rows; the server needs at least 10
+    lineHeight: 1, // more rows; the server needs at least MIN_ROWS
     cursorBlink: true,
+    // OSC 8 hyperlinks from the agent: http and https only, never an opener.
+    linkHandler: {
+      activate(_ev: MouseEvent, text: string) {
+        let u: URL
+        try {
+          u = new URL(text)
+        } catch {
+          return
+        }
+        if (u.protocol === 'http:' || u.protocol === 'https:') window.open(u.href, '_blank', 'noopener,noreferrer')
+      },
+    },
     scrollback: 5000,
     theme: {
       background: token('--term'),
@@ -208,7 +259,12 @@ async function createTerm(el: HTMLElement): Promise<void> {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(el)
-  term.onData((data) => send({ type: 'input', data }))
+  term.onData((data) => {
+    // While the replay is written, xterm answers the queries inside the old
+    // output (DA, DSR, color reports). Those answers are not typing.
+    if (replaying) return
+    send({ type: 'input', data })
+  })
 }
 
 function send(frame: object): void {
@@ -248,20 +304,42 @@ function scheduleRetry(): void {
   retryTimer = setTimeout(() => void connect(), delay)
 }
 
+// The backoff goes back to its first step only when a connection proved
+// stable: a frame after the replay, or the socket open for 3 s. The replay
+// frame alone proves nothing, because a socket that closes at once still
+// sends it.
+const STABLE_MS = 3000
+
 function attach(s: WebSocket): void {
   sock = s
   s.binaryType = 'arraybuffer'
   // Every connect starts with a full replay, so start from a clean screen.
   term?.reset()
+  replaying = true
+  gotReplay = false
+  clearTimeout(stableTimer)
+  stableTimer = setTimeout(() => {
+    if (sock === s) attempt = 0
+  }, STABLE_MS)
   s.onerror = null
   s.onmessage = (ev: MessageEvent) => {
     if (sock !== s || !term) return
+    const data = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data as ArrayBuffer)
+    if (!gotReplay) {
+      // The first frame is the replay. Input stays off until xterm has
+      // parsed it, which is when its automatic replies are over.
+      gotReplay = true
+      if (data.length === 0) replaying = false
+      else term.write(data, () => (replaying = false))
+      return
+    }
     attempt = 0
-    term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data as ArrayBuffer))
+    term.write(data)
   }
   s.onclose = () => {
     if (sock !== s) return
     sock = null
+    clearTimeout(stableTimer)
     scheduleRetry()
   }
   fitNow()
@@ -270,6 +348,7 @@ function attach(s: WebSocket): void {
 function disconnect(): void {
   seq++
   clearTimeout(retryTimer)
+  clearTimeout(stableTimer)
   retryTimer = undefined
   attempt = 0
   const s = sock
@@ -285,7 +364,13 @@ function fitNow(): void {
   const d = fit.proposeDimensions()
   if (!d || !(d.cols > 0) || !(d.rows > 0)) return // hidden or not laid out yet
   fit.fit()
-  send({ type: 'resize', cols: term.cols, rows: term.rows })
+  // The server clamps to at least MIN_COLS x MIN_ROWS, so xterm must draw
+  // that grid or the TUI would be laid out for a size xterm does not show.
+  // The frame still carries the real size; the extra scrolls inside .term.
+  if (term.cols < MIN_COLS || term.rows < MIN_ROWS) {
+    term.resize(Math.max(term.cols, MIN_COLS), Math.max(term.rows, MIN_ROWS))
+  }
+  send({ type: 'resize', cols: d.cols, rows: d.rows })
 }
 
 function fitSoon(): void {
@@ -301,6 +386,11 @@ watch(running, (r) => {
 
 onMounted(() => {
   msgs.start()
+  measure()
+  if (typeof ResizeObserver !== 'undefined' && pane.value) {
+    paneRo = new ResizeObserver(() => measure())
+    paneRo.observe(pane.value)
+  }
   document.addEventListener('pointerdown', onOutside)
   if (typeof ResizeObserver !== 'undefined' && host.value) {
     ro = new ResizeObserver(() => fitSoon())
@@ -318,6 +408,7 @@ onBeforeUnmount(() => {
   disconnect()
   clearTimeout(fitTimer)
   ro?.disconnect()
+  paneRo?.disconnect()
   term?.dispose()
   term = null
   fit = null
@@ -328,7 +419,7 @@ onBeforeUnmount(() => {
   <div
     ref="pane"
     class="pane"
-    :class="{ focus: focused, attn: status === 'attention', 'pane-stopped': !running }"
+    :class="{ focus: focused, attn: status === 'attention', 'pane-stopped': !running, tight }"
     @pointerdown="focusMe"
     @focusin="focusMe"
   >
@@ -336,11 +427,11 @@ onBeforeUnmount(() => {
       <div class="ph-1">
         <span class="ph-name">{{ folder }}</span>
         <StatusBadge :status="status" />
-        <span v-if="showWaiting" class="waiting">
+        <span v-if="showWaiting && !narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
-            <Icon name="msg" />{{ plural(heldByDraft, 'message', 'messages') }} waiting
+            <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
           </span>
-          <button class="btn deliver" type="button" :disabled="acting" @click="deliverNow">Deliver now</button>
+          <button class="btn act" type="button" :disabled="acting" @click="deliverNow"><Icon name="right" />Deliver now</button>
         </span>
         <div class="ph-btns">
           <button
@@ -373,11 +464,11 @@ onBeforeUnmount(() => {
             title="Restore layout"
             @click="emit('restore')"
           >
-            <Icon name="max" />
+            <Icon name="restore" />
           </button>
           <button
             v-else
-            class="ib"
+            class="ib max-btn"
             type="button"
             aria-label="Maximize"
             :title="canMaximize ? 'Maximize' : 'Only one panel is open'"
@@ -398,11 +489,17 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="ph-2">
-        <span v-if="!windows"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
+        <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
         <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
           <Icon name="attn" />on default login
         </span>
         <span v-if="sessionText" class="sess-name"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+        <span v-if="showWaiting && narrow" class="waiting">
+          <span class="chip" title="Held because you have an unsent draft in this panel">
+            <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
+          </span>
+          <button class="btn act" type="button" :disabled="acting" @click="deliverNow"><Icon name="right" />Deliver now</button>
+        </span>
       </div>
     </div>
 
@@ -413,6 +510,10 @@ onBeforeUnmount(() => {
       <button class="ib" type="button" aria-label="Dismiss" title="Dismiss" @click="alert = ''; canForce = false">
         <Icon name="x" />
       </button>
+    </div>
+
+    <div v-if="loadFailed" class="p-note" role="status">
+      <Icon name="attn" />Held messages could not be loaded, so the waiting count may be missing.
     </div>
 
     <div class="body">
@@ -447,7 +548,6 @@ onBeforeUnmount(() => {
   position: relative; flex: 1;
   display: flex; flex-direction: column; min-height: 0; min-width: 0;
   border: 1px solid var(--border); border-radius: var(--r); background: var(--surface);
-  container: pane / inline-size;
 }
 .pane.focus { border-color: var(--border-strong); }
 .pane.attn { border-color: var(--amber-line); }
@@ -456,20 +556,32 @@ onBeforeUnmount(() => {
 .ph { border-bottom: 1px solid var(--border); padding: var(--s-1) var(--s-2) 3px var(--s-5); }
 .ph-1 { display: flex; align-items: center; gap: var(--s-4); min-height: var(--row-h); flex-wrap: wrap; }
 .ph-name { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
-.waiting { display: inline-flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
-.deliver { height: 24px; padding: 0 var(--s-4); }
+.waiting { display: inline-flex; align-items: center; gap: var(--s-3); flex: none; }
 .ph-btns { margin-left: auto; display: flex; gap: var(--s-1); }
-.ph-2 { display: flex; flex-wrap: wrap; gap: var(--s-1) 14px; color: var(--text-muted); padding-right: var(--s-3); min-width: 0; }
-.ph-2 > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+/* Row 2 never wraps: the header is exactly two rows. Long text is cut with
+   an ellipsis (the session title first), and the waiting chip, which sits at
+   the end of row 2 in a narrow panel, keeps its size. */
+.ph-2 {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 14px; color: var(--text-muted);
+  padding-right: var(--s-3); min-width: 0;
+}
+.ph-2 > span:not(.waiting) {
+  display: block; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ph-2 > .sess-name:not(.waiting) { flex-shrink: 3; }
+.ph-2 > .acct:not(.waiting), .ph-2 > .warn-inline:not(.waiting) { flex-shrink: 0; }
+.ph-2 > span:not(.waiting) .i { vertical-align: -2px; margin-right: 5px; }
+.ph-2 .waiting { margin-left: auto; }
 .ph-2 b { color: var(--text); font-weight: 500; }
 .warn-inline { color: var(--amber); }
-.sess-name .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A narrow panel (side by side, 2x2) keeps its buttons on the first line;
-   the waiting chip and Deliver now wrap under the name and status. */
-@container pane (max-width: 760px) {
-  .ph-1 .ph-btns { order: 1; }
-  .ph-1 .waiting { order: 2; }
+
+/* Row 2 is tight in a very narrow panel: the chip says "3 waiting" (the word
+   "messages" stays for screen readers) and the row-2 icons go. */
+.tight .ph-2 { gap: var(--s-4); }
+.tight .waiting .opt {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
+.tight .ph-2 .waiting .i { display: none; }
 
 /* inline error under the header */
 .p-alert {
@@ -479,6 +591,11 @@ onBeforeUnmount(() => {
 }
 .p-alert .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .p-alert .ib { color: var(--red); }
+.p-note {
+  display: flex; align-items: center; gap: var(--s-3);
+  margin: var(--s-2) var(--s-3) 0; padding: var(--s-1) var(--s-4);
+  border: 1px solid var(--amber-line); background: var(--amber-tint); color: var(--amber); border-radius: var(--r-sm);
+}
 .btn:disabled { opacity: .6; cursor: default; }
 
 /* terminal body: padding sits here, never on the xterm host, so the fit
@@ -488,7 +605,9 @@ onBeforeUnmount(() => {
   background: var(--term); border-radius: 0 0 var(--r) var(--r);
   padding: var(--s-3) var(--s-2) var(--s-2) var(--s-5);
 }
-.term { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+/* When the panel is smaller than the PTY minimum, xterm draws the minimum
+   and the overflow scrolls here, never the page. */
+.term { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
 
 .stopped {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-3);
@@ -513,9 +632,10 @@ onBeforeUnmount(() => {
   .ph-1 { min-height: var(--touch-h); row-gap: var(--s-1); padding-bottom: var(--s-2); }
   .ph-1 .ph-name { order: 0; flex: 1 0 calc(100% - 190px); }
   .ph-1 .ph-btns { order: 1; }
-  .ph-1 :deep(.badge), .ph-1 .waiting { order: 2; }
+  .ph-1 :deep(.badge) { order: 2; }
   .ib .lab { display: none; }
-  .deliver { height: var(--touch-h); }
+  /* panels are stacked and all shown, so there is nothing to maximize */
+  .max-btn { display: none; }
   .stopped { padding: 20px var(--s-5); }
   .pop-wrap { left: var(--s-3); }
   .pop-wrap::before { display: none; }

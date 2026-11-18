@@ -20,7 +20,8 @@ function plural(n: number): string {
   return `${n} ${n === 1 ? 'panel' : 'panels'}`
 }
 
-// Phones stack every shown panel, so they only get the count.
+// Phones show every open panel and hide the buttons, so they always show the
+// count. Desktop shows it too, next to the buttons, while some panels are hidden.
 const countText = computed(() =>
   props.layout < props.count ? `${plural(props.count)} open, ${props.layout} shown` : `${plural(props.count)} open`,
 )
@@ -47,7 +48,7 @@ const countText = computed(() =>
         </svg>
       </button>
     </div>
-    <span class="count-only">{{ countText }}</span>
+    <span class="count-only" :class="{ partial: layout < count }">{{ countText }}</span>
   </Teleport>
 </template>
 
@@ -63,7 +64,8 @@ const countText = computed(() =>
 .lay:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text); }
 .lay[aria-pressed="true"] { border-color: var(--green); color: var(--green); background: var(--green-tint); }
 .lay:disabled { opacity: .45; cursor: default; }
-.count-only { display: none; color: var(--text-muted); }
+.count-only { display: none; color: var(--text-muted); margin-left: var(--s-3); }
+.count-only.partial { display: inline; }
 
 /* phone: panels stack in one column, so only the count is shown */
 @media (max-width: 767px) {

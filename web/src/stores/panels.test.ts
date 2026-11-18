@@ -34,8 +34,8 @@ describe('panels store', () => {
     const p = createPanels()
     for (let i = 0; i < MAX_PANELS; i++) expect(p.openPanel('w', `f${i}`).ok).toBe(true)
     expect(MAX_PANELS).toBe(4)
-    expect(p.openPanel('w', 'f4')).toEqual({ ok: false, reason: 'At most 4 terminals can be open. Close one first.' })
-    expect(tooManyPanels).toBe('At most 4 terminals can be open. Close one first.')
+    expect(p.openPanel('w', 'f4')).toEqual({ ok: false, reason: 'At most 4 panels can be open. Close one first.' })
+    expect(tooManyPanels).toBe('At most 4 panels can be open. Close one first.')
     expect(p.panels).toHaveLength(4)
     expect(p.focused).toEqual({ ws: 'w', folder: 'f3' })
     // an open one is still focused when the grid is full

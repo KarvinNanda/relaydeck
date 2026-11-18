@@ -67,4 +67,14 @@ describe('LayoutSwitcher', () => {
     expect(slot.querySelector('.count-only')?.textContent).toBe('1 panel open')
     w.unmount()
   })
+
+  it('shows the count on desktop too, but only while some panels are hidden', async () => {
+    const w = await mountSwitcher(3, 3)
+    expect(slot.querySelector('.count-only')?.classList.contains('partial')).toBe(false)
+    await w.setProps({ layout: 2 })
+    const el = slot.querySelector('.count-only')!
+    expect(el.classList.contains('partial')).toBe(true)
+    expect(el.textContent).toBe('3 panels open, 2 shown')
+    w.unmount()
+  })
 })

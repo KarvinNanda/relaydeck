@@ -31,7 +31,7 @@ export function same(a: PanelKey, b: PanelKey): boolean {
 // pick a smaller one (or maximize a panel) to see fewer panels. Hidden
 // panels are unmounted: their agents keep running, and showing them again
 // reconnects with a fresh replay.
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { panelStore } from '../stores/panels'
 import TerminalPanel from './TerminalPanel.vue'
 import LayoutSwitcher from './LayoutSwitcher.vue'
@@ -39,8 +39,19 @@ import LayoutSwitcher from './LayoutSwitcher.vue'
 // null: automatic, one cell per open panel.
 const chosen = ref<number | null>(null)
 
+// Phones stack every open panel in one column, whatever layout is picked
+// (ruling): there is nothing to hide, so the layout is "all of them".
+const phone = ref(false)
+const mq = typeof window !== 'undefined' ? (window.matchMedia?.('(max-width: 767px)') ?? null) : null
+if (mq) {
+  phone.value = mq.matches
+  const onChange = (e: MediaQueryListEvent) => (phone.value = e.matches)
+  mq.addEventListener?.('change', onChange)
+  onBeforeUnmount(() => mq.removeEventListener?.('change', onChange))
+}
+
 const count = computed(() => panelStore.panels.length)
-const layout = computed(() => Math.min(chosen.value ?? count.value, count.value))
+const layout = computed(() => (phone.value ? count.value : Math.min(chosen.value ?? count.value, count.value)))
 const shown = computed(() => visiblePanels(panelStore.panels, panelStore.focused, layout.value))
 
 // A panel opened or closed: go back to showing all of them.
@@ -66,14 +77,14 @@ function maximize(p: PanelKey): void {
   </div>
   <template v-else>
     <LayoutSwitcher :count="count" :layout="layout" @pick="chosen = $event" />
-    <div class="grid" :class="`n${layout}`">
+    <div class="grid" :class="`n${layout}`" :style="{ '--areas': templateAreas[layout] }">
       <div v-for="(p, i) in shown" :key="`${p.ws}\n${p.folder}`" class="cell" :data-area="areas[i]">
         <TerminalPanel
           :ws="p.ws"
           :folder="p.folder"
           :focused="isFocused(p)"
           :maximized="layout === 1 && count > 1"
-          :can-maximize="count > 1"
+          :can-maximize="count > 1 && !phone"
           @maximize="maximize(p)"
           @restore="chosen = null"
         />
@@ -90,16 +101,16 @@ function maximize(p: PanelKey): void {
 .panels-empty p { margin: 0; }
 .title { font-weight: 700; font-size: var(--fs-lg); }
 
-/* The template strings repeat templateAreas above (the test checks those). */
+/* The areas come from templateAreas through --areas (inline style on .grid),
+   so the test covers what is rendered. */
 .grid {
   height: 100%; display: grid; gap: var(--s-3); padding: var(--s-3);
+  grid-template-areas: var(--areas);
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
-.grid.n1 { grid-template-areas: "a"; }
-.grid.n2 { grid-template-areas: "a b"; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.grid.n3 { grid-template-areas: "a b" "a c"; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
-.grid.n4 { grid-template-areas: "a b" "c d"; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.grid.n2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid.n3, .grid.n4 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
 .cell { min-width: 0; min-height: 0; display: flex; }
 .cell[data-area="a"] { grid-area: a; }
 .cell[data-area="b"] { grid-area: b; }
