@@ -689,3 +689,27 @@ func TestAttachmentRoute(t *testing.T) {
 		t.Fatalf("attachments dir holds %d files, want 1", len(es))
 	}
 }
+
+// The agent's runtime dir is gone (it exited between the lookup and the
+// save): the route answers 409 and does not create the dir again (#73).
+func TestAttachmentRouteRuntimeDirGone(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	dir, err := r.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := filepath.Dir(dir)
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		t.Fatal(err)
+	}
+	png := "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", 100)
+	code, body := r.raw(t, "POST", "/api/agents/w/a/attachments", png)
+	if code != 409 || errText(t, body) != daemon.ErrNotRunning.Error() {
+		t.Fatalf("runtime dir gone = %d %s, want 409 %q", code, body, daemon.ErrNotRunning.Error())
+	}
+	if _, err := os.Stat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir was created again: %v", err)
+	}
+}
