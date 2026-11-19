@@ -256,9 +256,11 @@ describe('TerminalPanel header', () => {
     const h = w!.find('.ph')
     expect(h.find('.ph-name').text()).toBe('fe-admin')
     expect(h.find('.badge').text()).toBe('busy')
-    expect(h.find('.ph-2').text()).toContain('work-2')
-    expect(h.find('.ph-2').text()).toContain('Fix login redirect loop')
-    expect(h.find('.ph-2').text()).not.toContain('on default login')
+    // one row: account and session title sit in row 1, after the status
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('work-2')
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('Fix login redirect loop')
+    expect(h.find('.ph-1 .ph-meta').text()).not.toContain('on default login')
+    expect(h.find('.ph-2').exists()).toBe(false)
   })
 
   it('shows no account, the default login warning, and the short id when there is no title', async () => {
@@ -269,7 +271,7 @@ describe('TerminalPanel header', () => {
     })
     setFolder({ account: undefined, on_default_login: true })
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1 .ph-meta').text()
     expect(row).toContain('no account')
     expect(row).toContain('on default login')
     expect(row).toContain(sid.slice(0, 8))
@@ -278,7 +280,7 @@ describe('TerminalPanel header', () => {
   it('hides the account and the warning on windows', async () => {
     setFolder({ account: undefined, on_default_login: true }, 'windows')
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1').text()
     expect(row).not.toContain('no account')
     expect(row).not.toContain('on default login')
   })
@@ -723,8 +725,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     await mountPanel()
     expect(w!.find('.ph-1 .waiting').exists()).toBe(true)
-    expect(w!.find('.ph-2 .waiting').exists()).toBe(false)
-    expect(w!.find('.ph').element.children).toHaveLength(2)
+    expect(w!.find('.ph-2').exists()).toBe(false)
+    expect(w!.find('.ph').element.children).toHaveLength(1)
   })
 
   it('moves the waiting chip to the end of row 2 when the panel is narrow', async () => {
@@ -748,7 +750,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     for (const cb of roCallbacks) cb()
     await flushPromises()
-    expect(w!.find('.ph-2').classes()).not.toContain('wrap')
+    // wide again: the chip goes back to row 1 and row 2 is gone
+    expect(w!.find('.ph-2').exists()).toBe(false)
   })
 
   it('goes compact in a very narrow panel, so row 2 does not overflow', async () => {

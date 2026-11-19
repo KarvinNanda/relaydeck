@@ -655,6 +655,15 @@ onBeforeUnmount(() => {
       <div class="ph-1">
         <span class="ph-name">{{ folder }}</span>
         <StatusBadge :status="status" />
+        <!-- One header row: these give way first (cut with an ellipsis), so
+             the name, the status and the buttons always show. -->
+        <span class="ph-meta">
+          <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
+          <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
+            <Icon name="attn" />on default login
+          </span>
+          <span v-if="sessionText" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+        </span>
         <span v-if="showWaiting && !narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
@@ -725,12 +734,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <div class="ph-2" :class="{ wrap: showWaiting && narrow }">
-        <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
-        <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
-          <Icon name="attn" />on default login
-        </span>
-        <span v-if="sessionText" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+      <div v-if="showWaiting && narrow" class="ph-2 wrap">
         <span v-if="showWaiting && narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
@@ -821,26 +825,27 @@ onBeforeUnmount(() => {
 .ph-name { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
 .waiting { display: inline-flex; align-items: center; gap: var(--s-3); flex: none; }
 .ph-btns { margin-left: auto; display: flex; gap: var(--s-1); }
-/* Row 2 never wraps: the header is exactly two rows. Long text is cut with
-   an ellipsis (the session title first), and the waiting chip, which sits at
-   the end of row 2 in a narrow panel, keeps its size. */
+/* account, login warning and session title: they take the free space of row
+   1 and are cut with an ellipsis first (the session title before the
+   account), so the header stays one row. */
+.ph-meta {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 14px;
+  color: var(--text-muted); overflow: hidden;
+}
+.ph-meta > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.ph-meta > .sess-name { flex-shrink: 3; }
+/* an id is never cut: only a title can lose its end to an ellipsis */
+.ph-meta > .sess-name.is-id { flex-shrink: 0; }
+.ph-meta > .acct, .ph-meta > .warn-inline { flex-shrink: 1; }
+.ph-meta > span .i { vertical-align: -2px; margin-right: 5px; }
+.ph-meta b { color: var(--text); font-weight: 500; }
+/* Row 2 exists only in a narrow panel with the waiting chip: the chip and
+   its button take their own line at the right instead of being pushed out. */
 .ph-2 {
-  display: flex; align-items: center; flex-wrap: nowrap; gap: 14px; color: var(--text-muted);
-  padding-right: var(--s-3); min-width: 0;
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+  row-gap: var(--s-2); padding: 0 var(--s-3) var(--s-3) 0;
 }
-.ph-2 > span:not(.waiting) {
-  display: block; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ph-2 > .sess-name:not(.waiting) { flex-shrink: 3; }
-/* An id is never cut: only a title can lose its end to an ellipsis. */
-.ph-2 > .sess-name.is-id:not(.waiting) { flex-shrink: 0; }
-/* With the waiting chip in this row and not enough room, the chip and its
-   button take their own line at the right instead of being pushed out. */
-.ph-2.wrap { flex-wrap: wrap; row-gap: var(--s-2); padding-bottom: var(--s-3); } /* header padding 3px + 6px = 9px under the wrapped row */
-.ph-2 > .acct:not(.waiting), .ph-2 > .warn-inline:not(.waiting) { flex-shrink: 0; }
-.ph-2 > span:not(.waiting) .i { vertical-align: -2px; margin-right: 5px; }
 .ph-2 .waiting { margin-left: auto; }
-.ph-2 b { color: var(--text); font-weight: 500; }
 .warn-inline { color: var(--amber); }
 
 /* Deliver now is the drawer's button (same text color), trimmed to the chip's
@@ -856,7 +861,7 @@ onBeforeUnmount(() => {
    for screen readers) and drops its icon. If chip and button still do not
    fit next to the account, they take their own line at the right. */
 .tight .ph { padding-bottom: var(--s-4); }
-.tight .ph-2 { flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
+.tight .ph-2 { gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
 .tight .waiting { gap: var(--s-4); }
 .tight .waiting .opt {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
@@ -957,6 +962,8 @@ onBeforeUnmount(() => {
   .ph-1 { min-height: var(--touch-h); row-gap: var(--s-1); padding-bottom: var(--s-2); }
   .ph-1 .ph-name { order: 0; flex: 1 0 calc(100% - 190px); }
   .ph-1 .ph-btns { order: 1; }
+  /* a phone has room below the name row, not beside it */
+  .ph-1 .ph-meta { order: 3; flex-basis: 100%; }
   .ph-1 :deep(.badge) { order: 2; }
   .ib .lab { display: none; }
   /* panels are stacked and all shown, so there is nothing to maximize */
