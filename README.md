@@ -6,22 +6,38 @@ relaydeck is a local web app that runs several Claude Code agents at once, one p
 
 Example: you tell the backend agent "when you are running, tell fe-admin and fe-customer". The agent calls a tool, and relaydeck delivers the message to the agents of those folders, starting them if needed.
 
-Status: early development. The daemon, the agent messaging and the web UI (sidebar, terminal panels, Messages drawer) are built. The core flow (two real agents messaging each other, auto-start, nudge, read, hop limit, resume continuity) was verified end to end on macOS with Claude Code 2.1.327. Windows and per-folder cswap accounts are not verified.
+relaydeck runs on macOS, Linux and Windows. Clone it, build it once, and run `relaydeck serve`.
+
+Status: the daemon, agent messaging and the web UI are built. Verified end to end on macOS: agents messaging each other, auto-start, nudge and resume with Claude Code 2.1.327; image drop and copy and paste keys with 2.1.328. Linux and Windows builds and tests run in CI on every change; a full run on a real Windows machine is tracked in [#34](https://github.com/KarvinNanda/relaydeck/issues/34).
 
 ## Requirements
 
-- relaydeck requires Claude Code installed and logged in on this machine. It starts your own `claude` binary. It never implements login and never reads, stores or forwards credentials or tokens. No API key is bundled.
+- Claude Code, installed and logged in on this machine (`claude` starts in a terminal). relaydeck starts your own `claude` binary. It never implements login and never reads, stores or forwards credentials or tokens. No API key is bundled.
 - Go 1.27 or newer and Node 24, to build from source.
-- macOS is the main development platform.
-- Windows (native) is **experimental**. It is designed in from the start but not tested yet. Claude Code inside WSL is not supported.
-- Per-folder accounts through cswap are **untested** so far. They are disabled on Windows in v1.
+- A current browser. Tested with Chromium-based browsers (Chrome, Edge).
+- On Windows, use the native Windows Claude Code. A Claude Code installed only inside WSL is not used.
+- Optional: per-folder accounts through cswap (macOS and Linux only).
 
 ## Build from source
 
+macOS and Linux:
+
 ```sh
+git clone https://github.com/KarvinNanda/relaydeck.git
+cd relaydeck
 cd web && npm ci && npm run build && cd ..
 go build -o relaydeck ./cmd/relaydeck
 ./relaydeck version
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/KarvinNanda/relaydeck.git
+cd relaydeck
+cd web; npm ci; npm run build; cd ..
+go build -o relaydeck.exe ./cmd/relaydeck
+.\relaydeck.exe version
 ```
 
 `npm run build` writes the Vue UI into `internal/webui/dist`, and `go build` embeds it in the binary. Without the web build the binary still builds, but the UI answers 404.
@@ -29,7 +45,7 @@ go build -o relaydeck ./cmd/relaydeck
 ## Run
 
 ```sh
-./relaydeck serve
+./relaydeck serve          # Windows: .\relaydeck.exe serve
 ```
 
 `relaydeck serve` listens on `127.0.0.1:7341` (change it with `--port N` or `port` in the config file) and prints a link like `http://127.0.0.1:7341/#token=...`. Open that link in a browser. The token is new on every start, so an old link or a bookmark stops working. The workspace and folder list is stored in `config.yaml` in your user config directory.
@@ -37,21 +53,25 @@ go build -o relaydeck ./cmd/relaydeck
 While the daemon runs, it also writes a page with that link to `open.html` in your user cache directory (mode 0600). `relaydeck open` checks that the daemon answers, then opens that file in your default browser, so you do not have to copy the link:
 
 ```sh
-./relaydeck open
+./relaydeck open           # Windows: .\relaydeck.exe open
 ```
 
 The daemon removes the page on a clean shutdown. Any process that runs as your user can read the page and get the token.
 
-## Start at login (macOS)
+## Start at login
 
-A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist` and replace `USER_HOME` with your home directory (launchd does not expand `~` in these keys). Create the log directory first and keep it private: `mkdir -p ~/Library/Logs/relaydeck && chmod 700 ~/Library/Logs/relaydeck`.
+On Linux and Windows, run `relaydeck serve` from a terminal, or start it with your usual service manager (a systemd user unit, or Task Scheduler). Make sure that service sees the same PATH as your terminal, because the agents need it to find `claude` and your tools.
+
+### macOS
+
+A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgents/local.relaydeck.plist`, replace `USER_HOME` with your home directory (launchd does not expand `~` in these keys) and `REPO_DIR` with the folder you cloned relaydeck into. Create the log directory first and keep it private: `mkdir -p ~/Library/Logs/relaydeck && chmod 700 ~/Library/Logs/relaydeck`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.karvinnanda.relaydeck</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lic</string><string>exec "$HOME/KV/relaydeck/relaydeck" serve</string></array>
+  <key>Label</key><string>local.relaydeck</string>
+  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>-lic</string><string>exec "REPO_DIR/relaydeck" serve</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>Umask</key><integer>63</integer>
@@ -60,13 +80,13 @@ A LaunchAgent can start the daemon at login. Save this as `~/Library/LaunchAgent
 </dict></plist>
 ```
 
-It runs through `zsh -lic` because launchd starts jobs with a minimal PATH, and the agents need your PATH to find `claude`, `node` and `docker`. A login zsh (`-l`) reads `.zshenv`, `.zprofile` and `.zlogin`, but not `.zshrc`. Many setups add `~/.local/bin` (where `claude` lives), Homebrew and fnm or nvm in `.zshrc`, so `-i` is added: it runs `.zshrc` even without a TTY. The cost is that prompt frameworks in `.zshrc` may print warnings to the log. Check the result with `env -i HOME="$HOME" /bin/zsh -lic 'command -v claude'`. The binary path in `ProgramArguments` is `$HOME/KV/relaydeck/relaydeck`: update it if the repo moves.
+It runs through `zsh -lic` because launchd starts jobs with a minimal PATH, and the agents need your PATH to find `claude`, `node` and `docker`. A login zsh (`-l`) reads `.zshenv`, `.zprofile` and `.zlogin`, but not `.zshrc`. Many setups add `~/.local/bin` (where `claude` lives), Homebrew and fnm or nvm in `.zshrc`, so `-i` is added: it runs `.zshrc` even without a TTY. The cost is that prompt frameworks in `.zshrc` may print warnings to the log. Check the result with `env -i HOME="$HOME" /bin/zsh -lic 'command -v claude'`. Update the binary path in `ProgramArguments` if the repo moves.
 
 `serve.out` holds the startup line, which contains the UI token. `Umask` 63 (octal 077) applies to files relaydeck creates, but launchd opens the two log files itself with the default mode (0644), so the 0700 log directory is what keeps them private. Also run `chmod 600` on both files once they exist. Use `relaydeck open` to get into the UI.
 
-- Load: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.karvinnanda.relaydeck.plist`
-- Restart after a rebuild: `launchctl kickstart -k gui/$(id -u)/com.karvinnanda.relaydeck`
-- Remove: `launchctl bootout gui/$(id -u)/com.karvinnanda.relaydeck`, then delete the plist.
+- Load: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.relaydeck.plist`
+- Restart after a rebuild: `launchctl kickstart -k gui/$(id -u)/local.relaydeck`
+- Remove: `launchctl bootout gui/$(id -u)/local.relaydeck`, then delete the plist.
 
 ## Architecture
 
