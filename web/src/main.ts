@@ -1,4 +1,4 @@
-import { createApp, watch } from 'vue'
+import { createApp } from 'vue'
 // Latin subset only; other scripts fall back to the system monospace font.
 import '@fontsource/jetbrains-mono/latin-400.css'
 import '@fontsource/jetbrains-mono/latin-500.css'
@@ -22,13 +22,9 @@ function localStore(): Storage | null {
   }
 }
 loadPrefs(localStore())
+// Only user clicks save the drawer state (App.vue, NotifyView.vue), so an
+// automatic open for an approval does not stick across reloads.
 store.ui.messagesOpen = prefs.messagesOpen
-watch(
-  () => store.ui.messagesOpen,
-  (open) => {
-    prefs.messagesOpen = open
-  },
-)
 
 const token = readToken(window.location, sessionStore())
 setToken(token)

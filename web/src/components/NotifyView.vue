@@ -6,6 +6,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { messages } from '../stores/messages'
 import { store } from '../stores/state'
+import { prefs } from '../stores/prefs'
 import Icon from './Icon.vue'
 import NotifyGraph from './NotifyGraph.vue'
 import Timeline from './Timeline.vue'
@@ -15,6 +16,12 @@ const counts = messages.counts
 
 onMounted(() => messages.start())
 onUnmounted(() => messages.stop())
+
+// The collapse button is a user choice, kept per browser (see App.vue).
+function collapse(): void {
+  store.ui.messagesOpen = false
+  prefs.messagesOpen = false
+}
 </script>
 
 <template>
@@ -26,7 +33,7 @@ onUnmounted(() => messages.stop())
       title="Collapse Messages"
       aria-controls="messages"
       :aria-expanded="store.ui.messagesOpen"
-      @click="store.ui.messagesOpen = false"
+      @click="collapse"
     >
       <Icon name="down" />
     </button>

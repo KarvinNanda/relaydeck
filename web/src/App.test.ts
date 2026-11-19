@@ -115,11 +115,16 @@ describe('App', () => {
       expect(cols(w)).toMatch(/^300px /)
       const hide = w.find('button.side-toggle')
       expect(hide.attributes('aria-label')).toBe('Hide sidebar')
+      // a disclosure, not a toggle: expanded while the sidebar shows (#76)
+      expect(hide.attributes('aria-expanded')).toBe('true')
+      expect(hide.attributes('aria-controls')).toBe('sidebar')
+      expect(hide.attributes('aria-pressed')).toBeUndefined()
+      expect(w.find('nav#sidebar').exists()).toBe(true)
       await hide.trigger('click')
       expect(prefs.sideHidden).toBe(true)
       expect(cols(w)).toMatch(/^0px /)
       expect(w.find('button.side-toggle').attributes('aria-label')).toBe('Show sidebar')
-      expect(w.find('button.side-toggle').attributes('aria-pressed')).toBe('true')
+      expect(w.find('button.side-toggle').attributes('aria-expanded')).toBe('false')
       expect(w.find('[role="separator"]').exists()).toBe(false)
       w.unmount()
     })
@@ -153,8 +158,8 @@ describe('App', () => {
       el.setPointerCapture = (id: number) => void captured.add(id)
       el.releasePointerCapture = (id: number) => void captured.delete(id)
       el.hasPointerCapture = (id: number) => captured.has(id)
-      const ev = (type: string, clientX: number) => {
-        const e = new MouseEvent(type, { clientX, bubbles: true, button: 0 })
+      const ev = (type: string, clientX: number, buttons = type === 'pointerup' ? 0 : 1) => {
+        const e = new MouseEvent(type, { clientX, bubbles: true, button: 0, buttons })
         Object.defineProperty(e, 'pointerId', { value: 7 })
         el.dispatchEvent(e)
       }
@@ -168,6 +173,40 @@ describe('App', () => {
       expect(captured.has(7)).toBe(false)
       ev('pointermove', 300)
       expect(prefs.sideWidth).toBe(420)
+      w.unmount()
+    })
+  })
+
+  describe('sidebar drag that loses the pointer (#78)', () => {
+    function frame() {
+      store.state.connection = 'connected'
+      store.state.data = { platform: 'darwin', account: { cswap: false, known: false, default: '' }, workspaces: [] }
+      return mount(App, { attachTo: document.body })
+    }
+    function fire(el: HTMLElement, type: string, clientX: number, buttons: number) {
+      const e = new MouseEvent(type, { clientX, bubbles: true, button: 0, buttons })
+      Object.defineProperty(e, 'pointerId', { value: 1 })
+      el.dispatchEvent(e)
+    }
+
+    it('stops following the cursor after lostpointercapture', () => {
+      const w = frame()
+      const el = w.find('[role="separator"]').element as HTMLElement
+      fire(el, 'pointerdown', 232, 1)
+      fire(el, 'pointermove', 260, 1)
+      expect(prefs.sideWidth).toBe(260)
+      fire(el, 'lostpointercapture', 260, 0)
+      fire(el, 'pointermove', 380, 0)
+      expect(prefs.sideWidth).toBe(260)
+      w.unmount()
+    })
+
+    it('ignores a move with no button held, even mid-drag', () => {
+      const w = frame()
+      const el = w.find('[role="separator"]').element as HTMLElement
+      fire(el, 'pointerdown', 232, 1)
+      fire(el, 'pointermove', 300, 0)
+      expect(prefs.sideWidth).toBe(232)
       w.unmount()
     })
   })
@@ -195,6 +234,38 @@ describe('App', () => {
       store.state.data = data(1, 0)
       await nextTick()
       expect(store.ui.messagesOpen).toBe(true)
+      w.unmount()
+      store.ui.workspace = null
+    })
+
+    it('does not reopen when the user switches back to a workspace with approvals (#79)', async () => {
+      store.state.data = data(3, 0)
+      store.ui.workspace = 'one'
+      store.ui.messagesOpen = false
+      const w = mount(App)
+      store.ui.workspace = 'two'
+      await nextTick()
+      store.ui.workspace = 'one'
+      await nextTick()
+      expect(store.ui.messagesOpen).toBe(false)
+      w.unmount()
+      store.ui.workspace = null
+    })
+
+    it('keeps an automatic open out of the saved choice, but saves a click (#79)', async () => {
+      store.state.data = data(0, 0)
+      store.ui.workspace = 'one'
+      store.ui.messagesOpen = false
+      const w = mount(App)
+      store.state.data = data(1, 0)
+      await nextTick()
+      expect(store.ui.messagesOpen).toBe(true)
+      expect(prefs.messagesOpen).toBe(false)
+      await w.find('button.msg-toggle').trigger('click')
+      expect(store.ui.messagesOpen).toBe(false)
+      expect(prefs.messagesOpen).toBe(false)
+      await w.find('button.msg-toggle').trigger('click')
+      expect(prefs.messagesOpen).toBe(true)
       w.unmount()
       store.ui.workspace = null
     })

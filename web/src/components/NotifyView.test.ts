@@ -7,6 +7,7 @@ const api = vi.hoisted(() => vi.fn())
 vi.mock('../api', async (orig) => ({ ...(await orig<typeof import('../api')>()), api }))
 
 import { store } from '../stores/state'
+import { prefs } from '../stores/prefs'
 import NotifyView from './NotifyView.vue'
 
 function snapshot(): State {
@@ -84,8 +85,10 @@ describe('NotifyView', () => {
     const b = w.find('button[aria-label="Collapse Messages"]')
     expect(b.attributes('aria-controls')).toBe('messages')
     expect(b.attributes('aria-expanded')).toBe('true')
+    prefs.messagesOpen = true
     await b.trigger('click')
     expect(store.ui.messagesOpen).toBe(false)
+    expect(prefs.messagesOpen).toBe(false) // a click is the user's choice (#79)
   })
 
   it('stops following events when unmounted', async () => {
