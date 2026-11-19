@@ -73,5 +73,5 @@
    Task 15 ruling; raised for #77 after two visual reviews). Terminal text
    keeps its own size (the A-/A+ control). */
 @media (max-width: 767px) {
-  :root { --fs-base: 16px; }
+  :root { --fs-base: 16px; --fs-lg: 18px; } /* headings stay above body text */
 }

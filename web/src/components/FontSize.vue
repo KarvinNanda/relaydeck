@@ -40,6 +40,13 @@ function step(d: number): void {
 .fs .ib[aria-disabled="true"] { opacity: .45; cursor: default; }
 .v { min-width: 4ch; text-align: center; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 767px) {
-  .fs .ib { min-width: var(--touch-h); height: var(--touch-h); }
+  /* visible, equal 44px buttons with the size in a fixed slot between them,
+     so the control lines up with the 16px gutter like the other buttons */
+  .fs { gap: var(--s-3); }
+  .fs .ib {
+    width: var(--touch-h); min-width: var(--touch-h); height: var(--touch-h);
+    border-color: var(--border); background: var(--muted);
+  }
+  .v { width: 5ch; }
 }
 </style>
