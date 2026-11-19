@@ -34,6 +34,7 @@ import Icon from './Icon.vue'
 import StatusBadge from './StatusBadge.vue'
 import SessionPicker, { relTime } from './SessionPicker.vue'
 import type { Session } from '../types'
+import { detectOS, keyAction, type TermOS } from '../termkeys'
 
 const props = defineProps<{ ws: string; folder: string; focused: boolean; maximized: boolean; canMaximize: boolean }>()
 const emit = defineEmits<{ maximize: []; restore: [] }>()
@@ -315,6 +316,20 @@ async function loadFont(): Promise<void> {
   }
 }
 
+// Writes the selection to the clipboard. On Windows the selection is cleared
+// after a copy, like Windows Terminal; Linux terminals keep it. If the write
+// is refused, the selection stays so the user can try again.
+function copySelection(t: Terminal, os: TermOS): void {
+  const sel = t.getSelection()
+  if (!sel) return
+  navigator.clipboard.writeText(sel).then(
+    () => {
+      if (os === 'windows') t.clearSelection()
+    },
+    () => {},
+  )
+}
+
 // xterm.js is loaded on first use: the app shell does not need it, and it
 // touches canvas APIs as soon as its module runs.
 async function createTerm(el: HTMLElement): Promise<void> {
@@ -350,6 +365,21 @@ async function createTerm(el: HTMLElement): Promise<void> {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(el)
+  // Copy and paste follow the browser OS (see termkeys.ts). A paste is not
+  // prevented: the browser fires 'paste' on xterm's textarea and xterm sends
+  // it as a bracketed paste, so no clipboard permission prompt appears.
+  const os = detectOS(navigator as Navigator & { userAgentData?: { platform?: string } })
+  term.attachCustomKeyEventHandler((ev) => {
+    const t = term
+    if (!t) return true
+    const a = keyAction(os, ev, t.hasSelection())
+    if (a === 'pass') return true
+    if (a === 'copy') {
+      ev.preventDefault() // also stops Chrome's Ctrl+Shift+C inspect
+      if (ev.type === 'keydown') copySelection(t, os)
+    }
+    return false
+  })
   term.onData((data) => {
     // While the replay is written, xterm answers the queries inside the old
     // output (DA, DSR, color reports). Those answers are not typing.
