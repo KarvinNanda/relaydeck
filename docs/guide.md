@@ -230,6 +230,20 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 - A session started in a terminal shows up in the **Sessions** list of the panel.
 - Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds.
 
+### Copy and paste in a panel
+
+The keys follow the system your browser runs on, like the usual terminal there.
+
+| System | Copy | Paste |
+|--------|------|-------|
+| macOS | Cmd+C | Cmd+V |
+| Windows | Ctrl+C (with text selected) or Ctrl+Shift+C | Ctrl+V or Ctrl+Shift+V |
+| Linux | Ctrl+Shift+C | Ctrl+Shift+V |
+
+Claude Code handles the mouse itself: a plain drag selects text inside Claude Code, and Claude Code copies it to the system clipboard on its own (it shows `copied N chars to clipboard`). On Windows and Linux, hold Shift while you drag to select in the terminal instead; the copy keys above copy that selection.
+
+Ctrl+C with no text selected still interrupts the agent on every system. On Linux and macOS, plain Ctrl+V goes to Claude Code, which reads it as "paste an image from the clipboard".
+
 ## 8. Stopping and restarting
 
 - **Stop button** (square icon in the panel header). On an idle agent, one click stops it. On a busy agent, the first click changes the button to "Stop? It is working", and a second click stops it.

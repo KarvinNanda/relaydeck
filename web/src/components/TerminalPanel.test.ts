@@ -25,6 +25,9 @@ interface FakeTerm {
   focus: ReturnType<typeof vi.fn>
   dispose: ReturnType<typeof vi.fn>
   dataCb: ((d: string) => void) | null
+  keyHandler: ((ev: KeyboardEvent) => boolean) | null
+  selection: string
+  clearSelection: ReturnType<typeof vi.fn>
 }
 
 vi.mock('@xterm/xterm', () => {
@@ -44,6 +47,20 @@ vi.mock('@xterm/xterm', () => {
     focus = vi.fn()
     dispose = vi.fn()
     dataCb: ((d: string) => void) | null = null
+    keyHandler: ((ev: KeyboardEvent) => boolean) | null = null
+    selection = ''
+    clearSelection = vi.fn(() => {
+      this.selection = ''
+    })
+    attachCustomKeyEventHandler(fn: (ev: KeyboardEvent) => boolean) {
+      this.keyHandler = fn
+    }
+    hasSelection() {
+      return this.selection !== ''
+    }
+    getSelection() {
+      return this.selection
+    }
     constructor(opts: Record<string, unknown>) {
       this.options = opts
       fx.terms.push(this as unknown as FakeTerm)
@@ -971,5 +988,136 @@ describe('TerminalPanel final review fixes', () => {
     await w!.setProps({ focused: true })
     await flushPromises()
     expect(term().focus).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel copy and paste keys', () => {
+  let writeText: ReturnType<typeof vi.fn>
+
+  // The browser OS is read from navigator.platform (jsdom has no
+  // userAgentData). Own properties shadow jsdom's getters until deleted.
+  function onOS(platform: string): void {
+    Object.defineProperty(navigator, 'platform', { value: platform, configurable: true })
+  }
+
+  function press(code: string, m: { ctrl?: boolean; shift?: boolean; meta?: boolean } = {}, type = 'keydown') {
+    const ev = new KeyboardEvent(type, { code, ctrlKey: !!m.ctrl, shiftKey: !!m.shift, metaKey: !!m.meta, cancelable: true })
+    const ret = term().keyHandler!(ev)
+    return { ret, prevented: ev.defaultPrevented }
+  }
+
+  beforeEach(() => {
+    writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  })
+
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).platform
+    delete (navigator as unknown as Record<string, unknown>).clipboard
+  })
+
+  it('windows copies the selection on Ctrl+C', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    const r = press('KeyC', { ctrl: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(writeText).toHaveBeenCalledWith('hello')
+    await flushPromises()
+    expect(term().clearSelection).toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+C with no selection reaches the agent', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyC', { ctrl: true })
+    expect(r.ret).toBe(true)
+    expect(r.prevented).toBe(false)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+Shift+C with no selection does nothing', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyC', { ctrl: true, shift: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+V leaves paste to the browser', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyV', { ctrl: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(false)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('linux Ctrl+V reaches the agent', async () => {
+    onOS('Linux x86_64')
+    await mountPanel()
+    expect(press('KeyV', { ctrl: true }).ret).toBe(true)
+  })
+
+  it('linux Ctrl+Shift+C copies and keeps the selection', async () => {
+    onOS('Linux x86_64')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true, shift: true }).ret).toBe(false)
+    expect(writeText).toHaveBeenCalledWith('hello')
+    await flushPromises()
+    expect(term().clearSelection).not.toHaveBeenCalled()
+  })
+
+  it('mac Cmd+C is left to the browser and xterm', async () => {
+    onOS('MacIntel')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { meta: true }).ret).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('copy runs once per key press', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    expect(press('KeyC', { ctrl: true }, 'keyup').ret).toBe(false)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('holding Ctrl+C after a copy never reaches the agent', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    await flushPromises() // the copy is done and the selection is cleared
+    const repeat = new KeyboardEvent('keydown', { code: 'KeyC', ctrlKey: true, repeat: true, cancelable: true })
+    expect(term().keyHandler!(repeat)).toBe(false)
+    expect(repeat.defaultPrevented).toBe(true)
+    expect(press('KeyC', { ctrl: true }, 'keyup').ret).toBe(false)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a new Ctrl+C press after a copy reaches the agent again', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    press('KeyC', { ctrl: true })
+    await flushPromises()
+    // the keyup was lost (focus moved away); a fresh press decides again
+    expect(press('KeyC', { ctrl: true }).ret).toBe(true)
+  })
+
+  it('a failed clipboard write keeps the selection', async () => {
+    onOS('Win32')
+    writeText.mockRejectedValue(new Error('denied'))
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    await flushPromises()
+    expect(term().clearSelection).not.toHaveBeenCalled()
   })
 })
