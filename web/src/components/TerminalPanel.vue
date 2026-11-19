@@ -653,16 +653,18 @@ onBeforeUnmount(() => {
   >
     <div ref="header" class="ph">
       <div class="ph-1">
-        <span class="ph-name">{{ folder }}</span>
+        <span class="ph-name" :title="sessionText ? `${folder} · ${sessionText}` : folder">{{ folder }}</span>
         <StatusBadge :status="status" />
-        <!-- One header row: these give way first (cut with an ellipsis), so
-             the name, the status and the buttons always show. -->
+        <!-- One header row: these give way first, so the name, the status and
+             the buttons always show. A narrow panel drops the session (it is
+             in the name's tooltip), a very narrow one the account too: a
+             stub like "# 5..." only makes the user guess. -->
         <span class="ph-meta">
-          <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
+          <span v-if="!windows && !tight" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
           <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
             <Icon name="attn" />on default login
           </span>
-          <span v-if="sessionText" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+          <span v-if="sessionText && !narrow" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
         </span>
         <span v-if="showWaiting && !narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
@@ -834,8 +836,7 @@ onBeforeUnmount(() => {
 }
 .ph-meta > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .ph-meta > .sess-name { flex-shrink: 3; }
-/* an id is never cut: only a title can lose its end to an ellipsis */
-.ph-meta > .sess-name.is-id { flex-shrink: 0; }
+/* the session (title or id) gives way before the account */
 .ph-meta > .acct, .ph-meta > .warn-inline { flex-shrink: 1; }
 .ph-meta > span .i { vertical-align: -2px; margin-right: 5px; }
 .ph-meta b { color: var(--text); font-weight: 500; }

@@ -29,7 +29,6 @@ import { FONT_MAX, FONT_MIN, prefs, setTermFont } from '../stores/prefs'
 <style scoped>
 .fs { display: flex; align-items: center; gap: var(--s-1); flex: none; }
 .fs .ib { min-width: 30px; font-weight: 600; }
-.fs .smaller { font-size: 11px; }
 .v { min-width: 4ch; text-align: center; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 767px) {
   .fs .ib { min-width: var(--touch-h); height: var(--touch-h); }

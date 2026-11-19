@@ -789,6 +789,27 @@ describe('TerminalPanel header layout', () => {
     expect(w!.find('.ph-2 .waiting').exists()).toBe(true)
   })
 
+  it('drops the session from row 1 in a narrow panel and keeps it in the name tooltip', async () => {
+    paneWidth(900)
+    await mountPanel()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(true)
+    vi.restoreAllMocks()
+    paneWidth(600)
+    for (const cb of roCallbacks) cb()
+    await flushPromises()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(false)
+    expect(w!.find('.ph-meta .acct').exists()).toBe(true)
+    expect(w!.find('.ph-name').attributes('title')).toBe('fe-admin · Fix login redirect loop')
+  })
+
+  it('also drops the account in a very narrow panel, never the login warning', async () => {
+    setFolder({ on_default_login: true })
+    paneWidth(400)
+    await mountPanel()
+    expect(w!.find('.ph-meta .acct').exists()).toBe(false)
+    expect(w!.find('.ph-meta .warn-inline').exists()).toBe(true)
+  })
+
   it('Deliver now uses the same button as the Messages drawer, with its icon', async () => {
     messages = [heldDraft('m1')]
     setFolder({ status: 'idle', pending: 1 })
