@@ -24,19 +24,29 @@ export function detectOS(nav: NavLike): TermOS {
   return 'linux'
 }
 
-type KeyLike = Pick<KeyboardEvent, 'type' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>
+type KeyLike = Pick<KeyboardEvent, 'type' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'> & { keyCode?: number }
+
+// The letter of a key the way xterm reads it: keyCode follows the keyboard
+// layout (Dvorak, and Cyrillic keeps 67 for the key labelled C), so the panel
+// takes back exactly the key xterm would turn into a control byte (#67).
+// Without a keyCode, the physical key (ev.code) decides. CapsLock does not
+// change either.
+function letter(ev: KeyLike): string {
+  if (ev.keyCode && ev.keyCode >= 65 && ev.keyCode <= 90) return String.fromCharCode(ev.keyCode)
+  return ev.code.startsWith('Key') ? ev.code.slice(3) : ''
+}
 
 // keyAction gives keydown, keypress and keyup of one combo the same answer,
-// so xterm never sees any phase of a key the panel took. It matches on
-// ev.code, so CapsLock and the keyboard layout do not matter. A combo with
+// so xterm never sees any phase of a key the panel took. A combo with
 // Alt (AltGr arrives as Ctrl+Alt on Windows) or Meta is never copy or paste.
 export function keyAction(os: TermOS, ev: KeyLike, hasSelection: boolean): KeyAction {
   if (os === 'mac' || !ev.ctrlKey || ev.altKey || ev.metaKey) return 'pass'
-  if (ev.code === 'KeyC') {
+  const k = letter(ev)
+  if (k === 'C') {
     if (ev.shiftKey) return 'copy'
     return os === 'windows' && hasSelection ? 'copy' : 'pass'
   }
-  if (ev.code === 'KeyV') {
+  if (k === 'V') {
     if (ev.shiftKey) return 'paste'
     return os === 'windows' ? 'paste' : 'pass'
   }

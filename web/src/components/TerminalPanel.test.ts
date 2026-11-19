@@ -425,6 +425,11 @@ describe('TerminalPanel terminal', () => {
     expect(term().write).toHaveBeenCalledWith(new Uint8Array(bytes), expect.any(Function))
   })
 
+  it('lets Option+drag select on macOS while the agent uses the mouse (#68)', async () => {
+    await mountPanel()
+    expect(term().options.macOptionClickForcesSelection).toBe(true)
+  })
+
   it('themes xterm from the tokens', async () => {
     document.documentElement.style.setProperty('--term', '#0B1222')
     document.documentElement.style.setProperty('--fs-term', '12px')
