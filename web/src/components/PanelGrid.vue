@@ -73,7 +73,7 @@ function maximize(p: PanelKey): void {
 <template>
   <div v-if="count === 0" class="panels-empty">
     <p class="title">No terminal open</p>
-    <p class="c-muted">Start an agent from a folder in the sidebar.</p>
+    <p class="c-muted">Pick a folder under Workspaces to start an agent.</p>
   </div>
   <template v-else>
     <LayoutSwitcher :count="count" :layout="layout" @pick="chosen = $event" />

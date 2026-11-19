@@ -62,6 +62,9 @@ describe('PanelGrid', () => {
   it('shows the empty state and no layout switcher when no panel is open', async () => {
     await mountGrid()
     expect(w!.text()).toContain('No terminal open')
+    // the same words fit a phone, where the folder list is above, not beside (#77)
+    expect(w!.text()).toContain('Pick a folder under Workspaces to start an agent.')
+    expect(w!.text()).not.toContain('sidebar')
     expect(w!.find('.grid').exists()).toBe(false)
     expect(layoutButtons()).toHaveLength(0)
   })
