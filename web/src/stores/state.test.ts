@@ -203,6 +203,19 @@ describe('state store', () => {
     expect(store.state.data!.workspaces[0].folders[0].pending).toBe(1)
   })
 
+  it('refreshes the state after an external event (#89)', async () => {
+    const after = snapshot()
+    after.workspaces[0].folders[0].external_pid = 4242
+    const { store, api, sockets } = rig([snapshot(), after])
+    store.start()
+    await flush()
+    sockets[0].send({ type: 'state', ...snapshot() })
+    sockets[0].send({ type: 'external', ws: 'w', folder: 'a' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(store.state.data!.workspaces[0].folders[0].external_pid).toBe(4242)
+  })
+
   it('keeps a status that arrived while a refresh was in flight', async () => {
     let release!: (s: State) => void
     const { store, api, sockets } = rig()

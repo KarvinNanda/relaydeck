@@ -51,7 +51,10 @@ var (
 const (
 	defaultEnterDelay = 50 * time.Millisecond // spike S5: 0 works, 50 ms for safety
 	defaultCswapEvery = 30 * time.Second
-	defaultStopGrace  = 5 * time.Second
+	// defaultExternalEvery: how often running agents are checked for the same
+	// folder or session open in a terminal (#89).
+	defaultExternalEvery = 5 * time.Second
+	defaultStopGrace     = 5 * time.Second
 )
 
 // Options configures a Daemon. DefaultOptions fills the real values; tests
@@ -73,7 +76,12 @@ type Options struct {
 	// folder or session open. exclude holds relaydeck's own process ids.
 	ExternalOpen func(ctx context.Context, dir, sessionID string, exclude map[int]bool) (bool, error)
 	OwnPIDs      func() map[int]bool
-	CswapStatus  func(ctx context.Context, path string) (cswap.Info, error)
+	// ExternalList reads the running claude processes once and returns a
+	// matcher (pid and whether dir or session is open outside relaydeck).
+	// The poll for the panel warning uses it (#89). New fills the real one.
+	ExternalList  func(ctx context.Context) (func(dir, sessionID string, exclude map[int]bool) (int, bool), error)
+	ExternalEvery time.Duration // how often running agents are checked; default 5 s
+	CswapStatus   func(ctx context.Context, path string) (cswap.Info, error)
 	// CswapMapped reads the account cswap maps to dir (`cswap map`, no
 	// arguments). Used to prefill the account of a new folder.
 	CswapMapped func(ctx context.Context, path, dir string) (string, bool, error)
@@ -133,6 +141,11 @@ type Daemon struct {
 	opts Options
 	log  *slog.Logger
 
+	// extPID maps a running agent id to the pid of a claude outside relaydeck
+	// that has the same folder or session open (#89), guarded by extMu.
+	extMu  sync.Mutex
+	extPID map[string]int
+
 	// watchers counts the watch goroutines (one per started agent). stopAll
 	// waits for them, so runtime dirs (tokens, image attachments) are gone
 	// before the process exits (#70).
@@ -190,6 +203,19 @@ func New(o Options) (*Daemon, error) {
 			_, open, err := det.Open(ctx, dir, sid, exclude)
 			return open, err
 		}
+	}
+	if o.ExternalList == nil {
+		det := extsession.Default()
+		o.ExternalList = func(ctx context.Context) (func(string, string, map[int]bool) (int, bool), error) {
+			snap, err := det.Snapshot(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return snap.Open, nil
+		}
+	}
+	if o.ExternalEvery <= 0 {
+		o.ExternalEvery = defaultExternalEvery
 	}
 	if o.OwnPIDs == nil {
 		o.OwnPIDs = ownDescendants
@@ -254,10 +280,11 @@ func (d *Daemon) Run(ctx context.Context) {
 	evs, cancelEvs := d.mgr.Events()
 	msgs, cancelMsgs := d.router.Subscribe()
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	safeGo(d.log, "delivery", func() { defer wg.Done(); d.deliv.Run(ctx) })
 	safeGo(d.log, "fan-in", func() { defer wg.Done(); d.fanIn(ctx, evs, msgs) })
 	safeGo(d.log, "cswap-poll", func() { defer wg.Done(); d.pollCswap(ctx) })
+	safeGo(d.log, "external-poll", func() { defer wg.Done(); d.pollExternal(ctx) })
 	<-ctx.Done()
 	wg.Wait()
 	cancelEvs()

@@ -230,7 +230,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 
 - A session started in relaydeck is named `workspace/folder`, and `claude --resume` in a terminal shows that name.
 - A session started in a terminal shows up in the **Sessions** list of the panel.
-- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds.
+- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, until that terminal session closes.
 
 ### Copy and paste in a panel
 

@@ -285,6 +285,26 @@ describe('TerminalPanel header', () => {
     expect(row).not.toContain('on default login')
   })
 
+  it('warns when the folder or session is also open in a terminal (#89)', async () => {
+    setFolder({ external_pid: 4242 })
+    await mountPanel()
+    const note = w!.find('.ext-note')
+    expect(note.exists()).toBe(true)
+    expect(note.attributes('role')).toBe('status')
+    expect(note.text()).toContain('Claude Code is also running on this folder in a terminal (pid 4242).')
+    expect(note.text()).toContain('Messages wait until it closes.')
+    expect(note.text()).toContain('If it is the same session, typing in both places splits its history.')
+  })
+
+  it('shows no terminal warning without an outside process or when stopped (#89)', async () => {
+    await mountPanel()
+    expect(w!.find('.ext-note').exists()).toBe(false)
+    w!.unmount()
+    setFolder({ external_pid: 4242, status: 'stopped' })
+    await mountPanel()
+    expect(w!.find('.ext-note').exists()).toBe(false)
+  })
+
   it('stop calls the stop route; a draft refusal offers Stop anyway with force', async () => {
     setFolder({ status: 'idle' })
     await mountPanel()
