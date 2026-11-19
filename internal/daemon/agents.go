@@ -131,7 +131,11 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	}
 	d.setSessionID(ws, folder, sid)
 	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
-	safeGo(d.log, "watch", func() { d.watch(a, t, runtimeDir, time.Now()) })
+	d.watchers.Add(1)
+	safeGo(d.log, "watch", func() {
+		defer d.watchers.Done()
+		d.watch(a, t, runtimeDir, time.Now())
+	})
 	if d.opts.CswapPath != "" {
 		// Read the default login now, so the "on default login" flag of
 		// this agent is not up to 30 s old.
@@ -150,8 +154,13 @@ func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, sta
 	d.life.exited(t, a.ID(), startedAt)
 	// Messages the agent read in a turn that never reached Stop go back to queued.
 	d.router.Requeue(a.ID())
+	// One retry: an attachment saved while the first removal walked the dir
+	// makes the final rmdir fail (#72).
 	if err := os.RemoveAll(runtimeDir); err != nil {
-		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
+		time.Sleep(100 * time.Millisecond)
+		if err := os.RemoveAll(runtimeDir); err != nil {
+			d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
+		}
 	}
 }
 

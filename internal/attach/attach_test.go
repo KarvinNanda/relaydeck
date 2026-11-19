@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -134,5 +136,64 @@ func TestSaveNamesAreUnique(t *testing.T) {
 			t.Fatalf("duplicate name %s", p)
 		}
 		seen[p] = true
+	}
+}
+
+// A symlinked attachments dir (an agent can create one in its runtime dir)
+// is refused, and nothing is written where it points (#72).
+func TestSaveRefusesSymlinkedDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need extra rights on windows")
+	}
+	parent := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(parent, "attachments")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Save(filepath.Join(parent, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
+		t.Fatalf("err = %v, want ErrUnsafeDir", err)
+	}
+	if f := files(t, outside); len(f) != 0 {
+		t.Fatalf("wrote through the symlink: %v", f)
+	}
+}
+
+// A runtime dir that is itself a symlink is refused too (#72).
+func TestSaveRefusesSymlinkedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need extra rights on windows")
+	}
+	base := t.TempDir()
+	real := t.TempDir()
+	link := filepath.Join(base, "agent")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Save(filepath.Join(link, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
+		t.Fatalf("err = %v, want ErrUnsafeDir", err)
+	}
+	if f := files(t, real); len(f) != 0 {
+		t.Fatalf("created in the symlink target: %v", f)
+	}
+}
+
+// Concurrent saves never pass the total cap together (#72).
+func TestSaveTotalLimitConcurrent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "attachments")
+	const each, total = 1000, 5500
+	var wg sync.WaitGroup
+	var ok atomic.Int32
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := Save(dir, bytes.NewReader(img("png", each)), MaxFile, total); err == nil {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := ok.Load(); got != 5 {
+		t.Fatalf("%d saves succeeded, want exactly 5 under a %d byte cap", got, total)
 	}
 }

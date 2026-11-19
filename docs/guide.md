@@ -249,7 +249,7 @@ Ctrl+C with no text selected still interrupts the agent on every system. On Linu
 - Drag an image file onto a running panel and drop it, or paste a screenshot with your paste key. It shows up in the input box as `[Image #1]`, the same as in a terminal.
 - PNG, JPEG, GIF and WebP, at most 10 MiB each. Other files are refused with a short message.
 - When the clipboard holds text and an image at once (a copy from Word or a web page), the text is pasted.
-- relaydeck keeps the image in the agent's runtime folder and deletes it when the agent stops. Claude Code has read it by then. When you stop relaydeck itself, the folder is only deleted at the next `relaydeck serve` (issue #70).
+- relaydeck keeps the image in the agent's runtime folder and deletes it when the agent stops. Claude Code has read it by then.
 
 ## 8. Stopping and restarting
 

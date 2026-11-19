@@ -829,3 +829,36 @@ func TestAttachmentDir(t *testing.T) {
 		t.Fatalf("stopped: err = %v, want ErrNotRunning", err)
 	}
 }
+
+// A clean shutdown removes every agent runtime dir, attachments included,
+// before Run returns (#70).
+func TestShutdownRemovesRuntimeDirs(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.d.Run(ctx); close(done) }()
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	e.waitInfo(t, e.agentID(t, "a"))
+	dir, err := e.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.png"), []byte("img"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir still there after shutdown: %v", err)
+	}
+}

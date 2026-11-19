@@ -10,9 +10,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 const (
@@ -26,7 +28,16 @@ var (
 	ErrTooLarge = errors.New("image is larger than 10 MiB")
 	ErrNotImage = errors.New("only PNG, JPEG, GIF and WebP images can be attached")
 	ErrFull     = errors.New("attachment limit reached for this agent; restart it to clear")
+	// ErrUnsafeDir: the runtime dir or the attachments dir is a symlink or
+	// not a dir. An agent can write in its own runtime dir, so a link there
+	// must never move an upload somewhere else (#72).
+	ErrUnsafeDir = errors.New("attachment dir is not a plain directory")
 )
+
+// saveMu makes the total-size check and the write one step: two uploads at
+// once cannot both see the same used size and pass the cap together (#72).
+// Uploads are local and rare, so serializing them costs nothing noticeable.
+var saveMu sync.Mutex
 
 var exts = map[string]string{
 	"image/png":  ".png",
@@ -36,9 +47,11 @@ var exts = map[string]string{
 }
 
 // Save writes one image from r into dir and returns its absolute path. dir is
-// created (0700) with os.Mkdir, so its parent must exist: an agent that
-// already exited has no runtime dir, and Save must not create it again. The
-// file is 0600 with a random name. On any error no file is left behind.
+// created (0700) inside its parent, which must exist: an agent that already
+// exited has no runtime dir, and Save must not create it again. Neither the
+// parent nor dir may be a symlink, and every file operation goes through an
+// os.Root, so nothing escapes dir. The file is 0600 with a random name. On
+// any error no file is left behind.
 func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, error) {
 	head := make([]byte, 512)
 	n, err := io.ReadFull(r, head)
@@ -50,10 +63,34 @@ func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, error) {
 	if n == 0 || !ok {
 		return "", ErrNotImage
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	parent, base := filepath.Dir(dir), filepath.Base(dir)
+	if fi, err := os.Lstat(parent); err != nil {
+		return "", err
+	} else if !fi.IsDir() {
+		return "", ErrUnsafeDir
+	}
+	root, err := os.OpenRoot(parent)
+	if err != nil {
 		return "", err
 	}
-	used, err := dirSize(dir)
+	defer root.Close()
+	if err := root.Mkdir(base, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	if fi, err := root.Lstat(base); err != nil {
+		return "", err
+	} else if !fi.IsDir() {
+		return "", ErrUnsafeDir
+	}
+	sub, err := root.OpenRoot(base)
+	if err != nil {
+		return "", ErrUnsafeDir
+	}
+	defer sub.Close()
+
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	used, err := dirSize(sub)
 	if err != nil {
 		return "", err
 	}
@@ -61,11 +98,12 @@ func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	abs, err := filepath.Abs(filepath.Join(dir, name+ext))
+	name += ext
+	abs, err := filepath.Abs(filepath.Join(dir, name))
 	if err != nil {
 		return "", err
 	}
-	f, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := sub.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
@@ -81,14 +119,14 @@ func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, error) {
 		err = ErrFull
 	}
 	if err != nil {
-		os.Remove(abs)
+		sub.Remove(name)
 		return "", err
 	}
 	return abs, nil
 }
 
-func dirSize(dir string) (int64, error) {
-	es, err := os.ReadDir(dir)
+func dirSize(r *os.Root) (int64, error) {
+	es, err := fs.ReadDir(r.FS(), ".")
 	if err != nil {
 		return 0, err
 	}

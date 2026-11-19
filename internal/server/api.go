@@ -240,6 +240,14 @@ func (a *api) attachment(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
+	// The agent may have exited while the body was read: then its runtime
+	// dir is being removed and the path would be pasted into a dead
+	// terminal. Drop the file and say so (#72).
+	if now, err := a.d.AttachmentDir(ws, name); err != nil || now != dir {
+		os.Remove(p)
+		writeError(w, http.StatusConflict, daemon.ErrNotRunning.Error())
+		return
+	}
 	fi, _ := os.Stat(p)
 	var size int64
 	if fi != nil {
