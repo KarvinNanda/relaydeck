@@ -153,6 +153,9 @@ export function createStore(deps: StoreDeps = { api, openSocket }) {
         for (const r of inflight) r.sawMessage = true
         scheduleRefresh()
         break
+      case 'external':
+        scheduleRefresh()
+        break
       default:
         return
     }

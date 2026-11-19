@@ -54,12 +54,16 @@ func Default() Detector {
 // as interactive: an unknown kind cannot be ruled out, so it holds delivery.
 var nonInteractive = map[string]bool{"background": true}
 
-// Open reports whether an interactive claude session outside relaydeck has
-// sessionID or dir open. Processes in exclude (relaydeck's own children) are
-// ignored. If Agents fails, Procs is used, and it can only match by folder.
-// If both fail the error is returned and the caller must treat the session as
-// open.
-func (d Detector) Open(ctx context.Context, dir, sessionID string, exclude map[int]bool) (int, bool, error) {
+// Snapshot is one reading of the running claude processes. It answers Open
+// for any number of folders, so a poll over many agents runs the source once.
+type Snapshot struct {
+	sessions []Session
+}
+
+// Snapshot reads the running sessions with Agents, or with Procs when Agents
+// fails (Procs knows no session ids, so it can only match by folder). If both
+// fail the error is returned and the caller must treat sessions as open.
+func (d Detector) Snapshot(ctx context.Context) (Snapshot, error) {
 	var sessions []Session
 	var agentsErr error
 	if d.Agents != nil {
@@ -69,24 +73,43 @@ func (d Detector) Open(ctx context.Context, dir, sessionID string, exclude map[i
 	}
 	if agentsErr != nil {
 		if d.Procs == nil {
-			return 0, false, agentsErr
+			return Snapshot{}, agentsErr
 		}
 		var procsErr error
 		sessions, procsErr = d.Procs()
 		if procsErr != nil {
-			return 0, false, fmt.Errorf("detect external sessions: agents: %v; procs: %w", agentsErr, procsErr)
+			return Snapshot{}, fmt.Errorf("detect external sessions: agents: %v; procs: %w", agentsErr, procsErr)
 		}
 	}
-	for _, s := range sessions {
-		if nonInteractive[s.Kind] || exclude[s.PID] {
+	return Snapshot{sessions: sessions}, nil
+}
+
+// Open reports the pid of an interactive claude session in the snapshot that
+// has sessionID or dir open. Processes in exclude (relaydeck's own children)
+// are ignored. An unknown cwd cannot be ruled out, so it counts as open.
+func (s Snapshot) Open(dir, sessionID string, exclude map[int]bool) (int, bool) {
+	for _, x := range s.sessions {
+		if nonInteractive[x.Kind] || exclude[x.PID] {
 			continue
 		}
-		// An unknown cwd cannot be ruled out, so it counts as open.
-		if (sessionID != "" && s.SessionID == sessionID) || s.Cwd == "" || samePath(s.Cwd, dir) {
-			return s.PID, true, nil
+		if (sessionID != "" && x.SessionID == sessionID) || x.Cwd == "" || samePath(x.Cwd, dir) {
+			return x.PID, true
 		}
 	}
-	return 0, false, nil
+	return 0, false
+}
+
+// Open reports whether an interactive claude session outside relaydeck has
+// sessionID or dir open: a Snapshot and its Open in one call. If the
+// snapshot fails the error is returned and the caller must treat the session
+// as open.
+func (d Detector) Open(ctx context.Context, dir, sessionID string, exclude map[int]bool) (int, bool, error) {
+	snap, err := d.Snapshot(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	pid, open := snap.Open(dir, sessionID, exclude)
+	return pid, open, nil
 }
 
 // samePath compares two paths after cleaning, and again after resolving

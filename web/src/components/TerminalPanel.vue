@@ -794,6 +794,13 @@ onBeforeUnmount(() => {
       <Icon name="attn" />Held messages could not be loaded, so the waiting count may be missing.
     </div>
 
+    <!-- The daemon found a claude outside relaydeck on this folder or session
+         (#89). The two do not sync, so say so while it lasts. -->
+    <div v-if="running && f?.external_pid" class="p-note ext-note" role="status">
+      <Icon name="attn" />
+      <span>Claude Code is also running on this folder in a terminal (pid {{ f.external_pid }}). Messages wait until it closes. If it is the same session, typing in both places splits its history.</span>
+    </div>
+
     <div class="body">
       <div v-show="running" ref="host" class="term"></div>
       <div v-if="running && moreRight" class="term-fade" aria-hidden="true"></div>

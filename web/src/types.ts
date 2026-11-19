@@ -28,6 +28,7 @@ export interface FolderState {
   on_default_login: boolean // a cswap switch would move this agent
   pending: number // unread: queued, held or nudged
   awaiting_approval: number // held at the hop limit
+  external_pid?: number // a claude outside relaydeck has this folder or session open (#89)
 }
 
 export interface WorkspaceState {
@@ -86,5 +87,11 @@ export interface AccountEvent {
   type: 'account'
   account: Account
 }
-export type DaemonEvent = StatusEvent | MessageChangeEvent | AccountEvent
+// The outside-terminal check changed for a folder (#89); the store refreshes.
+export interface ExternalEvent {
+  type: 'external'
+  ws: string
+  folder: string
+}
+export type DaemonEvent = StatusEvent | MessageChangeEvent | AccountEvent | ExternalEvent
 export type EventFrame = StateFrame | DaemonEvent
