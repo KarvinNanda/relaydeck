@@ -244,6 +244,13 @@ Claude Code handles the mouse itself: a plain drag selects text inside Claude Co
 
 Ctrl+C with no text selected still interrupts the agent on every system. On Linux and macOS, plain Ctrl+V goes to Claude Code, which reads it as "paste an image from the clipboard".
 
+### Attach an image
+
+- Drag an image file onto a running panel and drop it, or paste a screenshot with your paste key. It shows up in the input box as `[Image #1]`, the same as in a terminal.
+- PNG, JPEG, GIF and WebP, at most 10 MiB each. Other files are refused with a short message.
+- When the clipboard holds text and an image at once (a copy from Word or a web page), the text is pasted.
+- relaydeck keeps the image in the agent's runtime folder and deletes it when the agent stops. Claude Code has read it by then. When you stop relaydeck itself, the folder is only deleted at the next `relaydeck serve` (issue #70).
+
 ## 8. Stopping and restarting
 
 - **Stop button** (square icon in the panel header). On an idle agent, one click stops it. On a busy agent, the first click changes the button to "Stop? It is working", and a second click stops it.

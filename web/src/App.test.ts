@@ -85,4 +85,17 @@ describe('App', () => {
     await btn.trigger('click')
     expect(store.ui.messagesOpen).toBe(false)
   })
+
+  it('a file dropped outside any panel never opens in the tab', () => {
+    store.state.connection = 'connected'
+    store.state.data = { platform: 'darwin', account: { cswap: false, known: false, default: '' }, workspaces: [] }
+    const w = mount(App, { attachTo: document.body })
+    for (const type of ['dragover', 'drop']) {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'dataTransfer', { value: { types: ['Files'], files: [] } })
+      document.body.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(true)
+    }
+    w.unmount()
+  })
 })

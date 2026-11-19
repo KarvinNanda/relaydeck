@@ -1,6 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, openSocket } from '../api'
+import { api, ApiError, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import TerminalPanel, { MIN_COLS, MIN_ROWS } from './TerminalPanel.vue'
@@ -28,6 +28,7 @@ interface FakeTerm {
   keyHandler: ((ev: KeyboardEvent) => boolean) | null
   selection: string
   clearSelection: ReturnType<typeof vi.fn>
+  paste: ReturnType<typeof vi.fn>
 }
 
 vi.mock('@xterm/xterm', () => {
@@ -49,6 +50,7 @@ vi.mock('@xterm/xterm', () => {
     dataCb: ((d: string) => void) | null = null
     keyHandler: ((ev: KeyboardEvent) => boolean) | null = null
     selection = ''
+    paste = vi.fn()
     clearSelection = vi.fn(() => {
       this.selection = ''
     })
@@ -100,10 +102,11 @@ vi.mock('@xterm/addon-fit', () => {
 
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
-  return { ...real, api: vi.fn(), openSocket: vi.fn() }
+  return { ...real, api: vi.fn(), openSocket: vi.fn(), uploadAttachment: vi.fn() }
 })
 const apiMock = vi.mocked(api)
 const openMock = vi.mocked(openSocket)
+const uploadMock = vi.mocked(uploadAttachment)
 
 // A fake socket that the panel drives like a WebSocket.
 class FakeSocket {
@@ -1119,5 +1122,114 @@ describe('TerminalPanel copy and paste keys', () => {
     expect(press('KeyC', { ctrl: true }).ret).toBe(false)
     await flushPromises()
     expect(term().clearSelection).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel image drop and paste', () => {
+  const png = (name: string) => new File(['\x89PNG'], name, { type: 'image/png' })
+
+  // jsdom has no DataTransfer or DragEvent: a plain event carries a stand-in.
+  function drag(type: string, files: File[] = [], types = ['Files']): Event {
+    const ev = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'dataTransfer', { value: { types, files, dropEffect: 'none' } })
+    w!.find('.pane').element.dispatchEvent(ev)
+    return ev
+  }
+
+  function paste(files: File[], text = ''): Event {
+    const ev = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'clipboardData', {
+      value: { files, getData: (t: string) => (t === 'text/plain' ? text : '') },
+    })
+    w!.find('.term').element.dispatchEvent(ev)
+    return ev
+  }
+
+  beforeEach(() => {
+    uploadMock.mockReset()
+    let n = 0
+    uploadMock.mockImplementation(async () => `/rt/attachments/${++n}.png`)
+  })
+
+  it('shows the drop overlay while files are dragged over a running panel', async () => {
+    await mountPanel()
+    await replay()
+    expect(drag('dragenter').defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(w!.find('.drop-hint').text()).toBe('Drop image to attach')
+    drag('dragleave')
+    await flushPromises()
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('ignores a drag that carries no files', async () => {
+    await mountPanel()
+    await replay()
+    expect(drag('dragenter', [], ['text/plain']).defaultPrevented).toBe(false)
+    await flushPromises()
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('uploads dropped images in order and pastes each path', async () => {
+    await mountPanel()
+    await replay()
+    const a = png('a.png')
+    const b = png('b.png')
+    drag('dragenter')
+    expect(drag('drop', [a, b]).defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(uploadMock.mock.calls).toEqual([
+      ['game-lounge', 'fe-admin', a],
+      ['game-lounge', 'fe-admin', b],
+    ])
+    expect(term().paste.mock.calls).toEqual([['/rt/attachments/1.png'], ['/rt/attachments/2.png']])
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('refuses a dropped file that is not an image', async () => {
+    await mountPanel()
+    await replay()
+    drag('drop', [new File(['hi'], 'notes.txt', { type: 'text/plain' })])
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('Only images can be attached (PNG, JPEG, GIF, WebP).')
+  })
+
+  it('asks to start the agent when an image is dropped on a stopped panel', async () => {
+    setFolder({ status: 'stopped' })
+    await mountPanel()
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('Start the agent to attach images.')
+  })
+
+  it('shows the upload error and pastes nothing', async () => {
+    uploadMock.mockRejectedValue(new ApiError(413, 'image is larger than 10 MiB'))
+    await mountPanel()
+    await replay()
+    drag('drop', [png('big.png')])
+    await flushPromises()
+    expect(w!.find('.p-alert').text()).toContain('image is larger than 10 MiB')
+    expect(term().paste).not.toHaveBeenCalled()
+  })
+
+  it('uploads a pasted image when the clipboard has no text', async () => {
+    await mountPanel()
+    await replay()
+    const ev = paste([png('shot.png')])
+    expect(ev.defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(uploadMock).toHaveBeenCalledTimes(1)
+    expect(term().paste).toHaveBeenCalledWith('/rt/attachments/1.png')
+  })
+
+  it('leaves a paste with text to xterm, even when it also has an image', async () => {
+    await mountPanel()
+    await replay()
+    const ev = paste([png('shot.png')], 'hi')
+    expect(ev.defaultPrevented).toBe(false)
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
   })
 })

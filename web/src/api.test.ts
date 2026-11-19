@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, openSocket, setToken } from './api'
+import { api, ApiError, openSocket, setToken, uploadAttachment } from './api'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -128,5 +128,38 @@ describe('openSocket', () => {
     fetchMock.mockResolvedValue(new Response('unauthorized\n', { status: 401, headers: { 'Content-Type': 'text/plain' } }))
     const err = (await openSocket('/ws/events').catch((e: unknown) => e)) as ApiError
     expect(err.status).toBe(401)
+  })
+})
+
+describe('uploadAttachment', () => {
+  const fetchMock = vi.fn<typeof fetch>()
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+    setToken('tok-1')
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('posts the raw file with the bearer token and returns the path', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { path: '/rt/a/attachments/x.png' }))
+    const file = new Blob(['png-bytes'], { type: 'image/png' })
+    await expect(uploadAttachment('w s', 'f', file)).resolves.toBe('/rt/a/attachments/x.png')
+    const [path, init] = fetchMock.mock.calls[0]
+    expect(path).toBe('/api/agents/w%20s/f/attachments')
+    expect(init?.method).toBe('POST')
+    const h = new Headers(init?.headers)
+    expect(h.get('Authorization')).toBe('Bearer tok-1')
+    expect(h.get('Content-Type')).toBe('application/octet-stream')
+    expect(init?.body).toBe(file)
+  })
+
+  it('turns an error answer into an ApiError with its text', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(415, { error: 'only PNG, JPEG, GIF and WebP images can be attached' }))
+    const err = (await uploadAttachment('w', 'f', new Blob(['x'])).catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(415)
+    expect(err.message).toBe('only PNG, JPEG, GIF and WebP images can be attached')
   })
 })
