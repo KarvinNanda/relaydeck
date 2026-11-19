@@ -34,10 +34,15 @@ var (
 	ErrUnsafeDir = errors.New("attachment dir is not a plain directory")
 )
 
-// saveMu makes the total-size check and the write one step: two uploads at
-// once cannot both see the same used size and pass the cap together (#72).
-// Uploads are local and rare, so serializing them costs nothing noticeable.
-var saveMu sync.Mutex
+// mu guards inflight: per attachments dir, the names of files still being
+// written. The body is read without the lock, so a stalled upload never
+// blocks another one. Only committed files count toward the total cap, and
+// the check-and-commit step runs under the lock, so concurrent uploads cannot
+// pass the cap together (#72).
+var (
+	mu       sync.Mutex
+	inflight = map[string]map[string]bool{}
+)
 
 var exts = map[string]string{
 	"image/png":  ".png",
@@ -46,93 +51,141 @@ var exts = map[string]string{
 	"image/webp": ".webp",
 }
 
-// Save writes one image from r into dir and returns its absolute path. dir is
-// created (0700) inside its parent, which must exist: an agent that already
-// exited has no runtime dir, and Save must not create it again. Neither the
-// parent nor dir may be a symlink, and every file operation goes through an
-// os.Root, so nothing escapes dir. The file is 0600 with a random name. On
-// any error no file is left behind.
-func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, error) {
+// Save writes one image from r into dir and returns its absolute path and
+// size. dir is <runtime root>/<agent id>/attachments. Every file operation
+// goes through an os.Root opened on the runtime root (owned by the daemon), so
+// a symlink an agent plants or swaps in its runtime dir can never move the
+// write outside that root (os.Root refuses links that escape it). The agent's
+// runtime dir must exist: an agent that already exited has none, and Save
+// does not create it again. The file is 0600 with a random name, created with
+// O_EXCL. On any error no file is left behind.
+func Save(dir string, r io.Reader, maxFile, maxTotal int64) (string, int64, error) {
 	head := make([]byte, 512)
 	n, err := io.ReadFull(r, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return "", err
+		return "", 0, err
 	}
 	head = head[:n]
 	ext, ok := exts[http.DetectContentType(head)]
 	if n == 0 || !ok {
-		return "", ErrNotImage
+		return "", 0, ErrNotImage
 	}
-	parent, base := filepath.Dir(dir), filepath.Base(dir)
-	if fi, err := os.Lstat(parent); err != nil {
-		return "", err
-	} else if !fi.IsDir() {
-		return "", ErrUnsafeDir
-	}
-	root, err := os.OpenRoot(parent)
+	sub, err := openDir(dir)
 	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-	if err := root.Mkdir(base, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return "", err
-	}
-	if fi, err := root.Lstat(base); err != nil {
-		return "", err
-	} else if !fi.IsDir() {
-		return "", ErrUnsafeDir
-	}
-	sub, err := root.OpenRoot(base)
-	if err != nil {
-		return "", ErrUnsafeDir
+		return "", 0, err
 	}
 	defer sub.Close()
-
-	saveMu.Lock()
-	defer saveMu.Unlock()
-	used, err := dirSize(sub)
-	if err != nil {
-		return "", err
-	}
 	name, err := randomName()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	name += ext
 	abs, err := filepath.Abs(filepath.Join(dir, name))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	f, err := sub.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", err
+
+	mu.Lock()
+	if inflight[dir] == nil {
+		inflight[dir] = map[string]bool{}
 	}
-	// One byte over the limit is read so a too large image is detected.
-	written, err := io.Copy(f, io.MultiReader(bytes.NewReader(head), io.LimitReader(r, maxFile-int64(n)+1)))
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	inflight[dir][name] = true
+	mu.Unlock()
+	done := func() {
+		delete(inflight[dir], name)
+		if len(inflight[dir]) == 0 {
+			delete(inflight, dir)
+		}
 	}
-	switch {
-	case err == nil && written > maxFile:
-		err = ErrTooLarge
-	case err == nil && used+written > maxTotal:
-		err = ErrFull
+
+	written, err := write(sub, name, head, r, maxFile)
+	mu.Lock()
+	defer mu.Unlock()
+	defer done()
+	if err == nil {
+		var used int64
+		used, err = committedSize(sub, inflight[dir])
+		if err == nil && used+written > maxTotal {
+			err = ErrFull
+		}
 	}
 	if err != nil {
 		sub.Remove(name)
-		return "", err
+		return "", 0, err
 	}
-	return abs, nil
+	return abs, written, nil
 }
 
-func dirSize(r *os.Root) (int64, error) {
+// openDir opens <root>/<id>/attachments through an os.Root on <root>,
+// creating the attachments dir if needed. A missing runtime dir is reported
+// as fs.ErrNotExist; a symlink or non-dir in the way as ErrUnsafeDir.
+func openDir(dir string) (*os.Root, error) {
+	idDir := filepath.Dir(dir)
+	base, id, att := filepath.Dir(idDir), filepath.Base(idDir), filepath.Base(dir)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	idRoot, err := openPlainDir(root, id)
+	if err != nil {
+		return nil, err
+	}
+	defer idRoot.Close()
+	if err := idRoot.Mkdir(att, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, err
+	}
+	return openPlainDir(idRoot, att)
+}
+
+// openPlainDir opens name inside r only if it is a real dir, not a symlink.
+// The Lstat and the open are two steps, but a link swapped in between can
+// only point inside the root: os.Root refuses one that escapes.
+func openPlainDir(r *os.Root, name string) (*os.Root, error) {
+	fi, err := r.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, ErrUnsafeDir
+	}
+	sub, err := r.OpenRoot(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, ErrUnsafeDir
+	}
+	return sub, nil
+}
+
+// write copies head and then at most maxFile bytes in total from r into a new
+// file name; one byte over the limit is read, so a too large image is seen.
+func write(sub *os.Root, name string, head []byte, r io.Reader, maxFile int64) (int64, error) {
+	f, err := sub.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	written, err := io.Copy(f, io.MultiReader(bytes.NewReader(head), io.LimitReader(r, maxFile-int64(len(head))+1)))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && written > maxFile {
+		err = ErrTooLarge
+	}
+	return written, err
+}
+
+// committedSize sums the regular files in r, leaving out files still being
+// written (skip).
+func committedSize(r *os.Root, skip map[string]bool) (int64, error) {
 	es, err := fs.ReadDir(r.FS(), ".")
 	if err != nil {
 		return 0, err
 	}
 	var sum int64
 	for _, e := range es {
-		if !e.Type().IsRegular() {
+		if !e.Type().IsRegular() || skip[e.Name()] {
 			continue
 		}
 		fi, err := e.Info()

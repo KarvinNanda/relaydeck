@@ -713,3 +713,58 @@ func TestAttachmentRouteRuntimeDirGone(t *testing.T) {
 		t.Fatalf("runtime dir was created again: %v", err)
 	}
 }
+
+// The agent exits while the upload body is still being read: the route must
+// answer 409 and leave no file behind (#72 review).
+func TestAttachmentRouteAgentExitsMidUpload(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	dir, err := r.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	req, err := http.NewRequest("POST", r.srv.URL+"/api/agents/w/a/attachments", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+uiToken)
+	type answer struct {
+		code int
+		body string
+	}
+	got := make(chan answer, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			got <- answer{0, err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		got <- answer{resp.StatusCode, string(b)}
+	}()
+	png := "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", 1000)
+	if _, err := pw.Write([]byte(png)); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := r.d.Agent("w", "a")
+	if code, body := r.api(t, "POST", "/api/agents/w/a/stop?force=true", nil); code != 204 {
+		t.Fatalf("stop = %d %s", code, body)
+	}
+	<-a.Done()
+	waitFor(t, "runtime dir removed", 5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Dir(dir))
+		return errors.Is(err, os.ErrNotExist)
+	})
+	pw.Write([]byte(strings.Repeat("\x00", 1000)))
+	pw.Close()
+	ans := <-got
+	if ans.code != 409 || errText(t, ans.body) != daemon.ErrNotRunning.Error() {
+		t.Fatalf("upload during exit = %d %s, want 409", ans.code, ans.body)
+	}
+	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir exists again: %v", err)
+	}
+}

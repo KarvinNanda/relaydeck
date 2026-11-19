@@ -3,6 +3,7 @@ package attach
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Smallest headers that http.DetectContentType recognizes, padded with zeros.
@@ -50,7 +52,7 @@ func TestSaveImageTypes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attachments")
 	for kind, ext := range map[string]string{"png": ".png", "jpg": ".jpg", "gif": ".gif", "webp": ".webp"} {
 		data := img(kind, 2048)
-		p, err := Save(dir, bytes.NewReader(data), MaxFile, MaxTotal)
+		p, _, err := Save(dir, bytes.NewReader(data), MaxFile, MaxTotal)
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)
 		}
@@ -75,7 +77,7 @@ func TestSaveImageTypes(t *testing.T) {
 func TestSaveRefusesNonImages(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attachments")
 	for _, body := range []string{`<svg xmlns="http://www.w3.org/2000/svg"></svg>`, "<html><body>x</body></html>", "just text", ""} {
-		if _, err := Save(dir, strings.NewReader(body), MaxFile, MaxTotal); !errors.Is(err, ErrNotImage) {
+		if _, _, err := Save(dir, strings.NewReader(body), MaxFile, MaxTotal); !errors.Is(err, ErrNotImage) {
 			t.Fatalf("%q: err = %v, want ErrNotImage", body, err)
 		}
 	}
@@ -87,10 +89,10 @@ func TestSaveRefusesNonImages(t *testing.T) {
 func TestSaveSizeLimit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attachments")
 	const max = 4096
-	if _, err := Save(dir, bytes.NewReader(img("png", max)), max, MaxTotal); err != nil {
+	if _, _, err := Save(dir, bytes.NewReader(img("png", max)), max, MaxTotal); err != nil {
 		t.Fatalf("exactly max: %v", err)
 	}
-	if _, err := Save(dir, bytes.NewReader(img("png", max+1)), max, MaxTotal); !errors.Is(err, ErrTooLarge) {
+	if _, _, err := Save(dir, bytes.NewReader(img("png", max+1)), max, MaxTotal); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("max+1: err = %v, want ErrTooLarge", err)
 	}
 	if f := files(t, dir); len(f) != 1 {
@@ -101,11 +103,11 @@ func TestSaveSizeLimit(t *testing.T) {
 func TestSaveTotalLimit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attachments")
 	for i := 0; i < 2; i++ {
-		if _, err := Save(dir, bytes.NewReader(img("png", 1000)), MaxFile, 2500); err != nil {
+		if _, _, err := Save(dir, bytes.NewReader(img("png", 1000)), MaxFile, 2500); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
-	if _, err := Save(dir, bytes.NewReader(img("png", 1000)), MaxFile, 2500); !errors.Is(err, ErrFull) {
+	if _, _, err := Save(dir, bytes.NewReader(img("png", 1000)), MaxFile, 2500); !errors.Is(err, ErrFull) {
 		t.Fatalf("third: err = %v, want ErrFull", err)
 	}
 	if f := files(t, dir); len(f) != 2 {
@@ -116,7 +118,7 @@ func TestSaveTotalLimit(t *testing.T) {
 func TestSaveNeedsParent(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "agent")
 	dir := filepath.Join(parent, "attachments")
-	if _, err := Save(dir, bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); err == nil {
+	if _, _, err := Save(dir, bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); err == nil {
 		t.Fatal("save without the parent dir succeeded")
 	}
 	if _, err := os.Stat(parent); !errors.Is(err, os.ErrNotExist) {
@@ -128,7 +130,7 @@ func TestSaveNamesAreUnique(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attachments")
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		p, err := Save(dir, bytes.NewReader(img("png", 64)), MaxFile, MaxTotal)
+		p, _, err := Save(dir, bytes.NewReader(img("png", 64)), MaxFile, MaxTotal)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +152,7 @@ func TestSaveRefusesSymlinkedDir(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(parent, "attachments")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Save(filepath.Join(parent, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
+	if _, _, err := Save(filepath.Join(parent, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
 		t.Fatalf("err = %v, want ErrUnsafeDir", err)
 	}
 	if f := files(t, outside); len(f) != 0 {
@@ -169,7 +171,7 @@ func TestSaveRefusesSymlinkedParent(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Save(filepath.Join(link, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
+	if _, _, err := Save(filepath.Join(link, "attachments"), bytes.NewReader(img("png", 100)), MaxFile, MaxTotal); !errors.Is(err, ErrUnsafeDir) {
 		t.Fatalf("err = %v, want ErrUnsafeDir", err)
 	}
 	if f := files(t, real); len(f) != 0 {
@@ -187,7 +189,7 @@ func TestSaveTotalLimitConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := Save(dir, bytes.NewReader(img("png", each)), MaxFile, total); err == nil {
+			if _, _, err := Save(dir, bytes.NewReader(img("png", each)), MaxFile, total); err == nil {
 				ok.Add(1)
 			}
 		}()
@@ -195,5 +197,43 @@ func TestSaveTotalLimitConcurrent(t *testing.T) {
 	wg.Wait()
 	if got := ok.Load(); got != 5 {
 		t.Fatalf("%d saves succeeded, want exactly 5 under a %d byte cap", got, total)
+	}
+}
+
+// A stalled upload (the client stops sending mid-body) must not block
+// another upload to the same dir (#72 review).
+func TestSaveStalledUploadDoesNotBlockOthers(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agent", "attachments")
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	stalled := make(chan error, 1)
+	go func() {
+		_, _, err := Save(dir, pr, MaxFile, MaxTotal)
+		stalled <- err
+	}()
+	if _, err := pw.Write(img("png", 600)); err != nil { // past the 512-byte sniff, then silence
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := Save(dir, bytes.NewReader(img("png", 100)), MaxFile, MaxTotal)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second save: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a stalled upload blocked another save")
+	}
+	pw.CloseWithError(errors.New("client went away"))
+	if err := <-stalled; err == nil {
+		t.Fatal("the broken upload succeeded")
+	}
+	if f := files(t, dir); len(f) != 1 {
+		t.Fatalf("files = %v, want only the finished one", f)
 	}
 }
