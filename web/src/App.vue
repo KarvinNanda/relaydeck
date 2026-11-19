@@ -270,7 +270,21 @@ onBeforeUnmount(() => {
   .msg-toggle { order: 2; }
   .crumb { order: 3; }
   .layout-slot { order: 4; width: 100%; }
-  .side { border-right: 0; border-bottom: 1px solid var(--border); padding: var(--s-6) var(--s-3); }
+  /* K-blend: the stacked sidebar fades into the page color over its last
+     part, eased, instead of a hard edge above the panels (#77). */
+  .side {
+    border-right: 0; border-bottom: 0; padding: var(--s-6) var(--s-3) var(--s-8);
+    background: linear-gradient(
+      to bottom,
+      var(--surface) 0%, var(--surface) 70%,
+      color-mix(in srgb, var(--surface) 82%, var(--bg)) 78%,
+      color-mix(in srgb, var(--surface) 55%, var(--bg)) 86%,
+      color-mix(in srgb, var(--surface) 25%, var(--bg)) 94%,
+      var(--bg) 100%
+    );
+  }
+  /* the text size control sits at the right of the first top bar row */
+  .fs { margin-left: auto; }
   .main { display: flex; flex-direction: column; }
   .drawer { height: auto; border-bottom: 1px solid var(--border); }
 }

@@ -258,6 +258,7 @@ async function addWorkspace(): Promise<void> {
 }
 .add-ws { justify-content: center; }
 .legend { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); font-size: 12px; }
+@media (max-width: 767px) { .legend { font-size: 14px; gap: var(--s-2) var(--s-6); } }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 
 .ws-form { display: grid; gap: var(--s-2); }
