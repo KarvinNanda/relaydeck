@@ -230,6 +230,27 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 - A session started in a terminal shows up in the **Sessions** list of the panel.
 - Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds.
 
+### Copy and paste in a panel
+
+The keys follow the system your browser runs on, like the usual terminal there.
+
+| System | Copy | Paste |
+|--------|------|-------|
+| macOS | Cmd+C | Cmd+V |
+| Windows | Ctrl+C (with text selected) or Ctrl+Shift+C | Ctrl+V or Ctrl+Shift+V |
+| Linux | Ctrl+Shift+C | Ctrl+Shift+V |
+
+Claude Code handles the mouse itself: a plain drag selects text inside Claude Code, and Claude Code copies it to the system clipboard on its own (it shows `copied N chars to clipboard`). To select in the terminal instead, hold Shift (Windows, Linux) or Option (macOS) while you drag; the copy keys above copy that selection. The copy and paste keys follow your keyboard layout, the same way the terminal does.
+
+Ctrl+C with no text selected still interrupts the agent on every system. On Linux and macOS, plain Ctrl+V goes to Claude Code, which reads it as "paste an image from the clipboard".
+
+### Attach an image
+
+- Drag an image file onto a running panel and drop it, or paste a screenshot with your paste key. It shows up in the input box as `[Image #1]`, the same as in a terminal.
+- PNG, JPEG, GIF and WebP, at most 10 MiB each. Other files are refused with a short message.
+- When the clipboard holds text and an image at once (a copy from Word or a web page), the text is pasted.
+- relaydeck keeps the image in the agent's runtime folder and deletes it when the agent stops. Claude Code has read it by then.
+
 ## 8. Stopping and restarting
 
 - **Stop button** (square icon in the panel header). On an idle agent, one click stops it. On a busy agent, the first click changes the button to "Stop? It is working", and a second click stops it.

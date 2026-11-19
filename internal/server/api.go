@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/KarvinNanda/relaydeck/internal/attach"
 	"github.com/KarvinNanda/relaydeck/internal/auth"
 	"github.com/KarvinNanda/relaydeck/internal/config"
 	"github.com/KarvinNanda/relaydeck/internal/daemon"
@@ -51,6 +54,7 @@ func (a *api) routes() http.Handler {
 	m.HandleFunc("POST /api/agents/{ws}/{name}/start", a.start)
 	m.HandleFunc("POST /api/agents/{ws}/{name}/stop", a.stop)
 	m.HandleFunc("POST /api/agents/{ws}/{name}/deliver-now", a.deliverNow)
+	m.HandleFunc("POST /api/agents/{ws}/{name}/attachments", a.attachment)
 	m.HandleFunc("GET /api/workspaces/{ws}/messages", a.messages)
 	m.HandleFunc("POST /api/messages/{id}/approve", a.approve)
 	m.HandleFunc("POST /api/messages/{id}/reject", a.reject)
@@ -200,6 +204,53 @@ func (a *api) deliverNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// attachment saves a dropped or pasted image for the running agent and answers
+// its path; the panel then pastes the path into the terminal, and Claude Code
+// turns it into an [Image #N]. The body is the raw image, at most
+// attach.MaxFile bytes. The type is sniffed by attach.Save.
+func (a *api) attachment(w http.ResponseWriter, r *http.Request) {
+	ws, name := r.PathValue("ws"), r.PathValue("name")
+	dir, err := a.d.AttachmentDir(ws, name)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	// MaxBytesReader is a backstop only: attach.Save stops reading at
+	// MaxFile+1 bytes, so it reports ErrTooLarge before this limit is hit.
+	p, size, err := attach.Save(dir, http.MaxBytesReader(w, r.Body, attach.MaxFile+1), attach.MaxFile, attach.MaxTotal)
+	switch {
+	case err == nil:
+	case errors.Is(err, attach.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, attach.ErrTooLarge.Error())
+		return
+	case errors.Is(err, attach.ErrNotImage):
+		writeError(w, http.StatusUnsupportedMediaType, attach.ErrNotImage.Error())
+		return
+	case errors.Is(err, attach.ErrFull):
+		writeError(w, http.StatusConflict, attach.ErrFull.Error())
+		return
+	case errors.Is(err, fs.ErrNotExist):
+		// The agent exited between the lookup and the save: its runtime dir
+		// is gone, and attach.Save does not create it again.
+		writeError(w, http.StatusConflict, daemon.ErrNotRunning.Error())
+		return
+	default:
+		a.fail(w, r, err)
+		return
+	}
+	// The agent may have exited while the body was read: then its runtime
+	// dir is being removed and the path would be pasted into a dead
+	// terminal. Drop the file and say so (#72).
+	if now, err := a.d.AttachmentDir(ws, name); err != nil || now != dir {
+		os.Remove(p)
+		writeError(w, http.StatusConflict, daemon.ErrNotRunning.Error())
+		return
+	}
+	a.log.Info("attachment saved", "request_id", logx.RequestID(r.Context()),
+		"agent_id", filepath.Base(filepath.Dir(dir)), "ws", ws, "folder", name, "ext", filepath.Ext(p), "bytes", size)
+	writeJSON(w, http.StatusOK, map[string]string{"path": p})
 }
 
 func (a *api) messages(w http.ResponseWriter, r *http.Request) {

@@ -69,8 +69,9 @@
   --drawer-h: 232px;
 }
 
-/* Phones: chrome text one step larger (ruling, Task 15 review). Terminal
-   text keeps --fs-term. */
+/* Phones: chrome text at 16px, the mobile body size (was 14px from the
+   Task 15 ruling; raised for #77 after two visual reviews). Terminal text
+   keeps its own size (the A-/A+ control). */
 @media (max-width: 767px) {
-  :root { --fs-base: 14px; }
+  :root { --fs-base: 16px; --fs-lg: 18px; } /* headings stay above body text */
 }

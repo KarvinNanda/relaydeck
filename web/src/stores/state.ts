@@ -49,7 +49,7 @@ interface Inflight {
 
 export function createStore(deps: StoreDeps = { api, openSocket }) {
   const state = reactive<StoreState>({ connection: 'connecting', unauthorized: false, data: null })
-  const ui = reactive<UiState>({ workspace: null, messagesOpen: true })
+  const ui = reactive<UiState>({ workspace: null, messagesOpen: false })
   const listeners = new Set<(e: DaemonEvent) => void>()
 
   let running = false

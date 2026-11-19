@@ -265,7 +265,7 @@ const marker = (e: Edge) => (e.lit || e.latest ? 'green' : e.style === 'solid' ?
 .gr-h { color: var(--text-muted); }
 .probe { position: absolute; left: -9999px; visibility: hidden; white-space: pre; font-size: 14px; pointer-events: none; }
 .none { margin: 0; color: var(--text-muted); }
-.graph { display: block; flex: none; }
+.graph { display: block; flex: none; margin-left: -4px; } /* SIDE: node edge lines up with the label */
 
 .edge { fill: none; stroke: var(--text-muted); stroke-width: 1.5; }
 .edge.dashed { stroke: var(--amber); stroke-dasharray: 5 4; }

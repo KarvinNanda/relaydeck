@@ -26,7 +26,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { api, ApiError, openSocket } from '../api'
+import { api, ApiError, IMAGE_TOO_LARGE, MAX_IMAGE_BYTES, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import { acquireMessages } from '../stores/messages'
@@ -34,6 +34,8 @@ import Icon from './Icon.vue'
 import StatusBadge from './StatusBadge.vue'
 import SessionPicker, { relTime } from './SessionPicker.vue'
 import type { Session } from '../types'
+import { detectOS, keyAction, type TermOS } from '../termkeys'
+import { prefs } from '../stores/prefs'
 
 const props = defineProps<{ ws: string; folder: string; focused: boolean; maximized: boolean; canMaximize: boolean }>()
 const emit = defineEmits<{ maximize: []; restore: [] }>()
@@ -238,6 +240,101 @@ function focusMe(): void {
   if (!props.focused) panelStore.focusPanel(props.ws, props.folder)
 }
 
+// ---- image drop and paste ----
+// A browser gives the page the bytes of a dropped or pasted image, never a
+// path. The daemon saves the image for this agent and answers its path; the
+// panel pastes that path, and Claude Code turns it into [Image #N].
+const NEED_RUNNING = 'Start the agent to attach images.'
+const IMAGES_ONLY = 'Only images can be attached (PNG, JPEG, GIF, WebP).'
+const TOO_LARGE = IMAGE_TOO_LARGE
+const RECONNECTING = 'The terminal is reconnecting, so the image was not attached. Drop it again.'
+const dropping = ref(false)
+let dragDepth = 0 // dragenter/dragleave also fire for every child element
+
+function hasFiles(ev: DragEvent): boolean {
+  return !!ev.dataTransfer?.types?.includes('Files')
+}
+function onDragEnter(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  dragDepth++
+  dropping.value = true
+}
+function onDragOver(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy'
+}
+function onDragLeave(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dropping.value = false
+}
+function onDrop(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  dragDepth = 0
+  dropping.value = false
+  void attachFiles(Array.from(ev.dataTransfer?.files ?? []))
+}
+
+// Runs before xterm's own paste handler (capture phase). It takes the paste
+// only when the clipboard holds image files and no text: a copy from Office
+// or a web page carries both, and then the text is what the user wants.
+function onPaste(ev: ClipboardEvent): void {
+  const cd = ev.clipboardData
+  if (!cd) return
+  const images = Array.from(cd.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (images.length === 0 || cd.getData('text/plain').trim() !== '') return
+  ev.preventDefault()
+  ev.stopPropagation()
+  void attachFiles(images)
+}
+
+// The panel alert is shared with Stop. An attach message only replaces an
+// earlier attach message, so a pending "Stop anyway" is never hidden (#73).
+let attachAlert = false
+function showAttach(msg: string): void {
+  if (alert.value !== '' && !attachAlert) return
+  alert.value = msg
+  attachAlert = true
+}
+watch(alert, (v) => {
+  if (v === '') attachAlert = false
+})
+
+// Uploads the images one by one, in order, and pastes each path. The first
+// error stops the rest and shows in the panel alert. The size limit is
+// checked here too, so a large file never starts an upload that the daemon
+// would cut off mid-body (#71).
+async function attachFiles(files: File[]): Promise<void> {
+  if (files.length === 0) return
+  if (attachAlert) alert.value = ''
+  if (!running.value) {
+    showAttach(NEED_RUNNING)
+    return
+  }
+  const images = files.filter((f) => f.type.startsWith('image/'))
+  if (images.length < files.length) showAttach(IMAGES_ONLY)
+  const fit = images.filter((f) => f.size <= MAX_IMAGE_BYTES)
+  if (fit.length < images.length) showAttach(TOO_LARGE)
+  for (const f of fit) {
+    try {
+      const p = await uploadAttachment(props.ws, props.folder, f)
+      // A reconnecting socket would drop the paste without a word.
+      if (!term || !sock || sock.readyState !== OPEN || replaying) {
+        showAttach(RECONNECTING)
+        return
+      }
+      term.paste(p)
+    } catch (e) {
+      showAttach(e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
+      return
+    }
+  }
+  focusTerm()
+}
+
 // ---- session picker popover ----
 const pane = ref<HTMLElement | null>(null)
 const header = ref<HTMLElement | null>(null)
@@ -309,10 +406,24 @@ async function loadFont(): Promise<void> {
   const font = token('--font')
   if (!font || !document.fonts) return
   try {
-    await document.fonts.load(`${token('--fs-term') ?? '12px'} ${font}`)
+    await document.fonts.load(`${prefs.termFont}px ${font}`)
   } catch {
     // xterm falls back to the next font in the list
   }
+}
+
+// Writes the selection to the clipboard. On Windows the selection is cleared
+// after a copy, like Windows Terminal; Linux terminals keep it. If the write
+// is refused, the selection stays so the user can try again.
+function copySelection(t: Terminal, os: TermOS): void {
+  const sel = t.getSelection()
+  if (!sel) return
+  navigator.clipboard.writeText(sel).then(
+    () => {
+      if (os === 'windows') t.clearSelection()
+    },
+    () => {},
+  )
 }
 
 // xterm.js is loaded on first use: the app shell does not need it, and it
@@ -322,7 +433,7 @@ async function createTerm(el: HTMLElement): Promise<void> {
   if (!alive || term) return
   term = new Terminal({
     fontFamily: token('--font'),
-    fontSize: parseFloat(token('--fs-term') ?? '') || 12,
+    fontSize: prefs.termFont, // the top bar size control (stores/prefs.ts)
     lineHeight: 1, // more rows; the server needs at least MIN_ROWS
     cursorBlink: true,
     // OSC 8 hyperlinks from the agent: http and https only. The agent chose
@@ -339,6 +450,9 @@ async function createTerm(el: HTMLElement): Promise<void> {
       },
     },
     scrollback: 5000,
+    // Claude Code turns on mouse tracking, so a plain drag goes to it. Shift
+    // (Windows, Linux) or Option (macOS) + drag selects in the terminal (#68).
+    macOptionClickForcesSelection: true,
     theme: {
       background: token('--term'),
       foreground: token('--text'),
@@ -350,6 +464,31 @@ async function createTerm(el: HTMLElement): Promise<void> {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(el)
+  // Copy and paste follow the browser OS (see termkeys.ts). A paste is not
+  // prevented: the browser fires 'paste' on xterm's textarea and xterm sends
+  // it as a bracketed paste, so no clipboard permission prompt appears.
+  const os = detectOS(navigator as Navigator & { userAgentData?: { platform?: string } })
+  // The key a fresh keydown took, kept until its keyup. Repeats, keypress
+  // and keyup of that key follow the first decision: after a copy on Windows
+  // the selection is gone, and a repeat that decided again would send \x03.
+  let held: { code: string; action: 'copy' | 'paste' } | null = null
+  term.attachCustomKeyEventHandler((ev) => {
+    const t = term
+    if (!t) return true
+    if (held && ev.code === held.code && (ev.type !== 'keydown' || ev.repeat)) {
+      if (held.action === 'copy') ev.preventDefault()
+      if (ev.type === 'keyup') held = null
+      return false
+    }
+    const a = keyAction(os, ev, t.hasSelection())
+    if (ev.type === 'keydown') held = a === 'pass' ? null : { code: ev.code, action: a }
+    if (a === 'pass') return true
+    if (a === 'copy') {
+      ev.preventDefault() // also stops Chrome's Ctrl+Shift+C inspect
+      if (ev.type === 'keydown') copySelection(t, os)
+    }
+    return false
+  })
   term.onData((data) => {
     // While the replay is written, xterm answers the queries inside the old
     // output (DA, DSR, color reports). Those answers are not typing.
@@ -471,6 +610,21 @@ function fitSoon(): void {
   fitTimer = setTimeout(fitNow, fitDelay)
 }
 
+// A new text size from the top bar: xterm measures the new cell size once
+// the font is loaded at that size, then the fit tells the server the grid.
+watch(
+  () => prefs.termFont,
+  async (n) => {
+    if (!term) return
+    await loadFont()
+    // Two quick changes can finish their font loads out of order: only the
+    // newest size is applied (#81).
+    if (!term || n !== prefs.termFont) return
+    term.options.fontSize = n
+    fitNow()
+  },
+)
+
 // Runs after the DOM update, so the terminal box is visible when it connects.
 watch(running, (r) => {
   if (r) void connect()
@@ -518,11 +672,27 @@ onBeforeUnmount(() => {
     :class="{ focus: focused, attn: status === 'attention', 'pane-stopped': !running, tight }"
     @pointerdown="focusMe"
     @focusin="focusMe"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+    @paste.capture="onPaste"
   >
     <div ref="header" class="ph">
       <div class="ph-1">
-        <span class="ph-name">{{ folder }}</span>
+        <span class="ph-name" :title="sessionText ? `${folder} · ${sessionText}` : folder">{{ folder }}</span>
         <StatusBadge :status="status" />
+        <!-- One header row: these give way first, so the name, the status and
+             the buttons always show. A narrow panel drops the session (it is
+             in the name's tooltip), a very narrow one the account too: a
+             stub like "# 5..." only makes the user guess. -->
+        <span class="ph-meta">
+          <span v-if="!windows && !tight" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
+          <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
+            <Icon name="attn" />on default login
+          </span>
+          <span v-if="sessionText && !narrow && !showWaiting" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+        </span>
         <span v-if="showWaiting && !narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
@@ -593,12 +763,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <div class="ph-2" :class="{ wrap: showWaiting && narrow }">
-        <span v-if="!windows" class="acct"><Icon name="user" /><b v-if="f?.account">{{ f.account }}</b><template v-else>no account</template></span>
-        <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
-          <Icon name="attn" />on default login
-        </span>
-        <span v-if="sessionText" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+      <div v-if="showWaiting && narrow" class="ph-2 wrap">
         <span v-if="showWaiting && narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
             <Icon name="msg" />{{ heldByDraft }} <span class="opt">{{ heldByDraft === 1 ? 'message' : 'messages' }}</span> waiting
@@ -632,6 +797,9 @@ onBeforeUnmount(() => {
     <div class="body">
       <div v-show="running" ref="host" class="term"></div>
       <div v-if="running && moreRight" class="term-fade" aria-hidden="true"></div>
+      <div v-if="dropping" class="drop-hint" role="status">
+        <Icon name="image" />{{ running ? 'Drop image to attach' : NEED_RUNNING }}
+      </div>
       <div v-if="!running" class="stopped">
         <div class="big c-stop"><Icon name="stop" />Stopped</div>
         <div class="c-muted">{{ lastLine }}</div>
@@ -686,26 +854,30 @@ onBeforeUnmount(() => {
 .ph-name { font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
 .waiting { display: inline-flex; align-items: center; gap: var(--s-3); flex: none; }
 .ph-btns { margin-left: auto; display: flex; gap: var(--s-1); }
-/* Row 2 never wraps: the header is exactly two rows. Long text is cut with
-   an ellipsis (the session title first), and the waiting chip, which sits at
-   the end of row 2 in a narrow panel, keeps its size. */
+/* account, login warning and session title: they take the free space of row
+   1 and are cut with an ellipsis first (the session title before the
+   account), so the header stays one row. */
+.ph-meta {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 14px;
+  color: var(--text-muted); overflow: hidden;
+}
+.ph-meta > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.ph-meta > .sess-name { flex-shrink: 3; }
+/* the session gives way before the account; an id is never cut to a stub
+   (a title may lose its end), and the login warning, a safety cue, never
+   shrinks (#80) */
+.ph-meta > .sess-name.is-id { flex-shrink: 0; }
+.ph-meta > .acct { flex-shrink: 1; }
+.ph-meta > .warn-inline { flex-shrink: 0; }
+.ph-meta > span .i { vertical-align: -2px; margin-right: 5px; }
+.ph-meta b { color: var(--text); font-weight: 500; }
+/* Row 2 exists only in a narrow panel with the waiting chip: the chip and
+   its button take their own line at the right instead of being pushed out. */
 .ph-2 {
-  display: flex; align-items: center; flex-wrap: nowrap; gap: 14px; color: var(--text-muted);
-  padding-right: var(--s-3); min-width: 0;
+  display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+  row-gap: var(--s-2); padding: 0 var(--s-3) var(--s-3) 0;
 }
-.ph-2 > span:not(.waiting) {
-  display: block; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ph-2 > .sess-name:not(.waiting) { flex-shrink: 3; }
-/* An id is never cut: only a title can lose its end to an ellipsis. */
-.ph-2 > .sess-name.is-id:not(.waiting) { flex-shrink: 0; }
-/* With the waiting chip in this row and not enough room, the chip and its
-   button take their own line at the right instead of being pushed out. */
-.ph-2.wrap { flex-wrap: wrap; row-gap: var(--s-2); padding-bottom: var(--s-3); } /* header padding 3px + 6px = 9px under the wrapped row */
-.ph-2 > .acct:not(.waiting), .ph-2 > .warn-inline:not(.waiting) { flex-shrink: 0; }
-.ph-2 > span:not(.waiting) .i { vertical-align: -2px; margin-right: 5px; }
 .ph-2 .waiting { margin-left: auto; }
-.ph-2 b { color: var(--text); font-weight: 500; }
 .warn-inline { color: var(--amber); }
 
 /* Deliver now is the drawer's button (same text color), trimmed to the chip's
@@ -721,7 +893,7 @@ onBeforeUnmount(() => {
    for screen readers) and drops its icon. If chip and button still do not
    fit next to the account, they take their own line at the right. */
 .tight .ph { padding-bottom: var(--s-4); }
-.tight .ph-2 { flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
+.tight .ph-2 { gap: var(--s-2) var(--s-4); padding-right: var(--s-8); }
 .tight .waiting { gap: var(--s-4); }
 .tight .waiting .opt {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
@@ -777,6 +949,17 @@ onBeforeUnmount(() => {
   background: linear-gradient(to right, transparent, color-mix(in srgb, #000 55%, var(--term)));
 }
 
+/* image drop target over the terminal; it never takes pointer events, so the
+   drag enter and leave counting stays on the panel */
+.drop-hint {
+  position: absolute; inset: var(--s-2); z-index: 4; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; gap: var(--s-4);
+  border: 2px dashed var(--border-strong); border-radius: var(--r);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text); font-weight: 600; text-align: center; padding: var(--s-5);
+}
+.drop-hint .i { width: 20px; height: 20px; flex: none; }
+
 .stopped {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-3);
   text-align: center; padding: var(--s-5);
@@ -811,6 +994,8 @@ onBeforeUnmount(() => {
   .ph-1 { min-height: var(--touch-h); row-gap: var(--s-1); padding-bottom: var(--s-2); }
   .ph-1 .ph-name { order: 0; flex: 1 0 calc(100% - 190px); }
   .ph-1 .ph-btns { order: 1; }
+  /* a phone has room below the name row, not beside it */
+  .ph-1 .ph-meta { order: 3; flex-basis: 100%; }
   .ph-1 :deep(.badge) { order: 2; }
   .ib .lab { display: none; }
   /* panels are stacked and all shown, so there is nothing to maximize */

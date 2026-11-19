@@ -1,9 +1,10 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, openSocket } from '../api'
+import { api, ApiError, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import TerminalPanel, { MIN_COLS, MIN_ROWS } from './TerminalPanel.vue'
+import { loadPrefs, prefs } from '../stores/prefs'
 import type { FolderState, Message } from '../types'
 
 // Fakes for xterm.js and the fit addon. jsdom has no canvas or layout, so
@@ -25,6 +26,10 @@ interface FakeTerm {
   focus: ReturnType<typeof vi.fn>
   dispose: ReturnType<typeof vi.fn>
   dataCb: ((d: string) => void) | null
+  keyHandler: ((ev: KeyboardEvent) => boolean) | null
+  selection: string
+  clearSelection: ReturnType<typeof vi.fn>
+  paste: ReturnType<typeof vi.fn>
 }
 
 vi.mock('@xterm/xterm', () => {
@@ -44,6 +49,21 @@ vi.mock('@xterm/xterm', () => {
     focus = vi.fn()
     dispose = vi.fn()
     dataCb: ((d: string) => void) | null = null
+    keyHandler: ((ev: KeyboardEvent) => boolean) | null = null
+    selection = ''
+    paste = vi.fn()
+    clearSelection = vi.fn(() => {
+      this.selection = ''
+    })
+    attachCustomKeyEventHandler(fn: (ev: KeyboardEvent) => boolean) {
+      this.keyHandler = fn
+    }
+    hasSelection() {
+      return this.selection !== ''
+    }
+    getSelection() {
+      return this.selection
+    }
     constructor(opts: Record<string, unknown>) {
       this.options = opts
       fx.terms.push(this as unknown as FakeTerm)
@@ -83,10 +103,11 @@ vi.mock('@xterm/addon-fit', () => {
 
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
-  return { ...real, api: vi.fn(), openSocket: vi.fn() }
+  return { ...real, api: vi.fn(), openSocket: vi.fn(), uploadAttachment: vi.fn() }
 })
 const apiMock = vi.mocked(api)
 const openMock = vi.mocked(openSocket)
+const uploadMock = vi.mocked(uploadAttachment)
 
 // A fake socket that the panel drives like a WebSocket.
 class FakeSocket {
@@ -235,9 +256,11 @@ describe('TerminalPanel header', () => {
     const h = w!.find('.ph')
     expect(h.find('.ph-name').text()).toBe('fe-admin')
     expect(h.find('.badge').text()).toBe('busy')
-    expect(h.find('.ph-2').text()).toContain('work-2')
-    expect(h.find('.ph-2').text()).toContain('Fix login redirect loop')
-    expect(h.find('.ph-2').text()).not.toContain('on default login')
+    // one row: account and session title sit in row 1, after the status
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('work-2')
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('Fix login redirect loop')
+    expect(h.find('.ph-1 .ph-meta').text()).not.toContain('on default login')
+    expect(h.find('.ph-2').exists()).toBe(false)
   })
 
   it('shows no account, the default login warning, and the short id when there is no title', async () => {
@@ -248,7 +271,7 @@ describe('TerminalPanel header', () => {
     })
     setFolder({ account: undefined, on_default_login: true })
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1 .ph-meta').text()
     expect(row).toContain('no account')
     expect(row).toContain('on default login')
     expect(row).toContain(sid.slice(0, 8))
@@ -257,7 +280,7 @@ describe('TerminalPanel header', () => {
   it('hides the account and the warning on windows', async () => {
     setFolder({ account: undefined, on_default_login: true }, 'windows')
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1').text()
     expect(row).not.toContain('no account')
     expect(row).not.toContain('on default login')
   })
@@ -400,6 +423,11 @@ describe('TerminalPanel terminal', () => {
     const bytes = new TextEncoder().encode('hello')
     sock().frame(bytes.buffer)
     expect(term().write).toHaveBeenCalledWith(new Uint8Array(bytes), expect.any(Function))
+  })
+
+  it('lets Option+drag select on macOS while the agent uses the mouse (#68)', async () => {
+    await mountPanel()
+    expect(term().options.macOptionClickForcesSelection).toBe(true)
   })
 
   it('themes xterm from the tokens', async () => {
@@ -702,8 +730,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     await mountPanel()
     expect(w!.find('.ph-1 .waiting').exists()).toBe(true)
-    expect(w!.find('.ph-2 .waiting').exists()).toBe(false)
-    expect(w!.find('.ph').element.children).toHaveLength(2)
+    expect(w!.find('.ph-2').exists()).toBe(false)
+    expect(w!.find('.ph').element.children).toHaveLength(1)
   })
 
   it('moves the waiting chip to the end of row 2 when the panel is narrow', async () => {
@@ -727,7 +755,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     for (const cb of roCallbacks) cb()
     await flushPromises()
-    expect(w!.find('.ph-2').classes()).not.toContain('wrap')
+    // wide again: the chip goes back to row 1 and row 2 is gone
+    expect(w!.find('.ph-2').exists()).toBe(false)
   })
 
   it('goes compact in a very narrow panel, so row 2 does not overflow', async () => {
@@ -763,6 +792,37 @@ describe('TerminalPanel header layout', () => {
     for (const cb of roCallbacks) cb()
     await flushPromises()
     expect(w!.find('.ph-2 .waiting').exists()).toBe(true)
+  })
+
+  it('drops the session from row 1 in a narrow panel and keeps it in the name tooltip', async () => {
+    paneWidth(900)
+    await mountPanel()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(true)
+    vi.restoreAllMocks()
+    paneWidth(600)
+    for (const cb of roCallbacks) cb()
+    await flushPromises()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(false)
+    expect(w!.find('.ph-meta .acct').exists()).toBe(true)
+    expect(w!.find('.ph-name').attributes('title')).toBe('fe-admin · Fix login redirect loop')
+  })
+
+  it('drops the session when the waiting chip needs the room in a wide panel (#80)', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1, on_default_login: true })
+    paneWidth(900)
+    await mountPanel()
+    expect(w!.find('.ph-1 .waiting').exists()).toBe(true)
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(false)
+    expect(w!.find('.ph-meta .warn-inline').exists()).toBe(true)
+  })
+
+  it('also drops the account in a very narrow panel, never the login warning', async () => {
+    setFolder({ on_default_login: true })
+    paneWidth(400)
+    await mountPanel()
+    expect(w!.find('.ph-meta .acct').exists()).toBe(false)
+    expect(w!.find('.ph-meta .warn-inline').exists()).toBe(true)
   })
 
   it('Deliver now uses the same button as the Messages drawer, with its icon', async () => {
@@ -971,5 +1031,346 @@ describe('TerminalPanel final review fixes', () => {
     await w!.setProps({ focused: true })
     await flushPromises()
     expect(term().focus).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel copy and paste keys', () => {
+  let writeText: ReturnType<typeof vi.fn>
+
+  // The browser OS is read from navigator.platform (jsdom has no
+  // userAgentData). Own properties shadow jsdom's getters until deleted.
+  function onOS(platform: string): void {
+    Object.defineProperty(navigator, 'platform', { value: platform, configurable: true })
+  }
+
+  function press(code: string, m: { ctrl?: boolean; shift?: boolean; meta?: boolean } = {}, type = 'keydown') {
+    const ev = new KeyboardEvent(type, { code, ctrlKey: !!m.ctrl, shiftKey: !!m.shift, metaKey: !!m.meta, cancelable: true })
+    const ret = term().keyHandler!(ev)
+    return { ret, prevented: ev.defaultPrevented }
+  }
+
+  beforeEach(() => {
+    writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  })
+
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).platform
+    delete (navigator as unknown as Record<string, unknown>).clipboard
+  })
+
+  it('windows copies the selection on Ctrl+C', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    const r = press('KeyC', { ctrl: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(writeText).toHaveBeenCalledWith('hello')
+    await flushPromises()
+    expect(term().clearSelection).toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+C with no selection reaches the agent', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyC', { ctrl: true })
+    expect(r.ret).toBe(true)
+    expect(r.prevented).toBe(false)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+Shift+C with no selection does nothing', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyC', { ctrl: true, shift: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('windows Ctrl+V leaves paste to the browser', async () => {
+    onOS('Win32')
+    await mountPanel()
+    const r = press('KeyV', { ctrl: true })
+    expect(r.ret).toBe(false)
+    expect(r.prevented).toBe(false)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('linux Ctrl+V reaches the agent', async () => {
+    onOS('Linux x86_64')
+    await mountPanel()
+    expect(press('KeyV', { ctrl: true }).ret).toBe(true)
+  })
+
+  it('linux Ctrl+Shift+C copies and keeps the selection', async () => {
+    onOS('Linux x86_64')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true, shift: true }).ret).toBe(false)
+    expect(writeText).toHaveBeenCalledWith('hello')
+    await flushPromises()
+    expect(term().clearSelection).not.toHaveBeenCalled()
+  })
+
+  it('mac Cmd+C is left to the browser and xterm', async () => {
+    onOS('MacIntel')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { meta: true }).ret).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('copy runs once per key press', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    expect(press('KeyC', { ctrl: true }, 'keyup').ret).toBe(false)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('holding Ctrl+C after a copy never reaches the agent', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    await flushPromises() // the copy is done and the selection is cleared
+    const repeat = new KeyboardEvent('keydown', { code: 'KeyC', ctrlKey: true, repeat: true, cancelable: true })
+    expect(term().keyHandler!(repeat)).toBe(false)
+    expect(repeat.defaultPrevented).toBe(true)
+    expect(press('KeyC', { ctrl: true }, 'keyup').ret).toBe(false)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a new Ctrl+C press after a copy reaches the agent again', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    press('KeyC', { ctrl: true })
+    await flushPromises()
+    // the keyup was lost (focus moved away); a fresh press decides again
+    expect(press('KeyC', { ctrl: true }).ret).toBe(true)
+  })
+
+  it('a failed clipboard write keeps the selection', async () => {
+    onOS('Win32')
+    writeText.mockRejectedValue(new Error('denied'))
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    await flushPromises()
+    expect(term().clearSelection).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel image drop and paste', () => {
+  const png = (name: string) => new File(['\x89PNG'], name, { type: 'image/png' })
+
+  // jsdom has no DataTransfer or DragEvent: a plain event carries a stand-in.
+  function drag(type: string, files: File[] = [], types = ['Files']): Event {
+    const ev = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'dataTransfer', { value: { types, files, dropEffect: 'none' } })
+    w!.find('.pane').element.dispatchEvent(ev)
+    return ev
+  }
+
+  function paste(files: File[], text = ''): Event {
+    const ev = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'clipboardData', {
+      value: { files, getData: (t: string) => (t === 'text/plain' ? text : '') },
+    })
+    w!.find('.term').element.dispatchEvent(ev)
+    return ev
+  }
+
+  beforeEach(() => {
+    uploadMock.mockReset()
+    let n = 0
+    uploadMock.mockImplementation(async () => `/rt/attachments/${++n}.png`)
+  })
+
+  it('shows the drop overlay while files are dragged over a running panel', async () => {
+    await mountPanel()
+    await replay()
+    expect(drag('dragenter').defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(w!.find('.drop-hint').text()).toBe('Drop image to attach')
+    drag('dragleave')
+    await flushPromises()
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('ignores a drag that carries no files', async () => {
+    await mountPanel()
+    await replay()
+    expect(drag('dragenter', [], ['text/plain']).defaultPrevented).toBe(false)
+    await flushPromises()
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('uploads dropped images in order and pastes each path', async () => {
+    await mountPanel()
+    await replay()
+    const a = png('a.png')
+    const b = png('b.png')
+    drag('dragenter')
+    expect(drag('drop', [a, b]).defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(uploadMock.mock.calls).toEqual([
+      ['game-lounge', 'fe-admin', a],
+      ['game-lounge', 'fe-admin', b],
+    ])
+    expect(term().paste.mock.calls).toEqual([['/rt/attachments/1.png'], ['/rt/attachments/2.png']])
+    expect(w!.find('.drop-hint').exists()).toBe(false)
+  })
+
+  it('refuses a dropped file that is not an image', async () => {
+    await mountPanel()
+    await replay()
+    drag('drop', [new File(['hi'], 'notes.txt', { type: 'text/plain' })])
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('Only images can be attached (PNG, JPEG, GIF, WebP).')
+  })
+
+  it('asks to start the agent when an image is dropped on a stopped panel', async () => {
+    setFolder({ status: 'stopped' })
+    await mountPanel()
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('Start the agent to attach images.')
+  })
+
+  it('shows the upload error and pastes nothing', async () => {
+    uploadMock.mockRejectedValue(new ApiError(413, 'image is larger than 10 MiB'))
+    await mountPanel()
+    await replay()
+    drag('drop', [png('big.png')])
+    await flushPromises()
+    expect(w!.find('.p-alert').text()).toContain('image is larger than 10 MiB')
+    expect(term().paste).not.toHaveBeenCalled()
+  })
+
+  it('refuses an image over 10 MiB before uploading (#71)', async () => {
+    await mountPanel()
+    await replay()
+    const big = png('big.png')
+    Object.defineProperty(big, 'size', { value: 10 * 1024 * 1024 + 1 })
+    const ok = png('ok.png')
+    drag('drop', [big, ok])
+    await flushPromises()
+    expect(w!.find('.p-alert').text()).toContain('image is larger than 10 MiB')
+    expect(uploadMock.mock.calls.map((c) => (c[2] as File).name)).toEqual(['ok.png'])
+  })
+
+  it('keeps a pending "Stop anyway" when an image is dropped (#73)', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    await replay()
+    apiMock.mockImplementation(async (_m: string, path: string) => {
+      if (path === '/api/agents/game-lounge/fe-admin/stop') throw new ApiError(409, 'agent has an unsent draft; clear it or use force')
+      if (path.endsWith('/messages')) return { messages: [] }
+      return undefined
+    })
+    await w!.find('.stop-btn').trigger('click')
+    await flushPromises()
+    expect(w!.find('.force').exists()).toBe(true)
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(w!.find('.force').exists()).toBe(true)
+  })
+
+  it('says so when the terminal is reconnecting and the path cannot be pasted (#73)', async () => {
+    await mountPanel()
+    await replay()
+    sock().drop()
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(term().paste).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('The terminal is reconnecting, so the image was not attached. Drop it again.')
+  })
+
+  it('uploads a pasted image when the clipboard has no text', async () => {
+    await mountPanel()
+    await replay()
+    const ev = paste([png('shot.png')])
+    expect(ev.defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(uploadMock).toHaveBeenCalledTimes(1)
+    expect(term().paste).toHaveBeenCalledWith('/rt/attachments/1.png')
+  })
+
+  it('leaves a paste with text to xterm, even when it also has an image', async () => {
+    await mountPanel()
+    await replay()
+    const ev = paste([png('shot.png')], 'hi')
+    expect(ev.defaultPrevented).toBe(false)
+    await flushPromises()
+    expect(uploadMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel font size', () => {
+  afterEach(() => loadPrefs(null))
+
+  it('creates xterm with the chosen size', async () => {
+    prefs.termFont = 10
+    await mountPanel()
+    expect(term().options.fontSize).toBe(10)
+  })
+
+  it('applies a new size to a running terminal and tells the server its new grid', async () => {
+    await mountPanel()
+    await replay()
+    const before = sock().frames().filter((f) => f.type === 'resize').length
+    fx.propose = { cols: 120, rows: 40 }
+    prefs.termFont = 10
+    await flushPromises()
+    expect(term().options.fontSize).toBe(10)
+    const resizes = sock().frames().filter((f) => f.type === 'resize')
+    expect(resizes.length).toBeGreaterThan(before)
+    expect(resizes[resizes.length - 1]).toEqual({ type: 'resize', cols: 120, rows: 40 })
+  })
+
+  it('a stopped panel takes a size change without error', async () => {
+    setFolder({ status: 'stopped' })
+    await mountPanel()
+    prefs.termFont = 14
+    await flushPromises()
+    expect(fx.terms.length).toBe(0)
+  })
+})
+
+describe('TerminalPanel font size races (#81)', () => {
+  afterEach(() => {
+    loadPrefs(null)
+    delete (document as unknown as Record<string, unknown>).fonts
+    document.documentElement.style.removeProperty('--font')
+  })
+
+  it('applies the newest size when an older font load finishes last', async () => {
+    const pending: Record<string, () => void> = {}
+    document.documentElement.style.setProperty('--font', 'TestMono')
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { load: (spec: string) => new Promise<void>((r) => { pending[spec.split(' ')[0]] = r }) },
+    })
+    await mountPanel()
+    // the first load (for the mount) resolves at once
+    Object.values(pending).forEach((r) => r())
+    await flushPromises()
+    await replay()
+    prefs.termFont = 14
+    await flushPromises()
+    prefs.termFont = 10
+    await flushPromises()
+    pending['10px']?.()
+    await flushPromises()
+    pending['14px']?.()
+    await flushPromises()
+    expect(term().options.fontSize).toBe(10)
   })
 })

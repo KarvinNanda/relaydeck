@@ -256,7 +256,9 @@ describe('Sidebar', () => {
 
   it('shows the status key with all five statuses', () => {
     const w = mount(Sidebar)
-    expect(w.find('.legend-title').text()).toBe('Status')
+    // no heading row: the group is named for screen readers instead
+    expect(w.find('.legend-title').exists()).toBe(false)
+    expect(w.find('.legend').attributes('aria-label')).toBe('Status key')
     expect(w.findAll('.legend span').map((s) => s.text())).toEqual([
       'busy',
       'idle',
@@ -271,5 +273,13 @@ describe('Sidebar', () => {
     const w = mount(Sidebar)
     expect(w.text()).toContain('No workspaces yet')
     expect(w.find('button.add-ws').exists()).toBe(true)
+  })
+
+  it('shows every folder name in full, never shortened', () => {
+    store.state.data = snapshot()
+    const w = mount(Sidebar)
+    const names = w.findAll('.node-name').map((n) => n.text())
+    expect(names).toEqual(expect.arrayContaining(['be', 'fe-admin', 'fe-customer', 'worker']))
+    expect(w.findAll('.node-btn').map((b) => b.attributes('title'))).toContain('/x/fe-customer')
   })
 })

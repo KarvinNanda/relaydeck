@@ -131,7 +131,11 @@ func (d *Daemon) start(ws, folder, sessionID string, newSession, checkExternal b
 	}
 	d.setSessionID(ws, folder, sid)
 	d.log.Info("agent start", "agent_id", id, "ws", ws, "folder", folder, "new_session", newSID != "")
-	safeGo(d.log, "watch", func() { d.watch(a, t, runtimeDir, time.Now()) })
+	d.watchers.Add(1)
+	safeGo(d.log, "watch", func() {
+		defer d.watchers.Done()
+		d.watch(a, t, runtimeDir, time.Now())
+	})
 	if d.opts.CswapPath != "" {
 		// Read the default login now, so the "on default login" flag of
 		// this agent is not up to 30 s old.
@@ -150,8 +154,13 @@ func (d *Daemon) watch(a *agent.Agent, t delivery.Target, runtimeDir string, sta
 	d.life.exited(t, a.ID(), startedAt)
 	// Messages the agent read in a turn that never reached Stop go back to queued.
 	d.router.Requeue(a.ID())
+	// One retry: an attachment saved while the first removal walked the dir
+	// makes the final rmdir fail (#72).
 	if err := os.RemoveAll(runtimeDir); err != nil {
-		d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
+		time.Sleep(100 * time.Millisecond)
+		if err := os.RemoveAll(runtimeDir); err != nil {
+			d.log.Warn("remove agent runtime dir failed", "agent_id", a.ID(), "error", err.Error())
+		}
 	}
 }
 
@@ -212,6 +221,20 @@ func (d *Daemon) Agent(ws, folder string) (*agent.Agent, bool) {
 		return nil, false
 	}
 	return d.mgr.Get(id)
+}
+
+// AttachmentDir returns the attachments dir of the folder's running agent:
+// <RuntimeRoot>/<agent id>/attachments. It is removed with the runtime dir
+// when the agent exits. The dir itself is created by attach.Save.
+func (d *Daemon) AttachmentDir(ws, folder string) (string, error) {
+	if _, _, err := d.folderSnapshot(ws, folder); err != nil {
+		return "", err
+	}
+	a := d.running(delivery.Target{WS: ws, Folder: folder})
+	if a == nil {
+		return "", ErrNotRunning
+	}
+	return filepath.Join(d.opts.RuntimeRoot, a.ID(), "attachments"), nil
 }
 
 // running returns the folder's agent if its process is alive.

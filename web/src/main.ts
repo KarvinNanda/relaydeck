@@ -10,6 +10,21 @@ import App from './App.vue'
 import { setToken } from './api'
 import { readToken, sessionStore } from './token'
 import { store } from './stores/state'
+import { loadPrefs, prefs } from './stores/prefs'
+
+// localStorage itself can throw (blocked site data); prefs then stay at their
+// defaults for this page load.
+function localStore(): Storage | null {
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+loadPrefs(localStore())
+// Only user clicks save the drawer state (App.vue, NotifyView.vue), so an
+// automatic open for an approval does not stick across reloads.
+store.ui.messagesOpen = prefs.messagesOpen
 
 const token = readToken(window.location, sessionStore())
 setToken(token)

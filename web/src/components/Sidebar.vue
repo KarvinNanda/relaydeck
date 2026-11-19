@@ -174,8 +174,7 @@ async function addWorkspace(): Promise<void> {
       </form>
       <button v-else class="btn add-ws" type="button" @click="openWsForm"><Icon name="plus" />Add workspace</button>
 
-      <div class="legend-title">Status</div>
-      <div class="legend">
+      <div class="legend" role="group" aria-label="Status key">
         <span v-for="s in statusOrder" :key="s" :class="statusInfo(s).cls"><Icon :name="statusInfo(s).icon" />{{ statusInfo(s).word }}</span>
       </div>
     </div>
@@ -258,8 +257,8 @@ async function addWorkspace(): Promise<void> {
   display: grid; gap: var(--s-4);
 }
 .add-ws { justify-content: center; }
-.legend-title { color: var(--text-muted); }
-.legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); font-size: 12px; }
+@media (max-width: 767px) { .legend { font-size: 14px; gap: var(--s-2) var(--s-6); } }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 
 .ws-form { display: grid; gap: var(--s-2); }

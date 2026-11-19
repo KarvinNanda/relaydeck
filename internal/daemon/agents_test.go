@@ -798,3 +798,67 @@ func TestStopAgentTouchedBoxIsDraft(t *testing.T) {
 		t.Fatalf("stop after an Up-arrow: %v, want ErrDraft", err)
 	}
 }
+
+func TestAttachmentDir(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	if _, err := e.d.AttachmentDir("w", "a"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("never started: err = %v, want ErrNotRunning", err)
+	}
+	if _, err := e.d.AttachmentDir("w", "zz"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown folder: err = %v, want ErrNotFound", err)
+	}
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	id := e.agentID(t, "a")
+	e.waitInfo(t, id)
+	dir, err := e.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(e.opts.RuntimeRoot, id, "attachments"); dir != want {
+		t.Fatalf("dir = %q, want %q", dir, want)
+	}
+	if err := e.d.StopAgent("w", "a", true); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.d.Agent("w", "a")
+	<-a.Done()
+	if _, err := e.d.AttachmentDir("w", "a"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("stopped: err = %v, want ErrNotRunning", err)
+	}
+}
+
+// A clean shutdown removes every agent runtime dir, attachments included,
+// before Run returns (#70).
+func TestShutdownRemovesRuntimeDirs(t *testing.T) {
+	needPTY(t)
+	e := newEnv(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.d.Run(ctx); close(done) }()
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	e.waitInfo(t, e.agentID(t, "a"))
+	dir, err := e.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.png"), []byte("img"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir still there after shutdown: %v", err)
+	}
+}

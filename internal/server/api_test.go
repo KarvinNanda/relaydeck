@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KarvinNanda/relaydeck/internal/attach"
 	"github.com/KarvinNanda/relaydeck/internal/config"
 	"github.com/KarvinNanda/relaydeck/internal/daemon"
 	"github.com/KarvinNanda/relaydeck/internal/launch"
@@ -92,6 +93,7 @@ var apiRoutes = []struct{ method, path string }{
 	{"POST", "/api/messages/m1/approve"},
 	{"POST", "/api/messages/m1/reject"},
 	{"POST", "/api/agents/w/a/deliver-now"},
+	{"POST", "/api/agents/w/a/attachments"},
 	{"POST", "/api/ws-ticket"},
 }
 
@@ -636,5 +638,133 @@ func TestApproveHeldMessage(t *testing.T) {
 	}
 	if code, body := r.api(t, "POST", "/api/messages/"+held.ID+"/approve", nil); code != 409 {
 		t.Fatalf("second approve = %d %s, want 409", code, body)
+	}
+}
+
+// An image upload is saved under the running agent's runtime dir and its path
+// is returned; anything else is refused with a fixed text and leaves no file.
+func TestAttachmentRoute(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	png := "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", 2000)
+
+	if code, body := r.raw(t, "POST", "/api/agents/w/a/attachments", png); code != 409 || strings.Contains(errText(t, body), "/") {
+		t.Fatalf("not running = %d %s", code, body)
+	}
+	if code, _ := r.raw(t, "POST", "/api/agents/w/zz/attachments", png); code != 404 {
+		t.Fatalf("unknown folder = %d", code)
+	}
+
+	startAgent(t, r, "a")
+	code, body := r.raw(t, "POST", "/api/agents/w/a/attachments", png)
+	if code != 200 {
+		t.Fatalf("png = %d %s", code, body)
+	}
+	p := decode[map[string]string](t, body)["path"]
+	dir, err := r.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(p) != dir || !strings.HasSuffix(p, ".png") {
+		t.Fatalf("path %q not a .png in %q", p, dir)
+	}
+	if got, err := os.ReadFile(p); err != nil || string(got) != png {
+		t.Fatalf("saved bytes differ (%v)", err)
+	}
+
+	for _, c := range []struct {
+		name, body string
+		want       int
+	}{
+		{"svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`, 415},
+		{"text", "hello", 415},
+		{"too large", "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", int(attach.MaxFile)-7), 413},
+	} {
+		code, body := r.raw(t, "POST", "/api/agents/w/a/attachments", c.body)
+		if code != c.want || strings.Contains(errText(t, body), "/") {
+			t.Fatalf("%s = %d %s, want %d", c.name, code, body, c.want)
+		}
+	}
+	if es, _ := os.ReadDir(dir); len(es) != 1 {
+		t.Fatalf("attachments dir holds %d files, want 1", len(es))
+	}
+}
+
+// The agent's runtime dir is gone (it exited between the lookup and the
+// save): the route answers 409 and does not create the dir again (#73).
+func TestAttachmentRouteRuntimeDirGone(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	dir, err := r.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := filepath.Dir(dir)
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		t.Fatal(err)
+	}
+	png := "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", 100)
+	code, body := r.raw(t, "POST", "/api/agents/w/a/attachments", png)
+	if code != 409 || errText(t, body) != daemon.ErrNotRunning.Error() {
+		t.Fatalf("runtime dir gone = %d %s, want 409 %q", code, body, daemon.ErrNotRunning.Error())
+	}
+	if _, err := os.Stat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir was created again: %v", err)
+	}
+}
+
+// The agent exits while the upload body is still being read: the route must
+// answer 409 and leave no file behind (#72 review).
+func TestAttachmentRouteAgentExitsMidUpload(t *testing.T) {
+	needPTY(t)
+	r := newRig(t, nil)
+	startAgent(t, r, "a")
+	dir, err := r.d.AttachmentDir("w", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	req, err := http.NewRequest("POST", r.srv.URL+"/api/agents/w/a/attachments", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+uiToken)
+	type answer struct {
+		code int
+		body string
+	}
+	got := make(chan answer, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			got <- answer{0, err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		got <- answer{resp.StatusCode, string(b)}
+	}()
+	png := "\x89PNG\x0D\x0A\x1A\x0A" + strings.Repeat("\x00", 1000)
+	if _, err := pw.Write([]byte(png)); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := r.d.Agent("w", "a")
+	if code, body := r.api(t, "POST", "/api/agents/w/a/stop?force=true", nil); code != 204 {
+		t.Fatalf("stop = %d %s", code, body)
+	}
+	<-a.Done()
+	waitFor(t, "runtime dir removed", 5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Dir(dir))
+		return errors.Is(err, os.ErrNotExist)
+	})
+	pw.Write([]byte(strings.Repeat("\x00", 1000)))
+	pw.Close()
+	ans := <-got
+	if ans.code != 409 || errText(t, ans.body) != daemon.ErrNotRunning.Error() {
+		t.Fatalf("upload during exit = %d %s, want 409", ans.code, ans.body)
+	}
+	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime dir exists again: %v", err)
 	}
 }
