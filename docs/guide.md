@@ -89,7 +89,7 @@ The message body is never typed into the terminal. Only the fixed nudge is typed
 - Node 24 (for the web UI build).
 - git.
 - cswap is optional. Per-folder accounts through cswap are untested.
-- macOS is the main platform. Windows (native) is experimental. WSL is not supported.
+- macOS, Linux or Windows. On Windows, use the native Windows Claude Code, not one installed only inside WSL.
 
 ### Build
 
@@ -100,6 +100,8 @@ cd web && npm ci && npm run build && cd ..
 go build -o relaydeck ./cmd/relaydeck
 ./relaydeck version
 ```
+
+On Windows (PowerShell) the same steps are `cd web; npm ci; npm run build; cd ..`, then `go build -o relaydeck.exe ./cmd/relaydeck` and `.\relaydeck.exe version`. Use `.\relaydeck.exe` wherever this guide says `./relaydeck`.
 
 `npm run build` writes the UI into `internal/webui/dist`, and `go build` embeds it in the binary. If you skip the web build, the binary still builds but the UI answers 404. `./relaydeck version` prints the version (`dev` for a local build). If it prints something, the binary works.
 
@@ -119,9 +121,9 @@ The daemon prints a link like `http://127.0.0.1:7341/#token=...`. Open that link
 
 To use another port, run `./relaydeck serve --port 7400`, or set `port` in the config file.
 
-### Optional: start at login (macOS)
+### Optional: start at login
 
-The [README](../README.md#start-at-login-macos) has the LaunchAgent file and the `launchctl` commands. Follow it there.
+The [README](../README.md#start-at-login) has the macOS LaunchAgent and notes for Linux and Windows.
 
 ### Updating
 
@@ -131,7 +133,7 @@ cd web && npm ci && npm run build && cd ..
 go build -o relaydeck ./cmd/relaydeck
 ```
 
-Then restart the daemon: press Ctrl-C in the `serve` terminal and run `./relaydeck serve` again. With the LaunchAgent, run `launchctl kickstart -k gui/$(id -u)/com.karvinnanda.relaydeck`. Waiting messages are lost on a restart, so restart when no agent has a message waiting. Sessions are kept.
+Then restart the daemon: press Ctrl-C in the `serve` terminal and run `./relaydeck serve` again. With the macOS LaunchAgent from the README, run `launchctl kickstart -k gui/$(id -u)/local.relaydeck`. Waiting messages are lost on a restart, so restart when no agent has a message waiting. Sessions are kept.
 
 ## 5. First steps
 
@@ -228,7 +230,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 
 - A session started in relaydeck is named `workspace/folder`, and `claude --resume` in a terminal shows that name.
 - A session started in a terminal shows up in the **Sessions** list of the panel.
-- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds.
+- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, until that terminal session closes.
 
 ### Copy and paste in a panel
 
@@ -280,7 +282,7 @@ Ctrl+C with no text selected still interrupts the agent on every system. On Linu
 | The agent did not act on a message. | This is expected. Agents treat messages as information. Tell the receiving agent in its own panel what to do when such a message arrives (see [section 6](#6-making-agents-talk-to-each-other)). After a nudge the agent can also ignore the message. It stays `nudged` until the agent reads it, or you click **Deliver now**. |
 | The page is blank or answers 404. | The web UI was not built. Run `cd web && npm ci && npm run build`, then `go build -o relaydeck ./cmd/relaydeck` again, and restart. |
 | Messages disappeared after a restart. | The queue is in memory only. Send the message again. |
-| Windows. | Windows (native) is experimental and not tested on a real machine. WSL is not supported. Per-folder accounts are off there. |
+| Windows: agents do not start. | Check that `claude` starts in a normal PowerShell window. A Claude Code installed only inside WSL is not used. Per-folder accounts (cswap) are off on Windows. |
 
 ## 11. Known limits
 
@@ -290,6 +292,6 @@ Ctrl+C with no text selected still interrupts the agent on every system. On Linu
 - The 4 panel limit is enforced in the browser only.
 - A multi-agent chain needs an instruction from you in each agent.
 - The daemon keeps the newest 500 finished messages per workspace.
-- Windows is experimental. cswap accounts are untested. Safari was not tested.
+- A full run on a real Windows machine is still open ([#34](https://github.com/KarvinNanda/relaydeck/issues/34)); Windows builds and tests run in CI. cswap accounts are untested. Safari was not tested.
 
 For the full list and the reasons, see [architecture.md](architecture.md#6-known-limits).

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -861,4 +862,64 @@ func TestShutdownRemovesRuntimeDirs(t *testing.T) {
 	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("runtime dir still there after shutdown: %v", err)
 	}
+}
+
+// A running agent whose folder or session is also open in a terminal gets
+// external_pid in the state and an "external" event; it clears when the
+// other process is gone (#89).
+func TestExternalSessionWarning(t *testing.T) {
+	needPTY(t)
+	var mu sync.Mutex
+	pid := 4242
+	var dirA string // set once the env exists; read by the matcher at poll time
+	e := newEnv(t, func(o *Options) {
+		o.ExternalEvery = 20 * time.Millisecond
+		o.ExternalList = func(context.Context) (func(dir, sid string, exclude map[int]bool) (int, bool), error) {
+			mu.Lock()
+			p, a := pid, dirA
+			mu.Unlock()
+			return func(dir, _ string, _ map[int]bool) (int, bool) {
+				return p, p != 0 && dir == a
+			}, nil
+		}
+	})
+	mu.Lock()
+	dirA = e.dirA
+	mu.Unlock()
+	evs, cancelEvs := e.d.Subscribe()
+	defer cancelEvs()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.d.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	e.waitInfo(t, e.agentID(t, "a"))
+	externalPID := func(name string) int {
+		for _, w := range e.d.State().Workspaces {
+			for _, f := range w.Folders {
+				if f.Name == name {
+					return f.ExternalPID
+				}
+			}
+		}
+		return -1
+	}
+	eventually(t, "external_pid 4242 on a", func() bool { return externalPID("a") == 4242 })
+	if got := externalPID("b"); got != 0 {
+		t.Fatalf("stopped folder b has external_pid %d", got)
+	}
+	sawEvent := false
+	for len(evs) > 0 && !sawEvent {
+		ev := <-evs
+		sawEvent = ev.Type == "external" && ev.WS == "w" && ev.Folder == "a"
+	}
+	if !sawEvent {
+		t.Fatal("no external event for w/a")
+	}
+	mu.Lock()
+	pid = 0
+	mu.Unlock()
+	eventually(t, "external_pid cleared", func() bool { return externalPID("a") == 0 })
 }

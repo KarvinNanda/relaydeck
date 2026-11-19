@@ -34,6 +34,9 @@ type FolderState struct {
 	OnDefaultLogin   bool   `json:"on_default_login"`  // a cswap switch would move this agent
 	Pending          int    `json:"pending"`           // unread: queued, held or nudged
 	AwaitingApproval int    `json:"awaiting_approval"` // held at the hop limit
+	// ExternalPID is the pid of a claude outside relaydeck that has this
+	// running agent's folder or session open (#89), 0 when none.
+	ExternalPID int `json:"external_pid,omitempty"`
 }
 
 // State returns a snapshot. The config is copied under cfgMu; agents and
@@ -74,6 +77,7 @@ func (d *Daemon) State() State {
 			fs.OnDefaultLogin = onDefaultLogin(fs.Account, acct)
 			if a := d.running(delivery.Target{WS: w.Name, Folder: f.Name}); a != nil {
 				fs.Status = a.Status()
+				fs.ExternalPID = d.externalPID(a.ID())
 				switch scr := a.ScreenState(); {
 				case scr.Trust:
 					fs.Screen = "trust"

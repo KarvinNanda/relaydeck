@@ -265,3 +265,28 @@ func TestSamePathNFCvsNFD(t *testing.T) {
 		t.Fatal("different folders matched")
 	}
 }
+
+// One snapshot answers for many agents: the source runs once (#89).
+func TestSnapshotRunsAgentsOnceForManyFolders(t *testing.T) {
+	calls := 0
+	d := Detector{Agents: func(context.Context) ([]Session, error) {
+		calls++
+		return []Session{{PID: 21, Cwd: "/work/b", SessionID: "s2", Kind: "interactive"}}, nil
+	}}
+	snap, err := d.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid, open := snap.Open("/work/a", "s1", nil); open {
+		t.Fatalf("/work/a open with pid %d", pid)
+	}
+	if pid, open := snap.Open("/work/b", "", nil); !open || pid != 21 {
+		t.Fatalf("/work/b: pid=%d open=%v", pid, open)
+	}
+	if pid, open := snap.Open("/elsewhere", "s2", map[int]bool{21: true}); open {
+		t.Fatalf("excluded pid matched: %d", pid)
+	}
+	if calls != 1 {
+		t.Fatalf("agents ran %d times, want 1", calls)
+	}
+}
