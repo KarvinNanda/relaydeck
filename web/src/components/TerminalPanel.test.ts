@@ -4,6 +4,7 @@ import { api, ApiError, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import TerminalPanel, { MIN_COLS, MIN_ROWS } from './TerminalPanel.vue'
+import { loadPrefs, prefs } from '../stores/prefs'
 import type { FolderState, Message } from '../types'
 
 // Fakes for xterm.js and the fit addon. jsdom has no canvas or layout, so
@@ -255,9 +256,11 @@ describe('TerminalPanel header', () => {
     const h = w!.find('.ph')
     expect(h.find('.ph-name').text()).toBe('fe-admin')
     expect(h.find('.badge').text()).toBe('busy')
-    expect(h.find('.ph-2').text()).toContain('work-2')
-    expect(h.find('.ph-2').text()).toContain('Fix login redirect loop')
-    expect(h.find('.ph-2').text()).not.toContain('on default login')
+    // one row: account and session title sit in row 1, after the status
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('work-2')
+    expect(h.find('.ph-1 .ph-meta').text()).toContain('Fix login redirect loop')
+    expect(h.find('.ph-1 .ph-meta').text()).not.toContain('on default login')
+    expect(h.find('.ph-2').exists()).toBe(false)
   })
 
   it('shows no account, the default login warning, and the short id when there is no title', async () => {
@@ -268,7 +271,7 @@ describe('TerminalPanel header', () => {
     })
     setFolder({ account: undefined, on_default_login: true })
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1 .ph-meta').text()
     expect(row).toContain('no account')
     expect(row).toContain('on default login')
     expect(row).toContain(sid.slice(0, 8))
@@ -277,7 +280,7 @@ describe('TerminalPanel header', () => {
   it('hides the account and the warning on windows', async () => {
     setFolder({ account: undefined, on_default_login: true }, 'windows')
     await mountPanel()
-    const row = w!.find('.ph-2').text()
+    const row = w!.find('.ph-1').text()
     expect(row).not.toContain('no account')
     expect(row).not.toContain('on default login')
   })
@@ -722,8 +725,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     await mountPanel()
     expect(w!.find('.ph-1 .waiting').exists()).toBe(true)
-    expect(w!.find('.ph-2 .waiting').exists()).toBe(false)
-    expect(w!.find('.ph').element.children).toHaveLength(2)
+    expect(w!.find('.ph-2').exists()).toBe(false)
+    expect(w!.find('.ph').element.children).toHaveLength(1)
   })
 
   it('moves the waiting chip to the end of row 2 when the panel is narrow', async () => {
@@ -747,7 +750,8 @@ describe('TerminalPanel header layout', () => {
     paneWidth(900)
     for (const cb of roCallbacks) cb()
     await flushPromises()
-    expect(w!.find('.ph-2').classes()).not.toContain('wrap')
+    // wide again: the chip goes back to row 1 and row 2 is gone
+    expect(w!.find('.ph-2').exists()).toBe(false)
   })
 
   it('goes compact in a very narrow panel, so row 2 does not overflow', async () => {
@@ -783,6 +787,27 @@ describe('TerminalPanel header layout', () => {
     for (const cb of roCallbacks) cb()
     await flushPromises()
     expect(w!.find('.ph-2 .waiting').exists()).toBe(true)
+  })
+
+  it('drops the session from row 1 in a narrow panel and keeps it in the name tooltip', async () => {
+    paneWidth(900)
+    await mountPanel()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(true)
+    vi.restoreAllMocks()
+    paneWidth(600)
+    for (const cb of roCallbacks) cb()
+    await flushPromises()
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(false)
+    expect(w!.find('.ph-meta .acct').exists()).toBe(true)
+    expect(w!.find('.ph-name').attributes('title')).toBe('fe-admin · Fix login redirect loop')
+  })
+
+  it('also drops the account in a very narrow panel, never the login warning', async () => {
+    setFolder({ on_default_login: true })
+    paneWidth(400)
+    await mountPanel()
+    expect(w!.find('.ph-meta .acct').exists()).toBe(false)
+    expect(w!.find('.ph-meta .warn-inline').exists()).toBe(true)
   })
 
   it('Deliver now uses the same button as the Messages drawer, with its icon', async () => {
@@ -1231,5 +1256,36 @@ describe('TerminalPanel image drop and paste', () => {
     expect(ev.defaultPrevented).toBe(false)
     await flushPromises()
     expect(uploadMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel font size', () => {
+  afterEach(() => loadPrefs(null))
+
+  it('creates xterm with the chosen size', async () => {
+    prefs.termFont = 10
+    await mountPanel()
+    expect(term().options.fontSize).toBe(10)
+  })
+
+  it('applies a new size to a running terminal and tells the server its new grid', async () => {
+    await mountPanel()
+    await replay()
+    const before = sock().frames().filter((f) => f.type === 'resize').length
+    fx.propose = { cols: 120, rows: 40 }
+    prefs.termFont = 10
+    await flushPromises()
+    expect(term().options.fontSize).toBe(10)
+    const resizes = sock().frames().filter((f) => f.type === 'resize')
+    expect(resizes.length).toBeGreaterThan(before)
+    expect(resizes[resizes.length - 1]).toEqual({ type: 'resize', cols: 120, rows: 40 })
+  })
+
+  it('a stopped panel takes a size change without error', async () => {
+    setFolder({ status: 'stopped' })
+    await mountPanel()
+    prefs.termFont = 14
+    await flushPromises()
+    expect(fx.terms.length).toBe(0)
   })
 })
