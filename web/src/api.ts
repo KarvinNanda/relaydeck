@@ -43,6 +43,11 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 
 // errorText reads the server's {"error": "..."} body, or the short plain
 // text that the auth guard writes. It never returns raw JSON or HTML.
+// The daemon's limit for one image (attach.MaxFile in internal/attach) and
+// its 413 text. Keep both in step with the Go side.
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+export const IMAGE_TOO_LARGE = 'image is larger than 10 MiB'
+
 // uploadAttachment sends a dropped or pasted image to the daemon, which saves
 // it for the folder's running agent and answers its path. The daemon checks
 // the type from the bytes, so the body goes as plain octets.

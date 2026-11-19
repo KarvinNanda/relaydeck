@@ -1249,6 +1249,45 @@ describe('TerminalPanel image drop and paste', () => {
     expect(term().paste).not.toHaveBeenCalled()
   })
 
+  it('refuses an image over 10 MiB before uploading (#71)', async () => {
+    await mountPanel()
+    await replay()
+    const big = png('big.png')
+    Object.defineProperty(big, 'size', { value: 10 * 1024 * 1024 + 1 })
+    const ok = png('ok.png')
+    drag('drop', [big, ok])
+    await flushPromises()
+    expect(w!.find('.p-alert').text()).toContain('image is larger than 10 MiB')
+    expect(uploadMock.mock.calls.map((c) => (c[2] as File).name)).toEqual(['ok.png'])
+  })
+
+  it('keeps a pending "Stop anyway" when an image is dropped (#73)', async () => {
+    setFolder({ status: 'idle' })
+    await mountPanel()
+    await replay()
+    apiMock.mockImplementation(async (_m: string, path: string) => {
+      if (path === '/api/agents/game-lounge/fe-admin/stop') throw new ApiError(409, 'agent has an unsent draft; clear it or use force')
+      if (path.endsWith('/messages')) return { messages: [] }
+      return undefined
+    })
+    await w!.find('.stop-btn').trigger('click')
+    await flushPromises()
+    expect(w!.find('.force').exists()).toBe(true)
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(w!.find('.force').exists()).toBe(true)
+  })
+
+  it('says so when the terminal is reconnecting and the path cannot be pasted (#73)', async () => {
+    await mountPanel()
+    await replay()
+    sock().drop()
+    drag('drop', [png('a.png')])
+    await flushPromises()
+    expect(term().paste).not.toHaveBeenCalled()
+    expect(w!.find('.p-alert').text()).toContain('The terminal is reconnecting, so the image was not attached. Drop it again.')
+  })
+
   it('uploads a pasted image when the clipboard has no text', async () => {
     await mountPanel()
     await replay()

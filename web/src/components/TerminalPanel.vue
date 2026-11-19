@@ -26,7 +26,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { api, ApiError, openSocket, uploadAttachment } from '../api'
+import { api, ApiError, IMAGE_TOO_LARGE, MAX_IMAGE_BYTES, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import { acquireMessages } from '../stores/messages'
@@ -246,6 +246,8 @@ function focusMe(): void {
 // panel pastes that path, and Claude Code turns it into [Image #N].
 const NEED_RUNNING = 'Start the agent to attach images.'
 const IMAGES_ONLY = 'Only images can be attached (PNG, JPEG, GIF, WebP).'
+const TOO_LARGE = IMAGE_TOO_LARGE
+const RECONNECTING = 'The terminal is reconnecting, so the image was not attached. Drop it again.'
 const dropping = ref(false)
 let dragDepth = 0 // dragenter/dragleave also fire for every child element
 
@@ -289,24 +291,44 @@ function onPaste(ev: ClipboardEvent): void {
   void attachFiles(images)
 }
 
+// The panel alert is shared with Stop. An attach message only replaces an
+// earlier attach message, so a pending "Stop anyway" is never hidden (#73).
+let attachAlert = false
+function showAttach(msg: string): void {
+  if (alert.value !== '' && !attachAlert) return
+  alert.value = msg
+  attachAlert = true
+}
+watch(alert, (v) => {
+  if (v === '') attachAlert = false
+})
+
 // Uploads the images one by one, in order, and pastes each path. The first
-// error stops the rest and shows in the panel alert.
+// error stops the rest and shows in the panel alert. The size limit is
+// checked here too, so a large file never starts an upload that the daemon
+// would cut off mid-body (#71).
 async function attachFiles(files: File[]): Promise<void> {
   if (files.length === 0) return
-  alert.value = ''
-  canForce.value = false
+  if (attachAlert) alert.value = ''
   if (!running.value) {
-    alert.value = NEED_RUNNING
+    showAttach(NEED_RUNNING)
     return
   }
   const images = files.filter((f) => f.type.startsWith('image/'))
-  if (images.length < files.length) alert.value = IMAGES_ONLY
-  for (const f of images) {
+  if (images.length < files.length) showAttach(IMAGES_ONLY)
+  const fit = images.filter((f) => f.size <= MAX_IMAGE_BYTES)
+  if (fit.length < images.length) showAttach(TOO_LARGE)
+  for (const f of fit) {
     try {
       const p = await uploadAttachment(props.ws, props.folder, f)
-      term?.paste(p)
+      // A reconnecting socket would drop the paste without a word.
+      if (!term || !sock || sock.readyState !== OPEN || replaying) {
+        showAttach(RECONNECTING)
+        return
+      }
+      term.paste(p)
     } catch (e) {
-      alert.value = e instanceof ApiError ? e.message : 'Something went wrong. Try again.'
+      showAttach(e instanceof ApiError ? e.message : 'Something went wrong. Try again.')
       return
     }
   }
