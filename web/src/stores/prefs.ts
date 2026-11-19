@@ -26,7 +26,6 @@ function defaults(): Prefs {
 export const prefs = reactive<Prefs>(defaults())
 
 let storage: Storage | null = null
-let loading = false
 
 function inRange(v: unknown, min: number, max: number): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max
@@ -45,12 +44,10 @@ export function loadPrefs(s: Storage | null): void {
   }
   const v = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
   const d = defaults()
-  loading = true
   prefs.sideWidth = inRange(v.sideWidth, SIDE_MIN, SIDE_MAX) ? v.sideWidth : d.sideWidth
   prefs.sideHidden = typeof v.sideHidden === 'boolean' ? v.sideHidden : d.sideHidden
   prefs.termFont = inRange(v.termFont, FONT_MIN, FONT_MAX) ? v.termFont : d.termFont
   prefs.messagesOpen = typeof v.messagesOpen === 'boolean' ? v.messagesOpen : d.messagesOpen
-  loading = false
 }
 
 function clamp(n: number, min: number, max: number): number {
@@ -65,12 +62,25 @@ export function setTermFont(px: number): void {
   prefs.termFont = clamp(px, FONT_MIN, FONT_MAX)
 }
 
+// Writes only the fields that changed, over what is stored now: another tab
+// may have saved a different field since this one loaded (#81).
 watch(
   () => ({ ...prefs }),
-  (p) => {
-    if (loading || !storage) return
+  (p, old) => {
+    if (!storage) return
     try {
-      storage.setItem(KEY, JSON.stringify(p))
+      const text = storage.getItem(KEY)
+      let stored: Record<string, unknown> = {}
+      try {
+        const v: unknown = text ? JSON.parse(text) : null
+        if (v !== null && typeof v === 'object' && !Array.isArray(v)) stored = v as Record<string, unknown>
+      } catch {
+        stored = {}
+      }
+      for (const k of Object.keys(p) as (keyof Prefs)[]) {
+        if (p[k] !== old[k] || !(k in stored)) stored[k] = p[k]
+      }
+      storage.setItem(KEY, JSON.stringify(stored))
     } catch {
       // blocked storage: the choice lasts until the page reloads
     }

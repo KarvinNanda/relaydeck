@@ -266,4 +266,8 @@ describe('state store', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(openSocket).toHaveBeenCalledTimes(1)
   })
+
+  it('starts with the Messages drawer closed (#79)', () => {
+    expect(createStore({ api: vi.fn() as never, openSocket: vi.fn() as never }).ui.messagesOpen).toBe(false)
+  })
 })

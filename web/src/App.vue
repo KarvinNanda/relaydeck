@@ -31,15 +31,23 @@ const connClass = computed(() => {
   }
 })
 
+// A click is the user's choice and is kept per browser. An automatic open
+// (below) is not, so the drawer still starts closed on the next load.
 function toggleMessages(): void {
   store.ui.messagesOpen = !store.ui.messagesOpen
+  prefs.messagesOpen = store.ui.messagesOpen
 }
 
 // A message held at the hop limit needs the user, so the drawer opens by
 // itself when the active workspace gets one. Other messages wait in it.
-watch(awaiting, (n, old) => {
-  if (n > old) store.ui.messagesOpen = true
-})
+// Only a rise inside the same workspace counts: switching to a workspace that
+// already has approvals waiting is not news (#79).
+watch(
+  () => [workspace.value?.name, awaiting.value] as const,
+  ([name, n], [oldName, old]) => {
+    if (name === oldName && n > old) store.ui.messagesOpen = true
+  },
+)
 
 // ---- sidebar width ----
 // The user sets the width with the separator (drag, arrow keys, Home/End,
@@ -58,8 +66,14 @@ function onSepDown(ev: PointerEvent): void {
   drag = { id: ev.pointerId, x: ev.clientX, w: prefs.sideWidth }
   ;(ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId)
 }
+// A move counts only while the primary button is down: if the pointer was
+// lost (Cmd-Tab, a system dialog) no pointerup arrives, and a mouse keeps
+// pointerId 1, so plain hover moves would otherwise drag the width (#78).
 function onSepMove(ev: PointerEvent): void {
-  if (drag && ev.pointerId === drag.id) setSideWidth(drag.w + ev.clientX - drag.x)
+  if (drag && ev.pointerId === drag.id && ev.buttons & 1) setSideWidth(drag.w + ev.clientX - drag.x)
+}
+function onSepLost(): void {
+  drag = null
 }
 function onSepUp(ev: PointerEvent): void {
   if (!drag || ev.pointerId !== drag.id) return
@@ -101,7 +115,8 @@ onBeforeUnmount(() => {
       <button
         class="ib side-toggle"
         type="button"
-        :aria-pressed="prefs.sideHidden ? 'true' : 'false'"
+        :aria-expanded="prefs.sideHidden ? 'false' : 'true'"
+        aria-controls="sidebar"
         :aria-label="prefs.sideHidden ? 'Show sidebar' : 'Hide sidebar'"
         :title="prefs.sideHidden ? 'Show sidebar' : 'Hide sidebar'"
         @click="toggleSide"
@@ -136,7 +151,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <nav class="side" aria-label="Workspaces">
+    <nav id="sidebar" class="side" aria-label="Workspaces">
       <Sidebar />
     </nav>
     <div
@@ -154,6 +169,7 @@ onBeforeUnmount(() => {
       @pointermove="onSepMove"
       @pointerup="onSepUp"
       @pointercancel="onSepUp"
+      @lostpointercapture="onSepLost"
       @keydown="onSepKey"
       @dblclick="setSideWidth(SIDE_DEFAULT)"
     ></div>
@@ -203,6 +219,9 @@ onBeforeUnmount(() => {
 
 /* sidebar: its width is the first grid column (inline style from prefs) */
 .side-toggle { flex: none; }
+/* the label says what a click does; no pressed or expanded fill (#76) */
+.side-toggle[aria-expanded] { background: none; border-color: transparent; color: var(--text-muted); }
+.side-toggle:hover { background: var(--muted); color: var(--text); }
 .app.side-hidden .side { display: none; }
 /* the resize handle sits on the sidebar's right border, over both columns */
 .side-sep {

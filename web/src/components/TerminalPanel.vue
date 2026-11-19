@@ -592,7 +592,9 @@ watch(
   async (n) => {
     if (!term) return
     await loadFont()
-    if (!term) return
+    // Two quick changes can finish their font loads out of order: only the
+    // newest size is applied (#81).
+    if (!term || n !== prefs.termFont) return
     term.options.fontSize = n
     fitNow()
   },
@@ -664,7 +666,7 @@ onBeforeUnmount(() => {
           <span v-if="!windows && f?.on_default_login" class="warn-inline" title="On default login: a cswap switch will move it">
             <Icon name="attn" />on default login
           </span>
-          <span v-if="sessionText && !narrow" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
+          <span v-if="sessionText && !narrow && !showWaiting" class="sess-name" :class="{ 'is-id': !session?.title }"><Icon name="hash" /><span class="t">{{ sessionText }}</span></span>
         </span>
         <span v-if="showWaiting && !narrow" class="waiting">
           <span class="chip" title="Held because you have an unsent draft in this panel">
@@ -836,8 +838,12 @@ onBeforeUnmount(() => {
 }
 .ph-meta > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .ph-meta > .sess-name { flex-shrink: 3; }
-/* the session (title or id) gives way before the account */
-.ph-meta > .acct, .ph-meta > .warn-inline { flex-shrink: 1; }
+/* the session gives way before the account; an id is never cut to a stub
+   (a title may lose its end), and the login warning, a safety cue, never
+   shrinks (#80) */
+.ph-meta > .sess-name.is-id { flex-shrink: 0; }
+.ph-meta > .acct { flex-shrink: 1; }
+.ph-meta > .warn-inline { flex-shrink: 0; }
 .ph-meta > span .i { vertical-align: -2px; margin-right: 5px; }
 .ph-meta b { color: var(--text); font-weight: 500; }
 /* Row 2 exists only in a narrow panel with the waiting chip: the chip and

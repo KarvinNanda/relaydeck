@@ -95,4 +95,16 @@ describe('prefs', () => {
     await nextTick()
     expect(JSON.parse(s.getItem(KEY)!)).toEqual({ sideWidth: SIDE_DEFAULT, sideHidden: false, termFont: 11, messagesOpen: true })
   })
+
+  it("writes only the changed field, so another tab's choice is kept (#81)", async () => {
+    const s = mem()
+    loadPrefs(s as unknown as Storage)
+    // another tab saved a font size after this tab loaded
+    s.setItem(KEY, JSON.stringify({ sideWidth: SIDE_DEFAULT, sideHidden: false, termFont: 10, messagesOpen: false }))
+    setSideWidth(300)
+    await nextTick()
+    const saved = JSON.parse(s.getItem(KEY)!)
+    expect(saved.sideWidth).toBe(300)
+    expect(saved.termFont).toBe(10)
+  })
 })

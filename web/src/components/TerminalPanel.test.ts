@@ -802,6 +802,16 @@ describe('TerminalPanel header layout', () => {
     expect(w!.find('.ph-name').attributes('title')).toBe('fe-admin · Fix login redirect loop')
   })
 
+  it('drops the session when the waiting chip needs the room in a wide panel (#80)', async () => {
+    messages = [heldDraft('m1')]
+    setFolder({ status: 'idle', pending: 1, on_default_login: true })
+    paneWidth(900)
+    await mountPanel()
+    expect(w!.find('.ph-1 .waiting').exists()).toBe(true)
+    expect(w!.find('.ph-meta .sess-name').exists()).toBe(false)
+    expect(w!.find('.ph-meta .warn-inline').exists()).toBe(true)
+  })
+
   it('also drops the account in a very narrow panel, never the login warning', async () => {
     setFolder({ on_default_login: true })
     paneWidth(400)
@@ -1287,5 +1297,36 @@ describe('TerminalPanel font size', () => {
     prefs.termFont = 14
     await flushPromises()
     expect(fx.terms.length).toBe(0)
+  })
+})
+
+describe('TerminalPanel font size races (#81)', () => {
+  afterEach(() => {
+    loadPrefs(null)
+    delete (document as unknown as Record<string, unknown>).fonts
+    document.documentElement.style.removeProperty('--font')
+  })
+
+  it('applies the newest size when an older font load finishes last', async () => {
+    const pending: Record<string, () => void> = {}
+    document.documentElement.style.setProperty('--font', 'TestMono')
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { load: (spec: string) => new Promise<void>((r) => { pending[spec.split(' ')[0]] = r }) },
+    })
+    await mountPanel()
+    // the first load (for the mount) resolves at once
+    Object.values(pending).forEach((r) => r())
+    await flushPromises()
+    await replay()
+    prefs.termFont = 14
+    await flushPromises()
+    prefs.termFont = 10
+    await flushPromises()
+    pending['10px']?.()
+    await flushPromises()
+    pending['14px']?.()
+    await flushPromises()
+    expect(term().options.fontSize).toBe(10)
   })
 })
