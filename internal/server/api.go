@@ -219,7 +219,7 @@ func (a *api) attachment(w http.ResponseWriter, r *http.Request) {
 	}
 	// MaxBytesReader is a backstop only: attach.Save stops reading at
 	// MaxFile+1 bytes, so it reports ErrTooLarge before this limit is hit.
-	p, err := attach.Save(dir, http.MaxBytesReader(w, r.Body, attach.MaxFile+1), attach.MaxFile, attach.MaxTotal)
+	p, size, err := attach.Save(dir, http.MaxBytesReader(w, r.Body, attach.MaxFile+1), attach.MaxFile, attach.MaxTotal)
 	switch {
 	case err == nil:
 	case errors.Is(err, attach.ErrTooLarge):
@@ -240,10 +240,13 @@ func (a *api) attachment(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	fi, _ := os.Stat(p)
-	var size int64
-	if fi != nil {
-		size = fi.Size()
+	// The agent may have exited while the body was read: then its runtime
+	// dir is being removed and the path would be pasted into a dead
+	// terminal. Drop the file and say so (#72).
+	if now, err := a.d.AttachmentDir(ws, name); err != nil || now != dir {
+		os.Remove(p)
+		writeError(w, http.StatusConflict, daemon.ErrNotRunning.Error())
+		return
 	}
 	a.log.Info("attachment saved", "request_id", logx.RequestID(r.Context()),
 		"agent_id", filepath.Base(filepath.Dir(dir)), "ws", ws, "folder", name, "ext", filepath.Ext(p), "bytes", size)

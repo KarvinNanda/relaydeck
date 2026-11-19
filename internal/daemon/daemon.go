@@ -133,6 +133,11 @@ type Daemon struct {
 	opts Options
 	log  *slog.Logger
 
+	// watchers counts the watch goroutines (one per started agent). stopAll
+	// waits for them, so runtime dirs (tokens, image attachments) are gone
+	// before the process exits (#70).
+	watchers sync.WaitGroup
+
 	// cfgMu guards cfg for every read, mutation and Save (ruling 1). Never
 	// keep a pointer from cfg.Folder across an unlock.
 	cfgMu sync.Mutex
@@ -309,7 +314,19 @@ func (d *Daemon) stopAll() {
 		})
 	}
 	wg.Wait()
+	// Each stopped agent's watch now removes its runtime dir. A hung cleanup
+	// must not hold the shutdown: the next start removes stale dirs anyway.
+	cleaned := make(chan struct{})
+	go func() { d.watchers.Wait(); close(cleaned) }()
+	select {
+	case <-cleaned:
+	case <-time.After(watchCleanupWait):
+		d.log.Warn("runtime dir cleanup still running at shutdown")
+	}
 }
+
+// watchCleanupWait bounds how long stopAll waits for runtime dir removal.
+const watchCleanupWait = 3 * time.Second
 
 // safeGo runs fn in a new goroutine. A panic in fn is logged with its stack
 // and ends only that goroutine, not the daemon. fn should call its own
