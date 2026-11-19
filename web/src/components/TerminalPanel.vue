@@ -450,6 +450,9 @@ async function createTerm(el: HTMLElement): Promise<void> {
       },
     },
     scrollback: 5000,
+    // Claude Code turns on mouse tracking, so a plain drag goes to it. Shift
+    // (Windows, Linux) or Option (macOS) + drag selects in the terminal (#68).
+    macOptionClickForcesSelection: true,
     theme: {
       background: token('--term'),
       foreground: token('--text'),

@@ -23,7 +23,7 @@ describe('detectOS', () => {
   })
 })
 
-type Mods = { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean; type?: string }
+type Mods = { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean; type?: string; keyCode?: number }
 
 function k(code: string, m: Mods = {}) {
   return {
@@ -33,6 +33,7 @@ function k(code: string, m: Mods = {}) {
     shiftKey: !!m.shift,
     altKey: !!m.alt,
     metaKey: !!m.meta,
+    keyCode: m.keyCode ?? 0,
   }
 }
 
@@ -92,5 +93,25 @@ describe('keyAction on mac', () => {
     expect(act('mac', 'KeyV', { meta: true }, false)).toBe('pass')
     expect(act('mac', 'KeyC', { ctrl: true }, true)).toBe('pass')
     expect(act('mac', 'KeyV', { ctrl: true, shift: true }, false)).toBe('pass')
+  })
+})
+
+describe('keyAction follows the keyboard layout like xterm (#67)', () => {
+  it('copies on the key labelled C in Dvorak (code KeyI, keyCode 67)', () => {
+    expect(act('windows', 'KeyI', { ctrl: true, keyCode: 67 }, true)).toBe('copy')
+    expect(act('linux', 'KeyI', { ctrl: true, shift: true, keyCode: 67 }, false)).toBe('copy')
+  })
+
+  it('pastes on the key labelled V in Dvorak (code Period, keyCode 86)', () => {
+    expect(act('windows', 'Period', { ctrl: true, keyCode: 86 }, false)).toBe('paste')
+  })
+
+  it('leaves the physical C key alone when the layout makes it another letter', () => {
+    // Dvorak: the physical C position types J, so Ctrl+that key is Ctrl+J
+    expect(act('windows', 'KeyC', { ctrl: true, keyCode: 74 }, true)).toBe('pass')
+  })
+
+  it('still copies on a Cyrillic layout, where keyCode stays 67', () => {
+    expect(act('windows', 'KeyC', { ctrl: true, keyCode: 67 }, true)).toBe('copy')
   })
 })

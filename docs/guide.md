@@ -240,7 +240,7 @@ The keys follow the system your browser runs on, like the usual terminal there.
 | Windows | Ctrl+C (with text selected) or Ctrl+Shift+C | Ctrl+V or Ctrl+Shift+V |
 | Linux | Ctrl+Shift+C | Ctrl+Shift+V |
 
-Claude Code handles the mouse itself: a plain drag selects text inside Claude Code, and Claude Code copies it to the system clipboard on its own (it shows `copied N chars to clipboard`). On Windows and Linux, hold Shift while you drag to select in the terminal instead; the copy keys above copy that selection.
+Claude Code handles the mouse itself: a plain drag selects text inside Claude Code, and Claude Code copies it to the system clipboard on its own (it shows `copied N chars to clipboard`). To select in the terminal instead, hold Shift (Windows, Linux) or Option (macOS) while you drag; the copy keys above copy that selection. The copy and paste keys follow your keyboard layout, the same way the terminal does.
 
 Ctrl+C with no text selected still interrupts the agent on every system. On Linux and macOS, plain Ctrl+V goes to Claude Code, which reads it as "paste an image from the clipboard".
 
