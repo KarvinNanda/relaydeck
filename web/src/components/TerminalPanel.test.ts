@@ -1088,6 +1088,29 @@ describe('TerminalPanel copy and paste keys', () => {
     expect(writeText).toHaveBeenCalledTimes(1)
   })
 
+  it('holding Ctrl+C after a copy never reaches the agent', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    expect(press('KeyC', { ctrl: true }).ret).toBe(false)
+    await flushPromises() // the copy is done and the selection is cleared
+    const repeat = new KeyboardEvent('keydown', { code: 'KeyC', ctrlKey: true, repeat: true, cancelable: true })
+    expect(term().keyHandler!(repeat)).toBe(false)
+    expect(repeat.defaultPrevented).toBe(true)
+    expect(press('KeyC', { ctrl: true }, 'keyup').ret).toBe(false)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a new Ctrl+C press after a copy reaches the agent again', async () => {
+    onOS('Win32')
+    await mountPanel()
+    term().selection = 'hello'
+    press('KeyC', { ctrl: true })
+    await flushPromises()
+    // the keyup was lost (focus moved away); a fresh press decides again
+    expect(press('KeyC', { ctrl: true }).ret).toBe(true)
+  })
+
   it('a failed clipboard write keeps the selection', async () => {
     onOS('Win32')
     writeText.mockRejectedValue(new Error('denied'))

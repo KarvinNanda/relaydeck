@@ -369,10 +369,20 @@ async function createTerm(el: HTMLElement): Promise<void> {
   // prevented: the browser fires 'paste' on xterm's textarea and xterm sends
   // it as a bracketed paste, so no clipboard permission prompt appears.
   const os = detectOS(navigator as Navigator & { userAgentData?: { platform?: string } })
+  // The key a fresh keydown took, kept until its keyup. Repeats, keypress
+  // and keyup of that key follow the first decision: after a copy on Windows
+  // the selection is gone, and a repeat that decided again would send \x03.
+  let held: { code: string; action: 'copy' | 'paste' } | null = null
   term.attachCustomKeyEventHandler((ev) => {
     const t = term
     if (!t) return true
+    if (held && ev.code === held.code && (ev.type !== 'keydown' || ev.repeat)) {
+      if (held.action === 'copy') ev.preventDefault()
+      if (ev.type === 'keyup') held = null
+      return false
+    }
     const a = keyAction(os, ev, t.hasSelection())
+    if (ev.type === 'keydown') held = a === 'pass' ? null : { code: ev.code, action: a }
     if (a === 'pass') return true
     if (a === 'copy') {
       ev.preventDefault() // also stops Chrome's Ctrl+Shift+C inspect
