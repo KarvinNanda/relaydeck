@@ -35,6 +35,7 @@ import StatusBadge from './StatusBadge.vue'
 import SessionPicker, { relTime } from './SessionPicker.vue'
 import type { Session } from '../types'
 import { detectOS, keyAction, type TermOS } from '../termkeys'
+import { prefs } from '../stores/prefs'
 
 const props = defineProps<{ ws: string; folder: string; focused: boolean; maximized: boolean; canMaximize: boolean }>()
 const emit = defineEmits<{ maximize: []; restore: [] }>()
@@ -383,7 +384,7 @@ async function loadFont(): Promise<void> {
   const font = token('--font')
   if (!font || !document.fonts) return
   try {
-    await document.fonts.load(`${token('--fs-term') ?? '12px'} ${font}`)
+    await document.fonts.load(`${prefs.termFont}px ${font}`)
   } catch {
     // xterm falls back to the next font in the list
   }
@@ -410,7 +411,7 @@ async function createTerm(el: HTMLElement): Promise<void> {
   if (!alive || term) return
   term = new Terminal({
     fontFamily: token('--font'),
-    fontSize: parseFloat(token('--fs-term') ?? '') || 12,
+    fontSize: prefs.termFont, // the top bar size control (stores/prefs.ts)
     lineHeight: 1, // more rows; the server needs at least MIN_ROWS
     cursorBlink: true,
     // OSC 8 hyperlinks from the agent: http and https only. The agent chose
@@ -583,6 +584,19 @@ function fitSoon(): void {
   clearTimeout(fitTimer)
   fitTimer = setTimeout(fitNow, fitDelay)
 }
+
+// A new text size from the top bar: xterm measures the new cell size once
+// the font is loaded at that size, then the fit tells the server the grid.
+watch(
+  () => prefs.termFont,
+  async (n) => {
+    if (!term) return
+    await loadFont()
+    if (!term) return
+    term.options.fontSize = n
+    fitNow()
+  },
+)
 
 // Runs after the DOM update, so the terminal box is visible when it connects.
 watch(running, (r) => {

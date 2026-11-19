@@ -4,6 +4,7 @@ import { api, ApiError, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import TerminalPanel, { MIN_COLS, MIN_ROWS } from './TerminalPanel.vue'
+import { loadPrefs, prefs } from '../stores/prefs'
 import type { FolderState, Message } from '../types'
 
 // Fakes for xterm.js and the fit addon. jsdom has no canvas or layout, so
@@ -1231,5 +1232,36 @@ describe('TerminalPanel image drop and paste', () => {
     expect(ev.defaultPrevented).toBe(false)
     await flushPromises()
     expect(uploadMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel font size', () => {
+  afterEach(() => loadPrefs(null))
+
+  it('creates xterm with the chosen size', async () => {
+    prefs.termFont = 10
+    await mountPanel()
+    expect(term().options.fontSize).toBe(10)
+  })
+
+  it('applies a new size to a running terminal and tells the server its new grid', async () => {
+    await mountPanel()
+    await replay()
+    const before = sock().frames().filter((f) => f.type === 'resize').length
+    fx.propose = { cols: 120, rows: 40 }
+    prefs.termFont = 10
+    await flushPromises()
+    expect(term().options.fontSize).toBe(10)
+    const resizes = sock().frames().filter((f) => f.type === 'resize')
+    expect(resizes.length).toBeGreaterThan(before)
+    expect(resizes[resizes.length - 1]).toEqual({ type: 'resize', cols: 120, rows: 40 })
+  })
+
+  it('a stopped panel takes a size change without error', async () => {
+    setFolder({ status: 'stopped' })
+    await mountPanel()
+    prefs.termFont = 14
+    await flushPromises()
+    expect(fx.terms.length).toBe(0)
   })
 })

@@ -10,6 +10,7 @@ import NoToken from './components/NoToken.vue'
 import Sidebar from './components/Sidebar.vue'
 import PanelGrid from './components/PanelGrid.vue'
 import NotifyView from './components/NotifyView.vue'
+import FontSize from './components/FontSize.vue'
 
 const host = window.location.host
 
@@ -114,6 +115,7 @@ onBeforeUnmount(() => {
         <span v-else>none yet</span>
       </div>
       <div class="spacer"></div>
+      <FontSize />
       <!-- Task 17 renders the layout switcher here with <Teleport defer to="#layout-slot">. -->
       <div id="layout-slot" class="layout-slot"></div>
       <button
