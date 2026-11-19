@@ -43,6 +43,31 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 
 // errorText reads the server's {"error": "..."} body, or the short plain
 // text that the auth guard writes. It never returns raw JSON or HTML.
+// uploadAttachment sends a dropped or pasted image to the daemon, which saves
+// it for the folder's running agent and answers its path. The daemon checks
+// the type from the bytes, so the body goes as plain octets.
+export async function uploadAttachment(ws: string, folder: string, file: Blob): Promise<string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const path = `/api/agents/${encodeURIComponent(ws)}/${encodeURIComponent(folder)}/attachments`
+  let res: Response
+  try {
+    res = await fetch(path, { method: 'POST', headers, body: file, cache: 'no-store' })
+  } catch {
+    throw new ApiError(0, 'relaydeck is not reachable. Is `relaydeck serve` still running?')
+  }
+  if (!res.ok) throw new ApiError(res.status, await errorText(res))
+  let body: unknown
+  try {
+    body = await res.json()
+  } catch {
+    body = null
+  }
+  const p = (body as { path?: unknown } | null)?.path
+  if (typeof p !== 'string' || p === '') throw new ApiError(res.status, 'invalid response from relaydeck')
+  return p
+}
+
 async function errorText(res: Response): Promise<string> {
   const fallback = `request failed (HTTP ${res.status})`
   const type = res.headers.get('Content-Type') ?? ''

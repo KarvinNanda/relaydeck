@@ -2,7 +2,7 @@
 // The app frame from mockup A: top bar, sidebar, terminal panels and the
 // Messages drawer. Each region renders one component that Tasks 16, 17 and
 // 18 own, so this file does not change when they fill them in.
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { store } from './stores/state'
 import Icon from './components/Icon.vue'
 import NoToken from './components/NoToken.vue'
@@ -32,6 +32,20 @@ const connClass = computed(() => {
 function toggleMessages(): void {
   store.ui.messagesOpen = !store.ui.messagesOpen
 }
+
+// A file dropped where no panel takes it would make the browser open the file
+// in this tab and leave relaydeck. Panels handle their own drops first.
+function blockFileDrop(ev: DragEvent): void {
+  if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault()
+}
+onMounted(() => {
+  window.addEventListener('dragover', blockFileDrop)
+  window.addEventListener('drop', blockFileDrop)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('dragover', blockFileDrop)
+  window.removeEventListener('drop', blockFileDrop)
+})
 </script>
 
 <template>

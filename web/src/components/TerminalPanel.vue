@@ -26,7 +26,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { api, ApiError, openSocket } from '../api'
+import { api, ApiError, openSocket, uploadAttachment } from '../api'
 import { store } from '../stores/state'
 import { panelStore } from '../stores/panels'
 import { acquireMessages } from '../stores/messages'
@@ -237,6 +237,79 @@ watch(() => props.focused, () => focusTerm(), { flush: 'post' })
 
 function focusMe(): void {
   if (!props.focused) panelStore.focusPanel(props.ws, props.folder)
+}
+
+// ---- image drop and paste ----
+// A browser gives the page the bytes of a dropped or pasted image, never a
+// path. The daemon saves the image for this agent and answers its path; the
+// panel pastes that path, and Claude Code turns it into [Image #N].
+const NEED_RUNNING = 'Start the agent to attach images.'
+const IMAGES_ONLY = 'Only images can be attached (PNG, JPEG, GIF, WebP).'
+const dropping = ref(false)
+let dragDepth = 0 // dragenter/dragleave also fire for every child element
+
+function hasFiles(ev: DragEvent): boolean {
+  return !!ev.dataTransfer?.types?.includes('Files')
+}
+function onDragEnter(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  dragDepth++
+  dropping.value = true
+}
+function onDragOver(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy'
+}
+function onDragLeave(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dropping.value = false
+}
+function onDrop(ev: DragEvent): void {
+  if (!hasFiles(ev)) return
+  ev.preventDefault()
+  dragDepth = 0
+  dropping.value = false
+  void attachFiles(Array.from(ev.dataTransfer?.files ?? []))
+}
+
+// Runs before xterm's own paste handler (capture phase). It takes the paste
+// only when the clipboard holds image files and no text: a copy from Office
+// or a web page carries both, and then the text is what the user wants.
+function onPaste(ev: ClipboardEvent): void {
+  const cd = ev.clipboardData
+  if (!cd) return
+  const images = Array.from(cd.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (images.length === 0 || cd.getData('text/plain').trim() !== '') return
+  ev.preventDefault()
+  ev.stopPropagation()
+  void attachFiles(images)
+}
+
+// Uploads the images one by one, in order, and pastes each path. The first
+// error stops the rest and shows in the panel alert.
+async function attachFiles(files: File[]): Promise<void> {
+  if (files.length === 0) return
+  alert.value = ''
+  canForce.value = false
+  if (!running.value) {
+    alert.value = NEED_RUNNING
+    return
+  }
+  const images = files.filter((f) => f.type.startsWith('image/'))
+  if (images.length < files.length) alert.value = IMAGES_ONLY
+  for (const f of images) {
+    try {
+      const p = await uploadAttachment(props.ws, props.folder, f)
+      term?.paste(p)
+    } catch (e) {
+      alert.value = e instanceof ApiError ? e.message : 'Something went wrong. Try again.'
+      return
+    }
+  }
+  focusTerm()
 }
 
 // ---- session picker popover ----
@@ -558,6 +631,11 @@ onBeforeUnmount(() => {
     :class="{ focus: focused, attn: status === 'attention', 'pane-stopped': !running, tight }"
     @pointerdown="focusMe"
     @focusin="focusMe"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+    @paste.capture="onPaste"
   >
     <div ref="header" class="ph">
       <div class="ph-1">
@@ -672,6 +750,9 @@ onBeforeUnmount(() => {
     <div class="body">
       <div v-show="running" ref="host" class="term"></div>
       <div v-if="running && moreRight" class="term-fade" aria-hidden="true"></div>
+      <div v-if="dropping" class="drop-hint" role="status">
+        <Icon name="image" />{{ running ? 'Drop image to attach' : NEED_RUNNING }}
+      </div>
       <div v-if="!running" class="stopped">
         <div class="big c-stop"><Icon name="stop" />Stopped</div>
         <div class="c-muted">{{ lastLine }}</div>
@@ -816,6 +897,17 @@ onBeforeUnmount(() => {
   /* a soft shade of the terminal's own color, not a lighter band */
   background: linear-gradient(to right, transparent, color-mix(in srgb, #000 55%, var(--term)));
 }
+
+/* image drop target over the terminal; it never takes pointer events, so the
+   drag enter and leave counting stays on the panel */
+.drop-hint {
+  position: absolute; inset: var(--s-2); z-index: 4; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; gap: var(--s-4);
+  border: 2px dashed var(--border-strong); border-radius: var(--r);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text); font-weight: 600; text-align: center; padding: var(--s-5);
+}
+.drop-hint .i { width: 20px; height: 20px; flex: none; }
 
 .stopped {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-3);
