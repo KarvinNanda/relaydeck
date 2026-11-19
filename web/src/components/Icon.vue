@@ -59,6 +59,10 @@ const icons = {
     { tag: 'path', d: 'm3 12 9 5 9-5' },
     { tag: 'path', d: 'm3 17 9 5 9-5' },
   ],
+  sidebar: [
+    { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
+    { tag: 'path', d: 'M9 3v18' },
+  ],
   image: [
     { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
     { tag: 'circle', cx: 9, cy: 9, r: 2 },

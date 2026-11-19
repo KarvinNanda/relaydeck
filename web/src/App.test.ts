@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
 import { store } from './stores/state'
+import { loadPrefs, prefs } from './stores/prefs'
 
 afterEach(() => {
   store.state.unauthorized = false
   store.state.connection = 'connecting'
   store.state.data = null
   store.ui.messagesOpen = true
+  loadPrefs(null)
 })
 
 describe('App', () => {
@@ -97,5 +99,116 @@ describe('App', () => {
       expect(ev.defaultPrevented).toBe(true)
     }
     w.unmount()
+  })
+
+  describe('sidebar width', () => {
+    function frame() {
+      store.state.connection = 'connected'
+      store.state.data = { platform: 'darwin', account: { cswap: false, known: false, default: '' }, workspaces: [] }
+      return mount(App, { attachTo: document.body })
+    }
+    const cols = (w: ReturnType<typeof mount>) => (w.find('.app').element as HTMLElement).style.gridTemplateColumns
+
+    it('uses the saved width and 0 when the sidebar is hidden', async () => {
+      prefs.sideWidth = 300
+      const w = frame()
+      expect(cols(w)).toMatch(/^300px /)
+      const hide = w.find('button.side-toggle')
+      expect(hide.attributes('aria-label')).toBe('Hide sidebar')
+      await hide.trigger('click')
+      expect(prefs.sideHidden).toBe(true)
+      expect(cols(w)).toMatch(/^0px /)
+      expect(w.find('button.side-toggle').attributes('aria-label')).toBe('Show sidebar')
+      expect(w.find('button.side-toggle').attributes('aria-pressed')).toBe('true')
+      expect(w.find('[role="separator"]').exists()).toBe(false)
+      w.unmount()
+    })
+
+    it('the separator resizes with the keyboard and resets on double click', async () => {
+      const w = frame()
+      const sep = w.find('[role="separator"]')
+      expect(sep.attributes('aria-orientation')).toBe('vertical')
+      expect(sep.attributes('aria-valuemin')).toBe('160')
+      expect(sep.attributes('aria-valuemax')).toBe('420')
+      expect(sep.attributes('aria-valuenow')).toBe('232')
+      expect(sep.attributes('tabindex')).toBe('0')
+      await sep.trigger('keydown', { key: 'ArrowRight' })
+      expect(prefs.sideWidth).toBe(248)
+      await sep.trigger('keydown', { key: 'ArrowLeft' })
+      await sep.trigger('keydown', { key: 'ArrowLeft' })
+      expect(prefs.sideWidth).toBe(216)
+      await sep.trigger('keydown', { key: 'End' })
+      expect(prefs.sideWidth).toBe(420)
+      await sep.trigger('keydown', { key: 'Home' })
+      expect(prefs.sideWidth).toBe(160)
+      await sep.trigger('dblclick')
+      expect(prefs.sideWidth).toBe(232)
+      w.unmount()
+    })
+
+    it('a pointer drag clamps the width and releases the pointer', async () => {
+      const w = frame()
+      const el = w.find('[role="separator"]').element as HTMLElement
+      const captured = new Set<number>()
+      el.setPointerCapture = (id: number) => void captured.add(id)
+      el.releasePointerCapture = (id: number) => void captured.delete(id)
+      el.hasPointerCapture = (id: number) => captured.has(id)
+      const ev = (type: string, clientX: number) => {
+        const e = new MouseEvent(type, { clientX, bubbles: true, button: 0 })
+        Object.defineProperty(e, 'pointerId', { value: 7 })
+        el.dispatchEvent(e)
+      }
+      ev('pointerdown', 232)
+      expect(captured.has(7)).toBe(true)
+      ev('pointermove', 282)
+      expect(prefs.sideWidth).toBe(282)
+      ev('pointermove', 900)
+      expect(prefs.sideWidth).toBe(420)
+      ev('pointerup', 900)
+      expect(captured.has(7)).toBe(false)
+      ev('pointermove', 300)
+      expect(prefs.sideWidth).toBe(420)
+      w.unmount()
+    })
+  })
+
+  describe('Messages drawer opens for approvals', () => {
+    function folder(name: string, awaiting: number) {
+      return { name, path: `/x/${name}`, permission_mode: 'auto', status: 'idle' as const, on_default_login: false, pending: 0, awaiting_approval: awaiting }
+    }
+    function data(a: number, b: number) {
+      return {
+        platform: 'darwin',
+        account: { cswap: false, known: false, default: '' },
+        workspaces: [
+          { name: 'one', folders: [folder('x', a)] },
+          { name: 'two', folders: [folder('y', b)] },
+        ],
+      }
+    }
+
+    it('opens when the active workspace gets a message that awaits approval', async () => {
+      store.state.data = data(0, 0)
+      store.ui.workspace = 'one'
+      store.ui.messagesOpen = false
+      const w = mount(App)
+      store.state.data = data(1, 0)
+      await nextTick()
+      expect(store.ui.messagesOpen).toBe(true)
+      w.unmount()
+      store.ui.workspace = null
+    })
+
+    it('stays closed when another workspace gets one', async () => {
+      store.state.data = data(0, 0)
+      store.ui.workspace = 'one'
+      store.ui.messagesOpen = false
+      const w = mount(App)
+      store.state.data = data(0, 2)
+      await nextTick()
+      expect(store.ui.messagesOpen).toBe(false)
+      w.unmount()
+      store.ui.workspace = null
+    })
   })
 })
