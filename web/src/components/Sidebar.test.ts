@@ -268,6 +268,18 @@ describe('Sidebar', () => {
     ])
   })
 
+  it('puts Add workspace right after the workspace list, and keeps only the status key in the footer (#96)', () => {
+    store.state.data = snapshot()
+    const w = mount(Sidebar)
+    const tree = w.find('.sb-tree')
+    const add = tree.find('.ws-add button.add-ws')
+    expect(add.exists()).toBe(true)
+    // last child of the scroll box, so it follows the list and can stick to its bottom
+    expect(tree.element.lastElementChild).toBe(w.find('.ws-add').element)
+    expect(w.find('.side-foot .add-ws').exists()).toBe(false)
+    expect(w.find('.side-foot .legend').exists()).toBe(true)
+  })
+
   it('says so when there are no workspaces', () => {
     store.state.data = { ...snapshot(), workspaces: [] }
     const w = mount(Sidebar)

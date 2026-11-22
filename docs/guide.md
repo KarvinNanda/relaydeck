@@ -296,6 +296,6 @@ Shift+Enter or Ctrl+Enter starts a new line in the input box instead of sending 
 - The 4 panel limit is enforced in the browser only.
 - A multi-agent chain needs an instruction from you in each agent.
 - The daemon keeps the newest 500 finished messages per workspace.
-- A full run on a real Windows machine is still open ([#34](https://github.com/KarvinNanda/relaydeck/issues/34)); Windows builds and tests run in CI. cswap accounts are untested. Safari was not tested.
+- Windows had one manual run on a real machine (the checklist in [#34](https://github.com/KarvinNanda/relaydeck/issues/34)); Windows builds and tests run in CI on every change. cswap accounts are untested. Safari was not tested.
 
 For the full list and the reasons, see [architecture.md](architecture.md#6-known-limits).

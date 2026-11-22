@@ -1397,3 +1397,27 @@ func TestDeliverNowDoesNotClearNudgePlusText(t *testing.T) {
 		}
 	}
 }
+
+// A box narrow enough to wrap our nudge reads as two lines (#95). It is still
+// our nudge: held as a draft, never pasted a second time.
+func TestWrappedNudgeIsNotPastedAgain(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick() // paste, Enter
+	nudgeText := notify.Nudge([]notify.Message{m})
+	i := strings.LastIndex(nudgeText, " ")
+	wrapped := nudgeText[:i] + "\n" + nudgeText[i+1:]
+	g.fa.set(func(f *fakeAgents) {
+		f.scr = screen.State{InputVisible: true, InputEmpty: false, Draft: wrapped}
+	})
+	g.c.add(confirmWindow)
+	n := g.fa.nInjected()
+	g.tick()
+	g.tick()
+	if g.state(m.ID) != notify.StateHeldDraft {
+		t.Fatalf("state %s, want held_draft", g.state(m.ID))
+	}
+	if got := g.fa.nInjected(); got != n {
+		t.Fatalf("injected %d more writes, want none", got-n)
+	}
+}

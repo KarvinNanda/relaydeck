@@ -8,7 +8,7 @@ Example: you tell the backend agent "when you are running, tell fe-admin and fe-
 
 relaydeck runs on macOS, Linux and Windows. Clone it, build it once, and run `relaydeck serve`.
 
-Status: the daemon, agent messaging and the web UI are built. Verified end to end on macOS: agents messaging each other, auto-start, nudge and resume with Claude Code 2.1.327; image drop and copy and paste keys with 2.1.328. Linux and Windows builds and tests run in CI on every change; a full run on a real Windows machine is tracked in [#34](https://github.com/KarvinNanda/relaydeck/issues/34).
+Status: the daemon, agent messaging and the web UI are built. Verified end to end on macOS: agents messaging each other, auto-start, nudge and resume with Claude Code 2.1.327; image drop and copy and paste keys with 2.1.328. Linux and Windows builds and tests run in CI on every change. The manual Windows checklist ([#34](https://github.com/KarvinNanda/relaydeck/issues/34)) was run on a real Windows machine with native Claude Code and closed on 2026-11-22.
 
 ## Requirements
 
