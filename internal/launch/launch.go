@@ -197,9 +197,18 @@ func buildEnv(in Input, windows bool) []string {
 		if drop[norm(k)] || strings.HasPrefix(norm(k), "RELAYDECK_") || hasAnyPrefix(norm(k), sessionMarkerPrefixes) {
 			continue
 		}
+		// The terminal is the panel's xterm.js, not whatever started the
+		// daemon (launchd gives none): set below.
+		if norm(k) == norm("TERM") || norm(k) == norm("COLORTERM") {
+			continue
+		}
 		env = append(env, e)
 	}
 	return append(env,
+		// xterm.js draws 256 colors and truecolor. Without TERM, Claude Code
+		// 2.1.330 draws no color at all, and the transcript reads flat.
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
 		"RELAYDECK_URL="+in.DaemonURL,
 		"RELAYDECK_AGENT_ID="+in.AgentID,
 		"RELAYDECK_AGENT_TOKEN="+in.AgentToken,

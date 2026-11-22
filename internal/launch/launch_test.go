@@ -253,7 +253,7 @@ func TestEnvScrubsClaudeSessionMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"CLAUDE_CONFIG_DIR=/keep", "PATH=/bin",
+	want := []string{"CLAUDE_CONFIG_DIR=/keep", "PATH=/bin", "TERM=xterm-256color", "COLORTERM=truecolor",
 		"RELAYDECK_URL=http://127.0.0.1:7341", "RELAYDECK_AGENT_ID=agent-1", "RELAYDECK_AGENT_TOKEN=" + testToken}
 	if !slices.Equal(c.Env, want) {
 		t.Errorf("Env = %v", c.Env)
@@ -477,5 +477,31 @@ func TestBuildInputErrorsAreBadInput(t *testing.T) {
 	in.Folder.Account = "-x"
 	if _, err := Build(in); !errors.Is(err, ErrBadInput) {
 		t.Errorf("bad account: %v", err)
+	}
+}
+
+// The panel is xterm.js, which draws 256 colors and truecolor, whatever
+// terminal (if any) the daemon was started from. Claude Code 2.1.330 draws no
+// color at all without TERM, so the agent gets TERM and COLORTERM, replacing
+// inherited values; NO_COLOR, a user choice, is kept.
+func TestEnvAdvertisesTheXtermPanel(t *testing.T) {
+	in := base()
+	in.BaseEnv = []string{"TERM=dumb", "COLORTERM=", "NO_COLOR=1", "PATH=/bin"}
+	c, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := map[string]int{}
+	for _, e := range c.Env {
+		k, _, _ := strings.Cut(e, "=")
+		count[k]++
+	}
+	for _, want := range []string{"TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=1"} {
+		if !slices.Contains(c.Env, want) {
+			t.Errorf("Env misses %q: %v", want, c.Env)
+		}
+	}
+	if count["TERM"] != 1 || count["COLORTERM"] != 1 {
+		t.Errorf("TERM or COLORTERM appears more than once: %v", c.Env)
 	}
 }
