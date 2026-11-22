@@ -444,7 +444,15 @@ describe('TerminalPanel terminal', () => {
     expect(term().reset).toHaveBeenCalledTimes(1)
     const bytes = new TextEncoder().encode('hello')
     sock().frame(bytes.buffer)
-    expect(term().write).toHaveBeenCalledWith(new Uint8Array(bytes), expect.any(Function))
+    // output goes through the recolor step, so xterm gets text
+    expect(term().write).toHaveBeenCalledWith('hello', expect.any(Function))
+  })
+
+  it('recolors the user prompt bar before xterm draws it', async () => {
+    await mountPanel()
+    await replay()
+    sock().frame(new TextEncoder().encode('\x1b[48;2;55;55;55m❯ hi').buffer)
+    expect(term().write).toHaveBeenLastCalledWith('\x1b[48;2;30;58;95m\x1b[38;2;96;165;250m❯\x1b[39m hi')
   })
 
   it('lets Option+drag select on macOS while the agent uses the mouse (#68)', async () => {
