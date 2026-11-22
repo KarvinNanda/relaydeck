@@ -906,3 +906,39 @@ func TestTypedStateIsOneReading(t *testing.T) {
 		t.Fatalf("after input: %v %v", typed, last)
 	}
 }
+
+// Meta+Enter (ESC CR) is a newline in Claude Code's input box (Shift+Enter
+// and Ctrl+Enter in the panel, Option+Enter). It is typing, not Enter: the
+// prompt was not submitted, so it starts no new turn.
+func TestMetaEnterIsNotEnter(t *testing.T) {
+	var n atomic.Int32
+	m := newMgr(t, func(string) { n.Add(1) })
+	a := start(t, m, "a")
+	for _, w := range []string{"abc", "\x1b\r", "def", "\x1b\r"} {
+		if err := a.Write([]byte(w)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := n.Load(); got != 0 {
+		t.Fatalf("callback count = %d after only newlines, want 0", got)
+	}
+	a.Write([]byte("\x1b\rx\r"))
+	if got := n.Load(); got != 1 {
+		t.Fatalf("callback count = %d after one Enter, want 1", got)
+	}
+}
+
+// A draft that ends in a newline is still a draft when the hook of an earlier,
+// queued prompt fires.
+func TestResetTypedKeepsDraftEndingInNewline(t *testing.T) {
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	a.Write([]byte("first\r"))
+	time.Sleep(time.Millisecond)
+	a.Write([]byte("aaa"))
+	a.Write([]byte("\x1b\r"))
+	a.ResetTyped()
+	if !a.UserTyped() {
+		t.Fatal("ResetTyped wiped a draft that ends in Meta+Enter")
+	}
+}
