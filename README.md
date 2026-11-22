@@ -48,9 +48,9 @@ go build -o relaydeck.exe ./cmd/relaydeck
 ./relaydeck serve          # Windows: .\relaydeck.exe serve
 ```
 
-`relaydeck serve` listens on `127.0.0.1:7341` (change it with `--port N` or `port` in the config file) and prints a link like `http://127.0.0.1:7341/#token=...`. Open that link in a browser. The token is new on every start, so an old link or a bookmark stops working. The workspace and folder list is stored in `config.yaml` in your user config directory.
+`relaydeck serve` listens on `127.0.0.1:7341` (change it with `--port N` or `port` in the config file) and prints a link like `http://127.0.0.1:7341/#token=...`. Open that link in a browser. The token is new on every start, so an old link or a bookmark stops working. The workspace and folder list is stored in `relaydeck/config.yaml` in your user config directory (macOS: `~/Library/Application Support/relaydeck/config.yaml`, Linux: `~/.config/relaydeck/config.yaml`, Windows: `%AppData%\relaydeck\config.yaml`).
 
-While the daemon runs, it also writes a page with that link to `open.html` in your user cache directory (mode 0600). `relaydeck open` checks that the daemon answers, then opens that file in your default browser, so you do not have to copy the link:
+While the daemon runs, it also writes a page with that link to `relaydeck/open.html` in your user cache directory (mode 0600). `relaydeck open` checks that the daemon answers, then opens that file in your default browser, so you do not have to copy the link:
 
 ```sh
 ./relaydeck open           # Windows: .\relaydeck.exe open

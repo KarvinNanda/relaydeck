@@ -99,6 +99,22 @@ func (s Snapshot) Open(dir, sessionID string, exclude map[int]bool) (int, bool) 
 	return 0, false
 }
 
+// OpenKnown is Open without the "unknown cwd counts as open" rule: only a
+// session id or the same path matches. The poll for running agents uses it,
+// because its answer holds delivery, and a process whose cwd could not be
+// read would otherwise hold every folder.
+func (s Snapshot) OpenKnown(dir, sessionID string, exclude map[int]bool) (int, bool) {
+	for _, x := range s.sessions {
+		if nonInteractive[x.Kind] || exclude[x.PID] {
+			continue
+		}
+		if (sessionID != "" && x.SessionID == sessionID) || (x.Cwd != "" && samePath(x.Cwd, dir)) {
+			return x.PID, true
+		}
+	}
+	return 0, false
+}
+
 // Open reports whether an interactive claude session outside relaydeck has
 // sessionID or dir open: a Snapshot and its Open in one call. If the
 // snapshot fails the error is returned and the caller must treat the session

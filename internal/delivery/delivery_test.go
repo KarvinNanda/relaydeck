@@ -34,6 +34,7 @@ type fakeAgents struct {
 	scrSeq      []screen.State // consumed first, one per Screen call
 	external    bool
 	externalErr error
+	runningExt  bool // a claude outside relaydeck is open on the running agent's folder
 	startErr    error
 	injectErr   error
 	starts      int
@@ -91,6 +92,11 @@ func (f *fakeAgents) ExternalOpen(ws, folder string) (bool, error) {
 	defer f.mu.Unlock()
 	f.extCalls++
 	return f.external, f.externalErr
+}
+func (f *fakeAgents) RunningExternal(ws, folder string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runningExt
 }
 func (f *fakeAgents) Inject(ws, folder string, p []byte) error {
 	f.mu.Lock()
@@ -1419,5 +1425,50 @@ func TestWrappedNudgeIsNotPastedAgain(t *testing.T) {
 	}
 	if got := g.fa.nInjected(); got != n {
 		t.Fatalf("injected %d more writes, want none", got-n)
+	}
+}
+
+// The agent runs in relaydeck and the same folder or session is also open in
+// a claude outside it (#89). The two do not sync, so a nudge would split the
+// session history: the messages are held until the outside claude closes.
+func TestRunningExternalHolds(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.fa.set(func(f *fakeAgents) { f.runningExt = true })
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldExternal {
+		t.Fatalf("injected %d state %s, want nothing typed and held_external", g.fa.nInjected(), g.state(m.ID))
+	}
+	g.d.DeliverNow("ws", "fe") // the user cannot push it through either
+	g.tick()
+	if g.fa.nInjected() != 0 || g.state(m.ID) != notify.StateHeldExternal {
+		t.Fatalf("after DeliverNow: injected %d state %s", g.fa.nInjected(), g.state(m.ID))
+	}
+	g.fa.set(func(f *fakeAgents) { f.runningExt = false })
+	g.tick()
+	if g.fa.nInjected() != 2 || g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("after close: injected %d state %s, want the nudge", g.fa.nInjected(), g.state(m.ID))
+	}
+	if g.fa.starts != 0 {
+		t.Fatalf("starts %d for a running agent", g.fa.starts)
+	}
+}
+
+// A message that was already nudged is held too, and is not nudged again
+// while the outside claude is open.
+func TestRunningExternalHoldsNudged(t *testing.T) {
+	g := newRig()
+	m := g.send(t, "x")
+	g.tick() // nudged
+	if g.state(m.ID) != notify.StateNudged {
+		t.Fatalf("state %s", g.state(m.ID))
+	}
+	n := g.fa.nInjected()
+	g.fa.set(func(f *fakeAgents) { f.runningExt = true })
+	g.c.add(confirmWindow)
+	g.tick()
+	g.tick()
+	if g.state(m.ID) != notify.StateHeldExternal || g.fa.nInjected() != n {
+		t.Fatalf("state %s, %d more writes", g.state(m.ID), g.fa.nInjected()-n)
 	}
 }

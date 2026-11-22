@@ -141,7 +141,7 @@ The screen looks like this:
 
 ```text
 +--------------------------------------------------------------------+
-| relaydeck   workspace shop      Layout [1][2][3][4]  Messages  conn |
+| relaydeck workspace shop  A- 12px A+  Layout [1][2][3][4] Messages |
 +----------------+---------------------------------------------------+
 | Workspaces     | +----------------------+ +----------------------+ |
 | v shop         | | be   idle   [Sessions]| | fe   busy  [Sessions]| |
@@ -160,8 +160,8 @@ A workspace is a group of folders whose agents can message each other. Agents ca
 1. In the sidebar, click **Add workspace**, type a name and click **Add**.
 2. Under the workspace, click **Add folder**. A dialog opens.
 3. Fill in **Name**. Use 1 to 32 lowercase letters, digits or dashes, starting with a letter or digit, for example `be` or `fe-admin`. Workspace names follow the same rule.
-4. Fill in **Path**. Type the full path of an existing folder (starting with `/` or `~`), or click **Choose folder** to use the native folder picker.
-5. Leave **Account** empty unless you use cswap. Pick a **Permission mode** (the default is `auto`).
+4. Fill in **Path**. Type the full path of an existing folder (starting with `/` or `~`; on Windows with a drive like `C:\`, a network path like `\\host\share`, or `~`), or click **Choose folder** to use the native folder picker.
+5. Leave **Account** empty unless you use cswap (the field is not shown on Windows). Pick a **Permission mode** (the default is `auto`).
 6. Click **Add folder**.
 
 There is no remove or rename for workspaces and folders in v1. See [section 11](#11-known-limits).
@@ -181,7 +181,9 @@ The first time Claude Code runs in a new folder, it asks "Yes, I trust this fold
 
 ### Layouts and the panel limit
 
-Open up to 4 panels. The **Layout** buttons (1, 2, 3, 4) in the top bar choose how many panels you see at once. A layout button is disabled when fewer panels are open. The maximize button on a panel header shows one panel full size, and the restore button brings the grid back. If you try to open a fifth panel, the sidebar says "At most 4 panels can be open. Close one first."
+Open up to 4 panels. The **Layout** buttons in the top bar (icons for 1, 2, 3 or 4 panels) choose how many panels you see at once. A layout button is disabled when fewer panels are open. The maximize button on a panel header shows one panel full size, and the restore button brings the grid back. If you try to open a fifth panel, the sidebar says "At most 4 panels can be open. Close one first."
+
+The **A−** and **A+** buttons in the top bar make the terminal text smaller or bigger (10 to 16 px, default 12) in every panel. A smaller size shows more rows and columns. The browser remembers the size.
 
 ## 6. Making agents talk to each other
 
@@ -214,7 +216,7 @@ Click **Messages** in the top bar. The drawer shows a timeline (newest first) wi
 |---|---|---|
 | `queued` | Stored. Waiting until the target is idle. | Nothing. |
 | `waiting (draft)` | You typed text in the target's input box and did not send it, so relaydeck does not type into it. A suggestion that Claude Code shows by itself in an empty box is not a draft. | Finish or clear the draft, or click **Deliver now**. |
-| `held: session open in terminal` | The target is not running in relaydeck, and its session is open in a terminal outside relaydeck. | Close that terminal session, click **Start new session**, or click **Wait**. |
+| `held: session open in terminal` | The target's session or folder is also open in a terminal outside relaydeck. | Close that terminal session. If the target is not running in relaydeck, you can also click **Start new session**, or click **Wait**. |
 | `nudged` | The nudge was typed. The agent has not read the message yet. | Nothing. relaydeck nudges once more if needed. |
 | `delivered (read)` | The agent called `read_messages`. | Nothing. |
 | `awaiting approval (hop N)` | The message reached the hop limit. | Click **Approve** or **Reject**. |
@@ -230,7 +232,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 
 - A session started in relaydeck is named `workspace/folder`, and `claude --resume` in a terminal shows that name.
 - A session started in a terminal shows up in the **Sessions** list of the panel.
-- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, until that terminal session closes.
+- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, and relaydeck holds that agent's messages, until that terminal session closes.
 
 ### Copy and paste in a panel
 
@@ -283,7 +285,7 @@ Shift+Enter or Ctrl+Enter starts a new line in the input box instead of sending 
 | A message stays `queued`. | The target is busy, a dialog is open in its panel (for example the trust dialog or a permission question), or the screen is not recognized. Answer the dialog in the panel, or wait for the agent to be idle. relaydeck types only when the agent is idle with an empty input box. |
 | A message shows `waiting (draft)`. | You typed text in the target's input box and did not send it. Send or clear it, or click **Deliver now**. The draft is submitted together with the nudge. |
 | A message shows `held: session open in terminal`. | The target's session is open in a terminal outside relaydeck. Close it there (relaydeck notices within about 5 seconds), or click **Start new session** in the drawer. |
-| The agent did not act on a message. | This is expected. Agents treat messages as information. Tell the receiving agent in its own panel what to do when such a message arrives (see [section 6](#6-making-agents-talk-to-each-other)). After a nudge the agent can also ignore the message. It stays `nudged` until the agent reads it, or you click **Deliver now**. |
+| The agent did not act on a message. | This is expected. Agents treat messages as information. Tell the receiving agent in its own panel what to do when such a message arrives (see [section 6](#6-making-agents-talk-to-each-other)). After a nudge the agent can also ignore the message. It stays `nudged` until the agent reads it. relaydeck nudges once more if needed. If the agent still ignores it, ask the agent in its panel to call `read_messages`. |
 | The page is blank or answers 404. | The web UI was not built. Run `cd web && npm ci && npm run build`, then `go build -o relaydeck ./cmd/relaydeck` again, and restart. |
 | Messages disappeared after a restart. | The queue is in memory only. Send the message again. |
 | Windows: agents do not start. | Check that `claude` starts in a normal PowerShell window. A Claude Code installed only inside WSL is not used. Per-folder accounts (cswap) are off on Windows. |

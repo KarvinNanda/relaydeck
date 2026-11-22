@@ -290,3 +290,26 @@ func TestSnapshotRunsAgentsOnceForManyFolders(t *testing.T) {
 		t.Fatalf("agents ran %d times, want 1", calls)
 	}
 }
+
+// The poll for running agents (#89) holds delivery, so a process whose cwd
+// could not be read must not count as open on every folder. A session id or
+// the same path still does.
+func TestOpenKnownIgnoresUnknownCwd(t *testing.T) {
+	snap := Snapshot{sessions: []Session{
+		{PID: 40, Kind: "interactive"},
+		{PID: 41, Cwd: "/other", SessionID: "s1", Kind: "interactive"},
+		{PID: 42, Cwd: "/work/b/", Kind: "interactive"},
+	}}
+	if pid, open := snap.OpenKnown("/work/a", "", nil); open {
+		t.Fatalf("unknown cwd counted as open (pid %d)", pid)
+	}
+	if pid, open := snap.OpenKnown("/work/a", "s1", nil); !open || pid != 41 {
+		t.Fatalf("session id: pid=%d open=%v", pid, open)
+	}
+	if pid, open := snap.OpenKnown("/work/b", "", nil); !open || pid != 42 {
+		t.Fatalf("same path: pid=%d open=%v", pid, open)
+	}
+	if _, open := snap.OpenKnown("/work/b", "", map[int]bool{42: true}); open {
+		t.Fatal("excluded pid must be ignored")
+	}
+}
