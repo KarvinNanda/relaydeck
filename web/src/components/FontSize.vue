@@ -36,17 +36,20 @@ function step(d: number): void {
 
 <style scoped>
 .fs { display: flex; align-items: center; gap: var(--s-1); flex: none; }
-.fs .ib { min-width: 30px; font-weight: 600; }
+/* the same frame as the Messages button next to it, so A- and A+ read as
+   buttons at every width (#96) */
+.fs .ib {
+  min-width: 30px; font-weight: 600;
+  border-color: var(--border-strong); background: var(--muted); color: var(--text);
+}
+.fs .ib:hover:not([aria-disabled="true"]) { border-color: var(--text-muted); }
 .fs .ib[aria-disabled="true"] { opacity: .45; cursor: default; }
 .v { min-width: 4ch; text-align: center; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 767px) {
   /* visible, equal 44px buttons with the size in a fixed slot between them,
      so the control lines up with the 16px gutter like the other buttons */
   .fs { gap: var(--s-3); }
-  .fs .ib {
-    width: var(--touch-h); min-width: var(--touch-h); height: var(--touch-h);
-    border-color: var(--border); background: var(--muted);
-  }
+  .fs .ib { width: var(--touch-h); min-width: var(--touch-h); height: var(--touch-h); }
   .v { width: 5ch; }
 }
 </style>
