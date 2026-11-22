@@ -1,2 +1,5 @@
-# Every change needs a review from the owner before it can reach main.
+# The owner is asked to review every pull request. The main ruleset needs a
+# pull request and green CI but no approval: GitHub never lets an author
+# approve their own pull request, and only the owner has write access, so
+# nothing reaches main unless the owner merges it.
 * @KarvinNanda
