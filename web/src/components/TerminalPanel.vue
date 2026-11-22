@@ -35,6 +35,7 @@ import StatusBadge from './StatusBadge.vue'
 import SessionPicker, { relTime } from './SessionPicker.vue'
 import type { Session } from '../types'
 import { detectOS, keyAction, type TermOS } from '../termkeys'
+import { Recolor, userRows } from '../termcolors'
 import { prefs } from '../stores/prefs'
 
 const props = defineProps<{ ws: string; folder: string; focused: boolean; maximized: boolean; canMaximize: boolean }>()
@@ -396,6 +397,7 @@ let alive = true
 let replaying = true // until xterm has written the first frame of this socket
 let stableTimer: ReturnType<typeof setTimeout> | undefined
 let gotReplay = false // the first frame of this socket has arrived
+let recolor = new Recolor()
 
 function token(name: string): string | undefined {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined
@@ -464,6 +466,14 @@ async function createTerm(el: HTMLElement): Promise<void> {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(el)
+  // A thin blue bar at the left edge of each user prompt row, drawn in its
+  // own layer over the screen (markers and decorations need xterm's normal
+  // buffer, and Claude Code runs in the alternate screen).
+  barLayer = document.createElement('div')
+  barLayer.className = 'prompt-bars'
+  barLayer.setAttribute('aria-hidden', 'true')
+  ;(term.element?.querySelector('.xterm-screen') ?? el).appendChild(barLayer)
+  term.onRender?.(() => schedulePaint())
   // Copy and paste follow the browser OS (see termkeys.ts). A paste is not
   // prevented: the browser fires 'paste' on xterm's textarea and xterm sends
   // it as a bracketed paste, so no clipboard permission prompt appears.
@@ -502,6 +512,32 @@ async function createTerm(el: HTMLElement): Promise<void> {
     if (replaying) return
     send({ type: 'input', data })
   })
+}
+
+let barLayer: HTMLDivElement | null = null
+let paintFrame = 0
+function schedulePaint(): void {
+  if (paintFrame || typeof requestAnimationFrame === 'undefined') return
+  paintFrame = requestAnimationFrame(() => {
+    paintFrame = 0
+    paintBars()
+  })
+}
+function paintBars(): void {
+  const t = term
+  const layer = barLayer
+  if (!t || !layer) return
+  const screen = layer.parentElement
+  const cellH = screen && t.rows > 0 ? screen.clientHeight / t.rows : 0
+  const rows = cellH > 0 ? userRows(t.buffer.active, t.rows) : []
+  layer.replaceChildren(
+    ...rows.map((r) => {
+      const bar = document.createElement('i')
+      bar.style.top = `${r * cellH}px`
+      bar.style.height = `${cellH}px`
+      return bar
+    }),
+  )
 }
 
 function send(frame: object): void {
@@ -550,8 +586,10 @@ const STABLE_MS = 3000
 function attach(s: WebSocket): void {
   sock = s
   s.binaryType = 'arraybuffer'
-  // Every connect starts with a full replay, so start from a clean screen.
+  // Every connect starts with a full replay, so start from a clean screen
+  // and a fresh recolor state.
   term?.reset()
+  recolor = new Recolor()
   replaying = true
   gotReplay = false
   clearTimeout(stableTimer)
@@ -561,7 +599,9 @@ function attach(s: WebSocket): void {
   s.onerror = null
   s.onmessage = (ev: MessageEvent) => {
     if (sock !== s || !term) return
-    const data = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data as ArrayBuffer)
+    // Claude Code's prompt bar and grey text get relaydeck's colors on the
+    // way in (see termcolors.ts); the bytes are otherwise unchanged.
+    const data = recolor.push(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data as ArrayBuffer))
     if (!gotReplay) {
       // The first frame is the replay. Input stays off until xterm has
       // parsed it, which is when its automatic replies are over.
@@ -571,7 +611,7 @@ function attach(s: WebSocket): void {
       return
     }
     attempt = 0
-    term.write(data)
+    if (data.length > 0) term.write(data)
   }
   s.onclose = () => {
     if (sock !== s) return
@@ -666,6 +706,8 @@ onBeforeUnmount(() => {
   ro?.disconnect()
   paneRo?.disconnect()
   host.value?.removeEventListener('scroll', measureScroll)
+  if (paintFrame) cancelAnimationFrame(paintFrame)
+  barLayer = null
   term?.dispose()
   term = null
   fit = null
@@ -955,6 +997,10 @@ onBeforeUnmount(() => {
   /* a thin visible scrollbar, so a terminal wider than its box shows it can scroll */
   scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
 }
+
+/* blue bar at the left of each user prompt row (paintBars) */
+.term :deep(.prompt-bars) { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.term :deep(.prompt-bars i) { position: absolute; left: 0; width: 3px; background: var(--blue); border-radius: 0 2px 2px 0; }
 
 .term-fade {
   position: absolute; top: 0; right: 0; bottom: 0; width: 20px; pointer-events: none;
