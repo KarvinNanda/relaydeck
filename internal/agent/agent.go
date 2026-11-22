@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 	"os"
@@ -223,9 +222,25 @@ func (a *Agent) isStopped() bool {
 	}
 }
 
-// Write sends user keystrokes to the PTY. Each "\r" is the user pressing
-// Enter and fires the OnUserEnter callback. It also records whether typed text
-// is waiting for Enter (see UserTyped).
+// enters counts the Enter presses in one write and gives the index of the
+// last one, or -1. A CR right after ESC is Meta+Enter, which Claude Code reads
+// as a newline in the input box (the panel sends it for Shift+Enter and
+// Ctrl+Enter), so it is typing, not Enter. Nothing is read across writes: the
+// panel sends ESC CR in one write.
+func enters(p []byte) (n, last int) {
+	last = -1
+	for i, b := range p {
+		if b == '\r' && (i == 0 || p[i-1] != 0x1b) {
+			n++
+			last = i
+		}
+	}
+	return n, last
+}
+
+// Write sends user keystrokes to the PTY. Each Enter (see enters) fires the
+// OnUserEnter callback. It also records whether typed text is waiting for
+// Enter (see UserTyped).
 func (a *Agent) Write(p []byte) error {
 	if a.isStopped() {
 		return ErrStopped
@@ -234,12 +249,13 @@ func (a *Agent) Write(p []byte) error {
 	// back to the screen before this function returns, and the delivery loop
 	// must not see that text as something the user never touched. Write only
 	// ever sets the flag, so concurrent writers cannot lose an update.
+	n, last := enters(p)
 	if !neutralOnly(p) {
 		a.typedMu.Lock()
 		now := time.Now()
 		a.touched = true
 		a.lastInput = now
-		if i := bytes.LastIndexByte(p, '\r'); i >= 0 {
+		if i := last; i >= 0 {
 			a.lastEnter = now
 			if i < len(p)-1 {
 				// Bytes follow the Enter in this write: they are newer.
@@ -252,7 +268,7 @@ func (a *Agent) Write(p []byte) error {
 		return err
 	}
 	if a.onUserEnter != nil {
-		for i := bytes.Count(p, []byte{'\r'}); i > 0; i-- {
+		for i := n; i > 0; i-- {
 			a.onUserEnter(a.id)
 		}
 	}
