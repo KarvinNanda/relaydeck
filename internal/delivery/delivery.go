@@ -382,10 +382,13 @@ func (d *Deliverer) tickTarget(t Target) {
 	// Input within the last typedQuiet holds the message even when the box
 	// reads empty: the echo of a keystroke may not have reached the screen.
 	// A box that still holds our own nudge, alone or with text around it, is
-	// a draft too, so an unconfirmed nudge is never pasted twice.
+	// a draft too, so an unconfirmed nudge is never pasted twice. Draft has
+	// one line per box row: a nudge that wraps reads with a line break where
+	// the space was.
 	isDraft := func(scr screen.State) bool {
 		n := d.lastNudge[t]
-		return recent || (!scr.InputEmpty && (typed || (n != "" && strings.Contains(scr.Draft, n))))
+		flat := strings.ReplaceAll(scr.Draft, "\n", " ")
+		return recent || (!scr.InputEmpty && (typed || (n != "" && strings.Contains(flat, n))))
 	}
 	draft := isDraft(scr)
 	if draft && forced && scr.Draft != "" && scr.Draft == d.lastNudge[t] {

@@ -625,6 +625,9 @@ func TestMultiRowBox(t *testing.T) {
 		{"ends in an empty line", []string{"❯ aaa", ""}, "aaa"},
 		{"wrapped line", []string{"❯ one long line that Claude Code", "  wraps"}, "one long line that Claude Code\nwraps"},
 		{"one row", []string{"❯ draft"}, "draft"},
+		// Shift+Enter twice with no text: no text, but the box is not empty
+		// either, so a nudge must not be pasted after the newlines.
+		{"only newlines", []string{"❯ ", "", ""}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -633,7 +636,7 @@ func TestMultiRowBox(t *testing.T) {
 			s.Write(boxRows(30-1-len(tc.rows), tc.rows...))
 			st := s.State()
 			if !st.InputVisible || st.InputEmpty || st.Draft != tc.draft {
-				t.Fatalf("got %+v, want visible with draft %q", st, tc.draft)
+				t.Fatalf("got %+v, want visible, not empty, with draft %q", st, tc.draft)
 			}
 		})
 	}
@@ -694,7 +697,7 @@ func TestInputBoxOnRealFixtures(t *testing.T) {
 				if !isRule(s.em, y, cols) {
 					continue
 				}
-				if draft, ok := inputBox(s.em, cols, y); ok {
+				if draft, _, ok := inputBox(s.em, cols, y); ok {
 					found = true
 					if draft != tc.draft {
 						t.Fatalf("draft = %q, want %q", draft, tc.draft)

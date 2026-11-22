@@ -204,13 +204,15 @@ func (s *Screen) State() (st State) {
 		if !isRule(s.em, lower, w) {
 			continue
 		}
-		draft, ok := inputBox(s.em, w, lower)
+		draft, n, ok := inputBox(s.em, w, lower)
 		if !ok || !anchored(rows, lower) {
 			continue
 		}
 		st.InputVisible = true
 		st.Draft = draft
-		st.InputEmpty = draft == ""
+		// A box of several rows is never empty, even with no text in it: the
+		// user pressed Shift+Enter, and a nudge must not land after that.
+		st.InputEmpty = draft == "" && n == 1
 		break
 	}
 	return st
@@ -222,24 +224,25 @@ func (s *Screen) State() (st State) {
 // long line Claude Code wraps: it starts with two blank cells and has no rule
 // or box-drawing character. Anything else above the lower rule means it is
 // not the input box. The draft is the text of every row after the prompt
-// mark, one line per row; faint text (the placeholder) does not count.
-func inputBox(em *vt.SafeEmulator, w, lower int) (string, bool) {
+// mark, one line per row; faint text (the placeholder) does not count. n is
+// the number of rows in the box.
+func inputBox(em *vt.SafeEmulator, w, lower int) (draft string, n int, ok bool) {
 	for y := lower - 1; y >= 1; y-- {
 		if cellContent(em, 0, y) == "❯" && cellContent(em, 1, y) == nbsp {
 			if !isRule(em, y-1, w) {
-				return "", false
+				return "", 0, false
 			}
 			lines := make([]string, 0, lower-y)
 			for r := y; r < lower; r++ {
 				lines = append(lines, strings.TrimRight(rowDraft(em, w, r), " "))
 			}
-			return strings.TrimSpace(strings.Join(lines, "\n")), true
+			return strings.TrimSpace(strings.Join(lines, "\n")), len(lines), true
 		}
 		if !continuation(em, w, y) {
-			return "", false
+			return "", 0, false
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
 // continuation reports whether row y can be a continuation row of a draft.
