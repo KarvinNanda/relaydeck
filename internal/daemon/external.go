@@ -10,8 +10,9 @@ import (
 // pollExternal checks every ExternalEvery whether a running agent's folder or
 // session is also open in a claude outside relaydeck (#89). The two processes
 // do not sync: the panel stays at its last state and typing in both splits
-// the session history, so the panel shows a warning. Delivery holds such an
-// agent's messages anyway (its own check); this only makes it visible.
+// the session history, so the panel shows a warning, and delivery holds the
+// agent's messages until the outside claude closes (RunningExternal reads
+// this poll).
 func (d *Daemon) pollExternal(ctx context.Context) {
 	t := time.NewTicker(d.opts.ExternalEvery)
 	defer t.Stop()
@@ -54,6 +55,12 @@ func (d *Daemon) refreshExternal(ctx context.Context) {
 			return
 		}
 		own := d.opts.OwnPIDs()
+		if len(own) == 0 {
+			// An agent runs, so relaydeck has children: an empty set means
+			// the process read failed, and relaydeck's own claude would look
+			// like an outside one. Keep the last answer.
+			return
+		}
 		for _, a := range agents {
 			if pid, open := match(a.dir, a.session, own); open {
 				next[a.id] = pid

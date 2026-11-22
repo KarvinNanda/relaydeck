@@ -78,7 +78,8 @@ type Options struct {
 	OwnPIDs      func() map[int]bool
 	// ExternalList reads the running claude processes once and returns a
 	// matcher (pid and whether dir or session is open outside relaydeck).
-	// The poll for the panel warning uses it (#89). New fills the real one.
+	// The poll for the panel warning and the delivery hold uses it (#89); the
+	// real one ignores processes whose cwd is unknown. New fills it.
 	ExternalList  func(ctx context.Context) (func(dir, sessionID string, exclude map[int]bool) (int, bool), error)
 	ExternalEvery time.Duration // how often running agents are checked; default 5 s
 	CswapStatus   func(ctx context.Context, path string) (cswap.Info, error)
@@ -211,7 +212,7 @@ func New(o Options) (*Daemon, error) {
 			if err != nil {
 				return nil, err
 			}
-			return snap.Open, nil
+			return snap.OpenKnown, nil
 		}
 	}
 	if o.ExternalEvery <= 0 {

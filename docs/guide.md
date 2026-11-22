@@ -216,7 +216,7 @@ Click **Messages** in the top bar. The drawer shows a timeline (newest first) wi
 |---|---|---|
 | `queued` | Stored. Waiting until the target is idle. | Nothing. |
 | `waiting (draft)` | You typed text in the target's input box and did not send it, so relaydeck does not type into it. A suggestion that Claude Code shows by itself in an empty box is not a draft. | Finish or clear the draft, or click **Deliver now**. |
-| `held: session open in terminal` | The target is not running in relaydeck, and its session is open in a terminal outside relaydeck. | Close that terminal session, click **Start new session**, or click **Wait**. |
+| `held: session open in terminal` | The target's session or folder is also open in a terminal outside relaydeck. | Close that terminal session. If the target is not running in relaydeck, you can also click **Start new session**, or click **Wait**. |
 | `nudged` | The nudge was typed. The agent has not read the message yet. | Nothing. relaydeck nudges once more if needed. |
 | `delivered (read)` | The agent called `read_messages`. | Nothing. |
 | `awaiting approval (hop N)` | The message reached the hop limit. | Click **Approve** or **Reject**. |
@@ -232,7 +232,7 @@ relaydeck and the terminal use the same Claude Code sessions, so you can switch 
 
 - A session started in relaydeck is named `workspace/folder`, and `claude --resume` in a terminal shows that name.
 - A session started in a terminal shows up in the **Sessions** list of the panel.
-- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, until that terminal session closes.
+- Do not open the same session in a terminal and in relaydeck at the same time. relaydeck refuses to resume a session that is open in a terminal, and it holds messages for that agent (`held: session open in terminal`) until the terminal session closes. It notices the close after up to 5 seconds. If you open the session in a terminal after relaydeck started it, the panel shows an amber note ("Claude Code is also running on this folder in a terminal") within about 5 seconds, and relaydeck holds that agent's messages, until that terminal session closes.
 
 ### Copy and paste in a panel
 

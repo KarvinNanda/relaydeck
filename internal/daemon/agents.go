@@ -298,7 +298,8 @@ func (x agentsAdapter) Start(ws, folder string) error {
 	return x.d.start(ws, folder, "", false, false)
 }
 
-// ExternalOpen never checks a folder that runs in relaydeck (ruling 6).
+// ExternalOpen never checks a folder that runs in relaydeck (ruling 6); for a
+// running agent, delivery asks RunningExternal instead.
 func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
 	if x.Running(ws, folder) {
 		return false, nil
@@ -308,6 +309,13 @@ func (x agentsAdapter) ExternalOpen(ws, folder string) (bool, error) {
 		return false, err
 	}
 	return x.d.opts.ExternalOpen(context.Background(), f.Path, f.SessionID, x.d.opts.OwnPIDs())
+}
+
+// RunningExternal reads the answer of the last external poll (#89) for the
+// folder's running agent.
+func (x agentsAdapter) RunningExternal(ws, folder string) bool {
+	a := x.d.running(delivery.Target{WS: ws, Folder: folder})
+	return a != nil && x.d.externalPID(a.ID()) != 0
 }
 
 func (x agentsAdapter) UserTyped(ws, folder string) (bool, time.Time) {
