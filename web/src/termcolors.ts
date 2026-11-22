@@ -6,7 +6,9 @@
 //
 //   prompt bar  48;2;55;55;55   -> #1E3A5F, and its leading ❯ in blue
 //   secondary   38;2;153;153;153 -> slate #94A3B8
-//   box rules   38;2;136;136;136 -> #475569
+//
+// Box rules (#888) stay as they are: the same color draws the folder label on
+// the rule, and a darker rule made that label unreadable.
 //
 // Only these standalone sequences are touched. Anything else passes through,
 // so if Claude Code changes its colors the panel simply looks as it did. The
@@ -22,7 +24,6 @@ const MAP: [string, string][] = [
   [`${PROMPT_IN}❯`, `${PROMPT_OUT}${E}38;2;96;165;250m❯${E}39m`],
   [PROMPT_IN, PROMPT_OUT],
   [`${E}38;2;153;153;153m`, `${E}38;2;148;163;184m`],
-  [`${E}38;2;136;136;136m`, `${E}38;2;71;85;105m`],
 ]
 
 export class Recolor {

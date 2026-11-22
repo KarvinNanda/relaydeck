@@ -12,10 +12,12 @@ describe('Recolor', () => {
     )
   })
 
-  it('maps secondary text and box rules to the app colors', () => {
+  it('maps secondary text to slate and keeps the box rules readable', () => {
     const r = new Recolor()
-    expect(r.push(enc(`${E}38;2;153;153;153mRan 1 shell command${E}39m ${E}38;2;136;136;136m───`))).toBe(
-      `${E}38;2;148;163;184mRan 1 shell command${E}39m ${E}38;2;71;85;105m───`,
+    // the rule color also draws the folder label on the box rule, so it
+    // stays #888 (darker failed contrast in the visual review)
+    expect(r.push(enc(`${E}38;2;153;153;153mRan 1 shell command${E}39m ${E}38;2;136;136;136m─ test/keys ─`))).toBe(
+      `${E}38;2;148;163;184mRan 1 shell command${E}39m ${E}38;2;136;136;136m─ test/keys ─`,
     )
   })
 
