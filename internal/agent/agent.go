@@ -130,6 +130,10 @@ func (a *Agent) replyLoop() {
 	}
 }
 
+// readLoopGap, when set (tests only), runs between the two steps of
+// readLoop, to stand in for a busy machine that runs the second one late.
+var readLoopGap func()
+
 func (a *Agent) readLoop() {
 	defer close(a.readDone)
 	buf := make([]byte, 32*1024)
@@ -137,8 +141,14 @@ func (a *Agent) readLoop() {
 		n, err := a.pty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
-			a.publish(chunk)
+			// The screen first: whoever has seen these bytes (a subscriber,
+			// Stop waiting for its /exit echo) must find them on the screen
+			// too, even when the machine is busy (#108).
 			a.screen.Write(chunk)
+			if readLoopGap != nil {
+				readLoopGap()
+			}
+			a.publish(chunk)
 		}
 		if err != nil {
 			return
