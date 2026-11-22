@@ -246,6 +246,10 @@ Claude Code handles the mouse itself: a plain drag selects text inside Claude Co
 
 Ctrl+C with no text selected still interrupts the agent on every system. On Linux and macOS, plain Ctrl+V goes to Claude Code, which reads it as "paste an image from the clipboard".
 
+### New line in the input box
+
+Shift+Enter or Ctrl+Enter starts a new line in the input box instead of sending the message, on every system. Alt+Enter (Option+Enter on macOS) does the same. Plain Enter sends.
+
 ### Attach an image
 
 - Drag an image file onto a running panel and drop it, or paste a screenshot with your paste key. It shows up in the input box as `[Image #1]`, the same as in a terminal.

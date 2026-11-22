@@ -23,7 +23,7 @@ describe('detectOS', () => {
   })
 })
 
-type Mods = { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean; type?: string; keyCode?: number }
+type Mods = { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean; type?: string; keyCode?: number; composing?: boolean }
 
 function k(code: string, m: Mods = {}) {
   return {
@@ -34,6 +34,7 @@ function k(code: string, m: Mods = {}) {
     altKey: !!m.alt,
     metaKey: !!m.meta,
     keyCode: m.keyCode ?? 0,
+    isComposing: !!m.composing,
   }
 }
 
@@ -113,5 +114,45 @@ describe('keyAction follows the keyboard layout like xterm (#67)', () => {
 
   it('still copies on a Cyrillic layout, where keyCode stays 67', () => {
     expect(act('windows', 'KeyC', { ctrl: true, keyCode: 67 }, true)).toBe('copy')
+  })
+})
+
+describe('keyAction newline on every OS', () => {
+  const all: TermOS[] = ['mac', 'windows', 'linux']
+
+  it('makes Shift+Enter and Ctrl+Enter a newline', () => {
+    for (const os of all) {
+      expect(act(os, 'Enter', { shift: true, keyCode: 13 }, false)).toBe('newline')
+      expect(act(os, 'Enter', { ctrl: true, keyCode: 13 }, false)).toBe('newline')
+      expect(act(os, 'Enter', { ctrl: true, shift: true, keyCode: 13 }, false)).toBe('newline')
+    }
+  })
+
+  it('also takes the numpad Enter, and an Enter known only by keyCode', () => {
+    for (const os of all) {
+      expect(act(os, 'NumpadEnter', { shift: true, keyCode: 13 }, false)).toBe('newline')
+      expect(act(os, '', { shift: true, keyCode: 13 }, false)).toBe('newline')
+    }
+  })
+
+  it('leaves plain Enter, and Enter with Alt or Meta, to xterm', () => {
+    for (const os of all) {
+      expect(act(os, 'Enter', { keyCode: 13 }, false)).toBe('pass')
+      expect(act(os, 'Enter', { alt: true, keyCode: 13 }, false)).toBe('pass')
+      expect(act(os, 'Enter', { shift: true, alt: true, keyCode: 13 }, false)).toBe('pass')
+      expect(act(os, 'Enter', { shift: true, meta: true, keyCode: 13 }, false)).toBe('pass')
+    }
+  })
+
+  it('leaves Enter to the IME while it composes', () => {
+    for (const os of all) {
+      expect(act(os, 'Enter', { shift: true, keyCode: 229 }, false)).toBe('pass')
+      expect(act(os, 'Enter', { shift: true, keyCode: 13, composing: true }, false)).toBe('pass')
+    }
+  })
+
+  it('gives keyup and keypress the same answer as keydown', () => {
+    expect(act('linux', 'Enter', { shift: true, keyCode: 13, type: 'keyup' }, false)).toBe('newline')
+    expect(act('windows', 'Enter', { ctrl: true, keyCode: 13, type: 'keypress' }, false)).toBe('newline')
   })
 })

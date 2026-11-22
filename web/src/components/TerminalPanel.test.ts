@@ -52,6 +52,8 @@ vi.mock('@xterm/xterm', () => {
     keyHandler: ((ev: KeyboardEvent) => boolean) | null = null
     selection = ''
     paste = vi.fn()
+    // xterm's input() fires onData like typing
+    input = vi.fn((d: string) => this.dataCb?.(d))
     clearSelection = vi.fn(() => {
       this.selection = ''
     })
@@ -1182,6 +1184,72 @@ describe('TerminalPanel copy and paste keys', () => {
     expect(press('KeyC', { ctrl: true }).ret).toBe(false)
     await flushPromises()
     expect(term().clearSelection).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalPanel newline keys', () => {
+  function onOS(platform: string): void {
+    Object.defineProperty(navigator, 'platform', { value: platform, configurable: true })
+  }
+
+  function press(m: { ctrl?: boolean; shift?: boolean; alt?: boolean }, type = 'keydown', repeat = false) {
+    const ev = new KeyboardEvent(type, { code: 'Enter', key: 'Enter', ctrlKey: !!m.ctrl, shiftKey: !!m.shift, altKey: !!m.alt, repeat, cancelable: true })
+    const ret = term().keyHandler!(ev)
+    return { ret, prevented: ev.defaultPrevented }
+  }
+
+  function inputs() {
+    return sock().frames().filter((f) => f.type === 'input')
+  }
+
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).platform
+  })
+
+  for (const [name, platform] of [['mac', 'MacIntel'], ['windows', 'Win32'], ['linux', 'Linux x86_64']]) {
+    it(`${name} Shift+Enter and Ctrl+Enter send Meta+Enter, not Enter`, async () => {
+      onOS(platform)
+      await mountPanel()
+      await replay()
+      for (const m of [{ shift: true }, { ctrl: true }]) {
+        const r = press(m)
+        expect(r.ret).toBe(false)
+        expect(r.prevented).toBe(true)
+        expect(press(m, 'keypress').ret).toBe(false)
+        expect(press(m, 'keyup').ret).toBe(false)
+      }
+      expect(inputs()).toEqual([
+        { type: 'input', data: '\x1b\r' },
+        { type: 'input', data: '\x1b\r' },
+      ])
+    })
+  }
+
+  it('holding Shift+Enter adds a newline per repeat', async () => {
+    onOS('Linux x86_64')
+    await mountPanel()
+    await replay()
+    press({ shift: true })
+    press({ shift: true }, 'keydown', true)
+    press({ shift: true }, 'keydown', true)
+    expect(inputs()).toHaveLength(3)
+  })
+
+  it('leaves plain Enter and Alt+Enter to xterm', async () => {
+    onOS('Win32')
+    await mountPanel()
+    await replay()
+    expect(press({}).ret).toBe(true)
+    expect(press({ alt: true }).ret).toBe(true)
+    expect(inputs()).toEqual([])
+  })
+
+  it('sends nothing while the replay is written', async () => {
+    onOS('Win32')
+    await mountPanel()
+    sock().frame(new TextEncoder().encode('old screen').buffer)
+    expect(press({ shift: true }).ret).toBe(false)
+    expect(inputs()).toEqual([])
   })
 })
 

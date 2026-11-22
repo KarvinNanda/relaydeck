@@ -481,6 +481,13 @@ async function createTerm(el: HTMLElement): Promise<void> {
       return false
     }
     const a = keyAction(os, ev, t.hasSelection())
+    if (a === 'newline') {
+      // Every keydown, repeats too, adds one newline. input() goes through
+      // onData, so the replay guard below still applies.
+      ev.preventDefault()
+      if (ev.type === 'keydown') t.input('\x1b\r', true)
+      return false
+    }
     if (ev.type === 'keydown') held = a === 'pass' ? null : { code: ev.code, action: a }
     if (a === 'pass') return true
     if (a === 'copy') {
