@@ -541,8 +541,9 @@ func (d *Deliverer) sendNudge(t Target, cand, unread []notify.Message) bool {
 	d.sleep(d.enterDelay)
 	// The PTY reader feeds the screen asynchronously, so poll until the box
 	// shows the nudge itself. "Not empty" is not enough: a prompt suggestion
-	// is already in the box as plain text. The Draft is one input row, so a
-	// nudge that wraps is never confirmed (the box is not even detected). If
+	// is already in the box as plain text. The Draft has one line per box
+	// row, so a nudge that wraps reads with a line break and is never
+	// confirmed. If
 	// an overlay or dialog shows instead, or the nudge never appears, Enter
 	// could pick an option or submit the suggestion: leave the messages
 	// queued. (This does not detect user typing during the wait.)

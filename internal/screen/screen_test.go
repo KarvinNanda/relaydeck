@@ -597,3 +597,114 @@ func TestTrustOptionsSeparatedByRows(t *testing.T) {
 		})
 	}
 }
+
+// boxRows draws an anchored input box at boxTop: the top rule, the given
+// rows (the first one is the prompt row) and the lower rule, then a footer.
+func boxRows(boxTop int, rows ...string) []byte {
+	r := strings.Repeat("─", 100)
+	var b strings.Builder
+	b.WriteString("\x1b[2J")
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", boxTop, r)
+	for i, l := range rows {
+		fmt.Fprintf(&b, "\x1b[%d;1H%s", boxTop+1+i, l)
+	}
+	fmt.Fprintf(&b, "\x1b[%d;1H%s", boxTop+1+len(rows), r)
+	fmt.Fprintf(&b, "\x1b[%d;3H%s", boxTop+2+len(rows), "footer")
+	return []byte(b.String())
+}
+
+// A draft with newlines (Shift+Enter in the panel) or a wrapped long line
+// makes the box taller than one row (#95).
+func TestMultiRowBox(t *testing.T) {
+	tests := []struct {
+		name  string
+		rows  []string
+		draft string
+	}{
+		{"three lines", []string{"❯ aaa", "  bbb", "  ccc"}, "aaa\nbbb\nccc"},
+		{"ends in an empty line", []string{"❯ aaa", ""}, "aaa"},
+		{"wrapped line", []string{"❯ one long line that Claude Code", "  wraps"}, "one long line that Claude Code\nwraps"},
+		{"one row", []string{"❯ draft"}, "draft"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(100, 30, nil)
+			// lower rule on row 29 of 30, footer on the last row
+			s.Write(boxRows(30-1-len(tc.rows), tc.rows...))
+			st := s.State()
+			if !st.InputVisible || st.InputEmpty || st.Draft != tc.draft {
+				t.Fatalf("got %+v, want visible with draft %q", st, tc.draft)
+			}
+		})
+	}
+}
+
+func TestMultiRowBoxRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		rows []string
+	}{
+		{"row not indented", []string{"❯ aaa", "xbbb"}},
+		{"box drawing in a row", []string{"❯ aaa", "  │ menu │"}},
+		{"no prompt row", []string{"  aaa", "  bbb"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(100, 30, nil)
+			s.Write(boxRows(30-1-len(tc.rows), tc.rows...))
+			if st := s.State(); st.InputVisible {
+				t.Fatalf("got %+v, want no input box", st)
+			}
+		})
+	}
+}
+
+// An earlier multi-line prompt in the history above the box is not the box.
+func TestHistoryPromptAboveEmptyBox(t *testing.T) {
+	s := New(100, 30, nil)
+	r := strings.Repeat("─", 100)
+	s.Write([]byte("\x1b[2J\x1b[20;1H❯ old\x1b[21;1H  older\x1b[22;3H⎿  reply" +
+		"\x1b[27;1H" + r + "\x1b[28;1H❯ \x1b[29;1H" + r + "\x1b[30;3Hfooter"))
+	st := s.State()
+	if !st.InputVisible || !st.InputEmpty {
+		t.Fatalf("got %+v, want the empty box", st)
+	}
+}
+
+// Real Claude Code 2.1.330 screens. The test HOME runs the classic renderer,
+// which leaves a blank row under the two footer rows, so these boxes are not
+// anchored and State reports no box; inputBox is checked directly.
+func TestInputBoxOnRealFixtures(t *testing.T) {
+	tests := []struct{ name, draft string }{
+		{"prompt-multiline-100", "aaa\nbbb\nccc"},
+		{"prompt-newline-end-100", "aaa"},
+		{"prompt-wrapped-100", "this draft is one long line that is wider than the one hundred column input box, so Claude Code\nwraps it"},
+		// A multi-line prompt in the history, and a prompt suggestion in the box:
+		// 2.1.330 draws it faint except the cursor cell, so only "O" counts
+		// (the same reading as before #95; the daemon's typed flag decides).
+		{"prompt-after-multiline-100", "O"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, cols, rows := fixture(t, tc.name)
+			s := New(cols, rows, nil)
+			s.Write(data)
+			found := false
+			for y := 0; y < rows; y++ {
+				if !isRule(s.em, y, cols) {
+					continue
+				}
+				if draft, ok := inputBox(s.em, cols, y); ok {
+					found = true
+					if draft != tc.draft {
+						t.Fatalf("draft = %q, want %q", draft, tc.draft)
+					}
+					break
+				}
+			}
+			if !found {
+				t.Fatal("no input box found")
+			}
+		})
+	}
+}

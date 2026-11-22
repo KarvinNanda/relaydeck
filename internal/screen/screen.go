@@ -198,31 +198,78 @@ func (s *Screen) State() (st State) {
 			st.Busy = true
 		}
 	}
-	for y := first + 1; y < h-1; y++ {
-		if !isRule(s.em, y-1, w) || !isRule(s.em, y+1, w) {
+	// The lower rule must be in the last searchRows rows; the prompt row may
+	// be higher when the draft spans several rows.
+	for lower := first + 2; lower < h; lower++ {
+		if !isRule(s.em, lower, w) {
 			continue
 		}
-		if cellContent(s.em, 0, y) != "❯" || cellContent(s.em, 1, y) != nbsp {
-			continue
-		}
-		if !anchored(rows, y+1) {
+		draft, ok := inputBox(s.em, w, lower)
+		if !ok || !anchored(rows, lower) {
 			continue
 		}
 		st.InputVisible = true
-		var draft strings.Builder
-		for x := 2; x < w; x++ {
-			c := s.em.CellAt(x, y)
-			if c == nil || c.Content == "" || c.Style.Attrs&uv.AttrFaint != 0 {
-				draft.WriteByte(' ')
-				continue
-			}
-			draft.WriteString(c.Content)
-		}
-		st.Draft = strings.TrimSpace(draft.String())
-		st.InputEmpty = st.Draft == ""
+		st.Draft = draft
+		st.InputEmpty = draft == ""
 		break
 	}
 	return st
+}
+
+// inputBox reads the input box whose lower rule is at row lower: a rule, the
+// prompt row ("❯" and a no-break space), any continuation rows, and the rule
+// at lower. A continuation row is a draft with newlines (Shift+Enter) or a
+// long line Claude Code wraps: it starts with two blank cells and has no rule
+// or box-drawing character. Anything else above the lower rule means it is
+// not the input box. The draft is the text of every row after the prompt
+// mark, one line per row; faint text (the placeholder) does not count.
+func inputBox(em *vt.SafeEmulator, w, lower int) (string, bool) {
+	for y := lower - 1; y >= 1; y-- {
+		if cellContent(em, 0, y) == "❯" && cellContent(em, 1, y) == nbsp {
+			if !isRule(em, y-1, w) {
+				return "", false
+			}
+			lines := make([]string, 0, lower-y)
+			for r := y; r < lower; r++ {
+				lines = append(lines, strings.TrimRight(rowDraft(em, w, r), " "))
+			}
+			return strings.TrimSpace(strings.Join(lines, "\n")), true
+		}
+		if !continuation(em, w, y) {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// continuation reports whether row y can be a continuation row of a draft.
+func continuation(em *vt.SafeEmulator, w, y int) bool {
+	if !blankCell(cellContent(em, 0, y)) || !blankCell(cellContent(em, 1, y)) {
+		return false
+	}
+	for x := 2; x < w; x++ {
+		if c := cellContent(em, x, y); c == rule || strings.ContainsAny(c, boxChars) {
+			return false
+		}
+	}
+	return true
+}
+
+func blankCell(c string) bool { return c == "" || c == " " || c == nbsp }
+
+// rowDraft is the text of row y after the two prompt or indent cells, with
+// faint cells as spaces.
+func rowDraft(em *vt.SafeEmulator, w, y int) string {
+	var b strings.Builder
+	for x := 2; x < w; x++ {
+		c := em.CellAt(x, y)
+		if c == nil || c.Content == "" || c.Style.Attrs&uv.AttrFaint != 0 {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteString(c.Content)
+	}
+	return b.String()
 }
 
 // trustLayout reports whether the "Yes, I trust this folder" row at y is an
