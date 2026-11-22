@@ -874,6 +874,7 @@ func TestExternalSessionWarning(t *testing.T) {
 	var dirA string // set once the env exists; read by the matcher at poll time
 	e := newEnv(t, func(o *Options) {
 		o.ExternalEvery = 20 * time.Millisecond
+		o.OwnPIDs = func() map[int]bool { return map[int]bool{1: true} } // the read worked
 		o.ExternalList = func(context.Context) (func(dir, sid string, exclude map[int]bool) (int, bool), error) {
 			mu.Lock()
 			p, a := pid, dirA
@@ -929,5 +930,42 @@ func TestExternalSessionWarning(t *testing.T) {
 	eventually(t, "external_pid cleared", func() bool { return externalPID("a") == 0 })
 	if x.RunningExternal("w", "a") {
 		t.Fatal("RunningExternal still true after the outside claude closed")
+	}
+}
+
+// With an agent running, relaydeck's own process tree is never empty. An
+// empty set means the process read failed: relaydeck's own claude would look
+// like an outside one and every message would be held, so the poll keeps its
+// last answer instead (#89).
+func TestExternalPollIgnoresEmptyOwnPIDs(t *testing.T) {
+	needPTY(t)
+	var dirA string
+	var mu sync.Mutex
+	polls := 0
+	e := newEnv(t, func(o *Options) {
+		o.ExternalEvery = 20 * time.Millisecond
+		o.OwnPIDs = func() map[int]bool { return map[int]bool{} }
+		o.ExternalList = func(context.Context) (func(dir, sid string, exclude map[int]bool) (int, bool), error) {
+			mu.Lock()
+			polls++
+			a := dirA
+			mu.Unlock()
+			return func(dir, _ string, _ map[int]bool) (int, bool) { return 4242, dir == a }, nil
+		}
+	})
+	mu.Lock()
+	dirA = e.dirA
+	mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.d.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	if err := e.d.StartAgent("w", "a", "", false); err != nil {
+		t.Fatal(err)
+	}
+	e.waitInfo(t, e.agentID(t, "a"))
+	eventually(t, "a few polls", func() bool { mu.Lock(); defer mu.Unlock(); return polls >= 3 })
+	if (agentsAdapter{e.d}).RunningExternal("w", "a") {
+		t.Fatal("an empty own pid set made relaydeck's own agent look external")
 	}
 }

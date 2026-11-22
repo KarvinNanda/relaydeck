@@ -55,6 +55,12 @@ func (d *Daemon) refreshExternal(ctx context.Context) {
 			return
 		}
 		own := d.opts.OwnPIDs()
+		if len(own) == 0 {
+			// An agent runs, so relaydeck has children: an empty set means
+			// the process read failed, and relaydeck's own claude would look
+			// like an outside one. Keep the last answer.
+			return
+		}
 		for _, a := range agents {
 			if pid, open := match(a.dir, a.session, own); open {
 				next[a.id] = pid
