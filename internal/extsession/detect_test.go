@@ -7,8 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 func agents(ss ...Session) func(context.Context) ([]Session, error) {
@@ -154,7 +157,21 @@ func main() { time.Sleep(time.Minute) }
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 
-	d := Detector{Procs: ListProcs}
+	// Only this test's process: other claude-named processes on the machine
+	// (other packages' fakes running in parallel, a developer's real claude)
+	// can have an unreadable cwd for a moment, which counts as open by design
+	// and would match any folder (#109).
+	ours := func() ([]Session, error) {
+		ss, err := ListProcs()
+		var out []Session
+		for _, s := range ss {
+			if s.PID == cmd.Process.Pid {
+				out = append(out, s)
+			}
+		}
+		return out, err
+	}
+	d := Detector{Procs: ours}
 	var pid int
 	var open bool
 	deadline := time.Now().Add(3 * time.Second)
@@ -311,5 +328,59 @@ func TestOpenKnownIgnoresUnknownCwd(t *testing.T) {
 	}
 	if _, open := snap.OpenKnown("/work/b", "", map[int]bool{42: true}); open {
 		t.Fatal("excluded pid must be ignored")
+	}
+}
+
+// A claude that has exited but is not reaped yet (a zombie) has no readable
+// cwd. It is not a session anyone can type into, so it must not be listed:
+// listed with an unknown cwd, it would make every folder look open (#109).
+func TestListProcsSkipsZombies(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix only")
+	}
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module z\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(tmp, "claude")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = tmp
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin)
+	cmd.Dir = tmp
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	// It exits at once; without Wait it stays a zombie. Wait for that state
+	// instead of a fixed sleep: a busy machine runs the child late.
+	proc, err := process.NewProcess(int32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := proc.Status()
+		if err == nil && slices.Contains(st, process.Zombie) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child never became a zombie: status %v err %v", st, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ss, err := ListProcs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range ss {
+		if s.PID == cmd.Process.Pid {
+			t.Fatalf("zombie claude listed: %+v", s)
+		}
 	}
 }

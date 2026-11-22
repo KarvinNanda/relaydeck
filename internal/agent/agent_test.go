@@ -942,3 +942,23 @@ func TestResetTypedKeepsDraftEndingInNewline(t *testing.T) {
 		t.Fatal("ResetTyped wiped a draft that ends in Meta+Enter")
 	}
 }
+
+// A busy machine can run the screen emulator late. A subscriber that has
+// seen output must find it on the screen too, or Stop's /exit lands outside
+// the input box and the agent is killed (exit -1) instead of exiting (#108).
+func TestStopSendsExitWhenTheScreenLags(t *testing.T) {
+	readLoopGap = func() { time.Sleep(50 * time.Millisecond) }
+	t.Cleanup(func() { readLoopGap = nil })
+	m := newMgr(t, nil)
+	a := start(t, m, "a")
+	replay, out, cancel := a.Subscribe()
+	defer cancel()
+	collect(t, replay, out, "READY")
+	drawInputBox(a)
+	if err := a.Stop(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status() != StatusStopped || a.ExitCode() != 0 {
+		t.Fatalf("status %s code %d, want a clean /exit", a.Status(), a.ExitCode())
+	}
+}

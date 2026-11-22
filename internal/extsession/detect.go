@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -200,6 +201,12 @@ func ListProcs() ([]Session, error) {
 		name, _ := p.Name()
 		exe, exeErr := p.Exe()
 		if !classify(name, exe, exeErr) {
+			continue
+		}
+		// A zombie (exited, not reaped yet) is no session anyone can type
+		// into, and its cwd cannot be read, which would make every folder
+		// look open (#109).
+		if st, err := p.Status(); err == nil && slices.Contains(st, process.Zombie) {
 			continue
 		}
 		cwd, cwdErr := p.Cwd()
