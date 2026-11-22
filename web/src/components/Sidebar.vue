@@ -147,33 +147,37 @@ async function addWorkspace(): Promise<void> {
           </div>
         </div>
       </div>
+
+      <!-- Last in the scroll box: it sits right under the list, and sticks to
+           the bottom edge once the list is longer than the sidebar (#96). -->
+      <div class="ws-add">
+        <form v-if="wsForm.open" class="ws-form" novalidate @submit.prevent="addWorkspace">
+          <label for="new-ws">Workspace name</label>
+          <input
+            id="new-ws"
+            ref="wsInput"
+            v-model.trim="wsForm.name"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="e.g. game-lounge"
+            :aria-invalid="wsNameError ? 'true' : undefined"
+            :aria-describedby="wsNameError ? 'new-ws-err' : undefined"
+            @blur="wsForm.touched = true"
+            @keydown.esc="wsForm.open = false"
+          >
+          <p v-if="wsNameError" id="new-ws-err" class="err">{{ wsNameError }}</p>
+          <p v-if="wsForm.error" class="srv-err" role="alert"><Icon name="attn" /><span>{{ wsForm.error }}</span></p>
+          <div class="acts">
+            <button class="btn" type="button" @click="wsForm.open = false">Cancel</button>
+            <button class="btn btn-primary" type="submit" :disabled="wsForm.sending"><Icon name="plus" />Add</button>
+          </div>
+        </form>
+        <button v-else class="btn add-ws" type="button" @click="openWsForm"><Icon name="plus" />Add workspace</button>
+      </div>
     </div>
 
     <div class="side-foot">
-      <form v-if="wsForm.open" class="ws-form" novalidate @submit.prevent="addWorkspace">
-        <label for="new-ws">Workspace name</label>
-        <input
-          id="new-ws"
-          ref="wsInput"
-          v-model.trim="wsForm.name"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="e.g. game-lounge"
-          :aria-invalid="wsNameError ? 'true' : undefined"
-          :aria-describedby="wsNameError ? 'new-ws-err' : undefined"
-          @blur="wsForm.touched = true"
-          @keydown.esc="wsForm.open = false"
-        >
-        <p v-if="wsNameError" id="new-ws-err" class="err">{{ wsNameError }}</p>
-        <p v-if="wsForm.error" class="srv-err" role="alert"><Icon name="attn" /><span>{{ wsForm.error }}</span></p>
-        <div class="acts">
-          <button class="btn" type="button" @click="wsForm.open = false">Cancel</button>
-          <button class="btn btn-primary" type="submit" :disabled="wsForm.sending"><Icon name="plus" />Add</button>
-        </div>
-      </form>
-      <button v-else class="btn add-ws" type="button" @click="openWsForm"><Icon name="plus" />Add workspace</button>
-
       <div class="legend" role="group" aria-label="Status key">
         <span v-for="s in statusOrder" :key="s" :class="statusInfo(s).cls"><Icon :name="statusInfo(s).icon" />{{ statusInfo(s).word }}</span>
       </div>
@@ -251,12 +255,22 @@ async function addWorkspace(): Promise<void> {
 .add-row { padding: var(--s-2) var(--s-3) var(--s-4) 22px; }
 .add-folder { background: transparent; border-style: dashed; color: var(--text); padding: 0 var(--s-4); }
 
-/* footer: add workspace and the status key */
+.ws-add {
+  position: sticky; bottom: 0; z-index: 1;
+  padding: var(--s-4) var(--s-5); background: var(--surface);
+}
+/* While the list scrolls under it, the rows fade out above the button, so it
+   still shows that there is more below (the tree's own bottom shade is
+   covered). Over the empty gap of a short list it is invisible. */
+.ws-add::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 16px;
+  background: linear-gradient(transparent, var(--surface)); pointer-events: none;
+}
+.add-ws { justify-content: center; width: 100%; }
+/* footer: the status key */
 .side-foot {
   flex: none; padding: var(--s-4) var(--s-5) 0; border-top: 1px solid var(--border);
-  display: grid; gap: var(--s-4);
 }
-.add-ws { justify-content: center; }
 .legend { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5); font-size: 12px; }
 @media (max-width: 767px) { .legend { font-size: 14px; gap: var(--s-2) var(--s-6); } }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -281,6 +295,13 @@ async function addWorkspace(): Promise<void> {
 .btn:disabled { opacity: .6; cursor: default; }
 
 @media (max-width: 767px) {
+  /* the stacked sidebar has a 6px side padding; the footer rule runs the
+     full width like the top bar rule, and the text stays where it was */
+  .side-foot { margin-inline: calc(-1 * var(--s-3)); padding-inline: calc(var(--s-5) + var(--s-3)); }
+  /* the stacked sidebar does not scroll on its own and fades into the page
+     color, so the button needs no sticky frame there */
+  .ws-add { position: static; background: none; }
+  .ws-add::before { display: none; }
   .ws-row { min-height: var(--touch-h); }
   .node-btn { min-height: var(--touch-h); }
   .side-alert .ib { height: var(--touch-h); min-width: var(--touch-h); }
