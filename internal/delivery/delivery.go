@@ -56,6 +56,10 @@ type Agents interface {
 	Screen(ws, folder string) screen.State
 	Start(ws, folder string) error // resume current session or new
 	ExternalOpen(ws, folder string) (bool, error)
+	// RunningExternal reports whether a claude outside relaydeck is open on
+	// the folder or session of the running agent, from the daemon's last poll
+	// (cheap, no process scan).
+	RunningExternal(ws, folder string) bool
 	Inject(ws, folder string, p []byte) error
 	// UserTyped reports whether the user touched this agent's input since the
 	// flag was last cleared, and when they last did. The screen cannot tell a
@@ -310,6 +314,19 @@ func (d *Deliverer) tickTarget(t Target) {
 	}
 	delete(d.extCache, t) // running here: a later stop is checked afresh
 
+	// The same folder or session is also open in a claude outside relaydeck
+	// (#89). The two processes do not sync, so a nudge here would split the
+	// session history. Hold everything, DeliverNow too, until it closes; the
+	// first tick after that releases the messages below.
+	if d.a.RunningExternal(t.WS, t.Folder) {
+		for _, m := range pending {
+			if m.State != notify.StateHeldExternal {
+				d.set(m, notify.StateHeldExternal)
+			}
+		}
+		return
+	}
+
 	asked, forced := d.deliverNow[t] // the user asked with DeliverNow
 	if forced && !d.now().Before(asked.Add(deliverNowTTL)) {
 		delete(d.deliverNow, t)
@@ -317,7 +334,7 @@ func (d *Deliverer) tickTarget(t Target) {
 	}
 	_, waiting := d.nudges[t]
 
-	// Running here means relaydeck owns the session, so external holds are over.
+	// Running here with no outside claude: external holds are over.
 	// unread is everything read_messages will return, so the nudge counts it
 	// all. cand is what this nudge is sent for.
 	var unread, cand []notify.Message

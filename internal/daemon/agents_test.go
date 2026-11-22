@@ -907,6 +907,11 @@ func TestExternalSessionWarning(t *testing.T) {
 		return -1
 	}
 	eventually(t, "external_pid 4242 on a", func() bool { return externalPID("a") == 4242 })
+	// Delivery reads the same answer and holds a's messages (#89).
+	x := agentsAdapter{e.d}
+	if !x.RunningExternal("w", "a") || x.RunningExternal("w", "b") {
+		t.Fatalf("RunningExternal a=%v b=%v, want true and false", x.RunningExternal("w", "a"), x.RunningExternal("w", "b"))
+	}
 	if got := externalPID("b"); got != 0 {
 		t.Fatalf("stopped folder b has external_pid %d", got)
 	}
@@ -922,4 +927,7 @@ func TestExternalSessionWarning(t *testing.T) {
 	pid = 0
 	mu.Unlock()
 	eventually(t, "external_pid cleared", func() bool { return externalPID("a") == 0 })
+	if x.RunningExternal("w", "a") {
+		t.Fatal("RunningExternal still true after the outside claude closed")
+	}
 }
