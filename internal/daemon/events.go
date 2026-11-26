@@ -11,6 +11,8 @@ import (
 //   - "status":  WS, Folder, Status (ExitCode when stopped)
 //   - "message": WS, Folder (the target), Message
 //   - "account": Account
+//   - "external": WS, Folder (an outside claude opened or closed)
+//   - "config":  nothing (a workspace or folder was added or removed)
 type Event struct {
 	Type     string          `json:"type"`
 	WS       string          `json:"ws,omitempty"`

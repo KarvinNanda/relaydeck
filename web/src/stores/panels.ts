@@ -50,6 +50,14 @@ export function createPanels() {
     if (i >= 0) state.focused = list[i]
   }
 
+  // prune closes every panel whose folder keep says is gone (a folder or
+  // workspace was removed, #116).
+  function prune(keep: (ws: string, folder: string) => boolean): void {
+    for (const p of [...list]) {
+      if (!keep(p.ws, p.folder)) closePanel(p.ws, p.folder)
+    }
+  }
+
   const panels = readonly(list) as readonly Readonly<PanelKey>[]
 
   return {
@@ -61,6 +69,7 @@ export function createPanels() {
     openPanel,
     closePanel,
     focusPanel,
+    prune,
   }
 }
 

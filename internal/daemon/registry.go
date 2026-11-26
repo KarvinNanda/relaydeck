@@ -107,6 +107,16 @@ func (r *registry) latest(t delivery.Target) (string, bool) {
 	return id, ok
 }
 
+// dropLatest forgets the newest agent id of t (its folder was removed) and
+// returns it.
+func (r *registry) dropLatest(t delivery.Target) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.latestID[t]
+	delete(r.latestID, t)
+	return id, ok
+}
+
 func randHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {

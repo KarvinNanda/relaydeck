@@ -53,6 +53,56 @@ function open(ws: string, f: FolderState): void {
   store.ui.workspace = ws
 }
 
+// Remove a folder or a workspace (#116): one question at a time, right
+// under what it removes. Only the config entry goes; the server refuses a
+// running agent too, the check here only explains it before the click.
+const rm = reactive({ ws: '', folder: null as string | null, open: false, sending: false, error: '' })
+let rmCancel: HTMLButtonElement | null = null
+let rmOpener: HTMLElement | null = null
+function setRmCancel(el: unknown): void {
+  rmCancel = el instanceof HTMLButtonElement ? el : null
+}
+
+function asking(ws: string, folder: string | null): boolean {
+  return rm.open && rm.ws === ws && rm.folder === folder
+}
+
+async function askRemove(ws: string, folder: string | null, ev: Event): Promise<void> {
+  rmOpener = ev.currentTarget instanceof HTMLElement ? ev.currentTarget : null
+  Object.assign(rm, { ws, folder, open: true, error: '' })
+  await nextTick()
+  rmCancel?.focus() // the safe choice
+}
+
+function closeRemove(): void {
+  rm.open = false
+  rmOpener?.focus()
+  rmOpener = null
+}
+
+// Folders of ws whose agent is not stopped, in list order.
+function notStopped(ws: WorkspaceState): string[] {
+  return ws.folders.filter((f) => f.status !== 'stopped').map((f) => f.name)
+}
+
+async function confirmRemove(): Promise<void> {
+  if (!rm.open || rm.sending) return
+  const ws = encodeURIComponent(rm.ws)
+  const path = rm.folder === null ? `/api/workspaces/${ws}` : `/api/workspaces/${ws}/folders/${encodeURIComponent(rm.folder)}`
+  rm.sending = true
+  rm.error = ''
+  try {
+    await api('DELETE', path)
+    rm.open = false
+    rmOpener = null
+    await store.refresh()
+  } catch (e) {
+    rm.error = e instanceof ApiError ? e.message : 'Something went wrong. Try again.'
+  } finally {
+    rm.sending = false
+  }
+}
+
 // Add workspace: a small inline form.
 const wsForm = reactive({ open: false, name: '', touched: false, submitted: false, sending: false, error: '' })
 const wsInput = ref<HTMLInputElement | null>(null)
@@ -101,20 +151,47 @@ async function addWorkspace(): Promise<void> {
       <p v-if="workspaces.length === 0" class="empty">No workspaces yet. Add one below.</p>
 
       <div v-for="ws in workspaces" :key="ws.name" class="ws">
-        <button
-          class="ws-row"
-          type="button"
-          :aria-expanded="!collapsed.has(ws.name)"
-          :aria-controls="`ws-tree-${ws.name}`"
-          @click="toggle(ws.name)"
-        >
-          <Icon :name="collapsed.has(ws.name) ? 'right' : 'down'" />
-          <span class="name">{{ ws.name }}</span>
-          <!-- Read as "4 folders · 1 needs attention". The attention part is
-               too wide for the name line, so it gets its own line under the
-               name and the "·" is only for screen readers. -->
-          <span class="meta"><span class="cnt">{{ plural(ws.folders.length, 'folder', 'folders') }}</span><template v-if="collapsed.has(ws.name) && attentionCount(ws) > 0"><span class="sr-only"> · </span><span class="ws-attn c-attn"><Icon name="attn" />{{ attentionText(attentionCount(ws)) }}</span></template></span>
-        </button>
+        <div class="ws-head">
+          <button
+            class="ws-row"
+            type="button"
+            :aria-expanded="!collapsed.has(ws.name)"
+            :aria-controls="`ws-tree-${ws.name}`"
+            @click="toggle(ws.name)"
+          >
+            <Icon :name="collapsed.has(ws.name) ? 'right' : 'down'" />
+            <span class="name">{{ ws.name }}</span>
+            <!-- Read as "4 folders · 1 needs attention". The attention part is
+                 too wide for the name line, so it gets its own line under the
+                 name and the "·" is only for screen readers. -->
+            <span class="meta"><span class="cnt">{{ plural(ws.folders.length, 'folder', 'folders') }}</span><template v-if="collapsed.has(ws.name) && attentionCount(ws) > 0"><span class="sr-only"> · </span><span class="ws-attn c-attn"><Icon name="attn" />{{ attentionText(attentionCount(ws)) }}</span></template></span>
+          </button>
+          <button
+            class="ib rm rm-ws"
+            type="button"
+            :aria-label="`Remove workspace ${ws.name}`"
+            :title="`Remove workspace ${ws.name}`"
+            :aria-expanded="asking(ws.name, null)"
+            @click="askRemove(ws.name, null, $event)"
+          >
+            <Icon name="trash" />
+          </button>
+        </div>
+        <div v-if="asking(ws.name, null)" class="rm-confirm rm-ws-confirm" role="group" :aria-label="`Remove workspace ${ws.name}`" @keydown.esc="closeRemove">
+          <template v-if="notStopped(ws).length > 0">
+            <p>Stop {{ notStopped(ws).join(', ') }} before you remove this workspace.</p>
+            <div class="acts"><button :ref="setRmCancel" class="btn" type="button" @click="closeRemove">Close</button></div>
+          </template>
+          <template v-else>
+            <p class="q">Remove workspace {{ ws.name }} and its {{ plural(ws.folders.length, 'folder', 'folders') }} from relaydeck?</p>
+            <p class="hint">The folders and their Claude Code sessions stay on disk.</p>
+            <p v-if="rm.error" class="srv-err" role="alert"><Icon name="attn" /><span>{{ rm.error }}</span></p>
+            <div class="acts">
+              <button :ref="setRmCancel" class="btn" type="button" @click="closeRemove">Cancel</button>
+              <button class="btn btn-danger" type="button" :disabled="rm.sending" @click="confirmRemove"><Icon name="trash" />Remove</button>
+            </div>
+          </template>
+        </div>
 
         <div v-if="!collapsed.has(ws.name)" :id="`ws-tree-${ws.name}`">
           <ul v-if="ws.folders.length" class="tree">
@@ -138,6 +215,31 @@ async function addWorkspace(): Promise<void> {
                 </span>
                 <span v-if="f.on_default_login && !windows" class="note"><Icon name="attn" /><span>On default login: a cswap switch will move it</span></span>
               </button>
+              <button
+                class="ib rm"
+                type="button"
+                :aria-label="`Remove folder ${f.name}`"
+                :title="`Remove folder ${f.name}`"
+                :aria-expanded="asking(ws.name, f.name)"
+                @click="askRemove(ws.name, f.name, $event)"
+              >
+                <Icon name="trash" />
+              </button>
+              <div v-if="asking(ws.name, f.name)" class="rm-confirm" role="group" :aria-label="`Remove folder ${f.name}`" @keydown.esc="closeRemove">
+                <template v-if="f.status !== 'stopped'">
+                  <p>Stop {{ f.name }} before you remove it.</p>
+                  <div class="acts"><button :ref="setRmCancel" class="btn" type="button" @click="closeRemove">Close</button></div>
+                </template>
+                <template v-else>
+                  <p class="q">Remove {{ f.name }} from relaydeck?</p>
+                  <p class="hint">The folder and its Claude Code sessions stay on disk.</p>
+                  <p v-if="rm.error" class="srv-err" role="alert"><Icon name="attn" /><span>{{ rm.error }}</span></p>
+                  <div class="acts">
+                    <button :ref="setRmCancel" class="btn" type="button" @click="closeRemove">Cancel</button>
+                    <button class="btn btn-danger" type="button" :disabled="rm.sending" @click="confirmRemove"><Icon name="trash" />Remove</button>
+                  </div>
+                </template>
+              </div>
             </li>
           </ul>
           <div class="add-row">
@@ -253,6 +355,28 @@ async function addWorkspace(): Promise<void> {
 .note .i { margin-top: 2px; }
 
 .add-row { padding: var(--s-2) var(--s-3) var(--s-4) 22px; }
+
+/* remove (#116): always visible but quiet, red only on hover or focus, so
+   it never depends on hover (touch). It sits over the top right corner of
+   its row, so only the name line gives up room for it, and its right edge
+   lines up with the sidebar content edge (10px from the border). */
+.node { position: relative; }
+.node-name { padding-right: 20px; }
+.rm { height: 24px; min-width: 24px; padding: 0; color: var(--text-muted); }
+.node > .rm { position: absolute; top: var(--s-2); right: var(--s-2); }
+.ws-head { position: relative; }
+.ws-head .ws-row { padding-right: calc(var(--s-5) + 24px + var(--s-3)); }
+.ws-head .rm { position: absolute; top: var(--s-2); right: var(--s-5); }
+.rm:hover:not(:disabled), .rm:focus-visible, .rm[aria-expanded="true"] { color: var(--red); background: var(--red-tint); border-color: var(--red-line); }
+.rm-confirm {
+  display: grid; gap: var(--s-2); margin: var(--s-1) var(--s-2) var(--s-3) 0; padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg);
+}
+.rm-ws-confirm { margin: var(--s-1) var(--s-5) var(--s-4) var(--s-5); }
+.rm-confirm p { margin: 0; overflow-wrap: anywhere; }
+.rm-confirm .q { font-weight: 600; }
+.rm-confirm .hint { color: var(--text-muted); }
+.rm-confirm .acts { display: flex; justify-content: flex-end; gap: var(--s-3); flex-wrap: wrap; }
 .add-folder { background: transparent; border-style: dashed; color: var(--text); padding: 0 var(--s-4); }
 
 .ws-add {
@@ -304,6 +428,12 @@ async function addWorkspace(): Promise<void> {
   .ws-add::before { display: none; }
   .ws-row { min-height: var(--touch-h); }
   .node-btn { min-height: var(--touch-h); }
+  .rm { height: var(--touch-h); min-width: var(--touch-h); }
+  .node > .rm { top: 0; }
+  .node-name { padding-right: 38px; }
+  .ws-head .ws-row { padding-right: calc(var(--s-5) + var(--touch-h) + var(--s-3)); }
+  .ws-head .rm { top: 0; }
+  .rm-confirm .acts .btn { flex: 1; justify-content: center; min-height: var(--touch-h); }
   .side-alert .ib { height: var(--touch-h); min-width: var(--touch-h); }
   .side-alert > .i { margin-top: 15px; }
   .side-alert .msg { padding: 12px 0; }

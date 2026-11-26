@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/KarvinNanda/relaydeck/internal/config"
 	"github.com/KarvinNanda/relaydeck/internal/delivery"
@@ -101,6 +102,10 @@ func (d *Daemon) commit(change func(cur []config.Workspace) ([]config.Workspace,
 		d.log.Error("save config failed", "error", err.Error())
 		return fmt.Errorf("save config: %w", err)
 	}
+	if err == nil {
+		// Every open tab reloads its state, not only the one that asked.
+		d.hub.publish(Event{Type: "config"})
+	}
 	return err
 }
 
@@ -159,6 +164,92 @@ func (d *Daemon) AddFolder(ws string, f config.Folder) (config.Folder, error) {
 		return config.Folder{}, err
 	}
 	return f, nil
+}
+
+// RemoveFolder removes a folder from the config (#116). Only the config
+// entry goes: the directory and its Claude Code sessions stay on disk. A
+// folder whose agent runs is refused (ErrRemoveRunning). runMu is held for
+// writing, so no start can pass its config lookup while the check and the
+// save run; a start after it gets ErrNotFound.
+func (d *Daemon) RemoveFolder(ws, name string) error {
+	d.runMu.Lock()
+	defer d.runMu.Unlock()
+	t := delivery.Target{WS: ws, Folder: name}
+	if d.running(t) != nil {
+		return fmt.Errorf("%w: stop %s first", ErrRemoveRunning, name)
+	}
+	d.cfgMu.Lock()
+	err := d.commit(func(cur []config.Workspace) ([]config.Workspace, error) {
+		i := slices.IndexFunc(cur, func(w config.Workspace) bool { return w.Name == ws })
+		if i < 0 {
+			return nil, fmt.Errorf("%w: workspace %q", ErrNotFound, ws)
+		}
+		j := slices.IndexFunc(cur[i].Folders, func(f config.Folder) bool { return f.Name == name })
+		if j < 0 {
+			return nil, fmt.Errorf("%w: folder %s/%s", ErrNotFound, ws, name)
+		}
+		cur[i].Folders = slices.Delete(cur[i].Folders, j, j+1)
+		return cur, nil
+	})
+	d.cfgMu.Unlock()
+	if err != nil {
+		return err
+	}
+	d.forgetFolder(t)
+	d.log.Info("folder removed", "ws", ws, "folder", name)
+	return nil
+}
+
+// RemoveWorkspace removes a workspace and all its folders from the config,
+// as RemoveFolder does for one folder. It is refused while any of its
+// folders has a running agent.
+func (d *Daemon) RemoveWorkspace(ws string) error {
+	d.runMu.Lock()
+	defer d.runMu.Unlock()
+	var gone []string
+	d.cfgMu.Lock()
+	err := d.commit(func(cur []config.Workspace) ([]config.Workspace, error) {
+		i := slices.IndexFunc(cur, func(w config.Workspace) bool { return w.Name == ws })
+		if i < 0 {
+			return nil, fmt.Errorf("%w: workspace %q", ErrNotFound, ws)
+		}
+		var busy []string
+		gone = gone[:0]
+		for _, f := range cur[i].Folders {
+			gone = append(gone, f.Name)
+			if d.running(delivery.Target{WS: ws, Folder: f.Name}) != nil {
+				busy = append(busy, f.Name)
+			}
+		}
+		if len(busy) > 0 {
+			return nil, fmt.Errorf("%w: stop %s first", ErrRemoveRunning, strings.Join(busy, ", "))
+		}
+		return slices.Delete(cur, i, i+1), nil
+	})
+	d.cfgMu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, name := range gone {
+		d.forgetFolder(delivery.Target{WS: ws, Folder: name})
+	}
+	d.log.Info("workspace removed", "ws", ws, "folders", len(gone))
+	return nil
+}
+
+// forgetFolder drops what the daemon keeps for a folder whose config entry
+// is gone: waiting messages (rejected, nothing can read them), its stopped
+// agent with the scrollback, and a user-stop hold. Called without cfgMu:
+// the router takes its own lock.
+func (d *Daemon) forgetFolder(t delivery.Target) {
+	if n := d.router.Drop(t.WS, t.Folder); n > 0 {
+		d.log.Info("waiting messages rejected for a removed folder", "ws", t.WS, "folder", t.Folder, "count", n)
+	}
+	if id, ok := d.reg.dropLatest(t); ok {
+		d.mgr.Remove(id)
+		d.reg.forget(id)
+	}
+	d.life.release(t)
 }
 
 // checkNewFolder runs every check of AddFolder that does not need cswap

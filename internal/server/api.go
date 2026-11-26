@@ -48,7 +48,9 @@ func (a *api) routes() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /api/state", a.state)
 	m.HandleFunc("POST /api/workspaces", a.addWorkspace)
+	m.HandleFunc("DELETE /api/workspaces/{ws}", a.removeWorkspace)
 	m.HandleFunc("POST /api/workspaces/{ws}/folders", a.addFolder)
+	m.HandleFunc("DELETE /api/workspaces/{ws}/folders/{name}", a.removeFolder)
 	m.HandleFunc("POST /api/pick-folder", a.pickFolder)
 	m.HandleFunc("GET /api/workspaces/{ws}/folders/{name}/sessions", a.sessions)
 	m.HandleFunc("POST /api/agents/{ws}/{name}/start", a.start)
@@ -117,6 +119,25 @@ func (a *api) addFolder(w http.ResponseWriter, r *http.Request) {
 		out.PermissionMode = "auto"
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// removeFolder removes a folder from the config (only the entry: the
+// directory and its sessions stay on disk). 409 while its agent runs.
+func (a *api) removeFolder(w http.ResponseWriter, r *http.Request) {
+	if err := a.d.RemoveFolder(r.PathValue("ws"), r.PathValue("name")); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeWorkspace removes a workspace with all its folders, as removeFolder.
+func (a *api) removeWorkspace(w http.ResponseWriter, r *http.Request) {
+	if err := a.d.RemoveWorkspace(r.PathValue("ws")); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // pickFolder opens the native folder dialog on this machine and waits for
@@ -297,7 +318,7 @@ func statusOf(err error) int {
 	case errors.Is(err, daemon.ErrInvalid), errors.Is(err, daemon.ErrNoTranscript),
 		errors.Is(err, launch.ErrBadInput):
 		return http.StatusBadRequest
-	case errors.Is(err, daemon.ErrConflict), errors.Is(err, daemon.ErrRunning),
+	case errors.Is(err, daemon.ErrConflict), errors.Is(err, daemon.ErrRunning), errors.Is(err, daemon.ErrRemoveRunning),
 		errors.Is(err, daemon.ErrNotRunning), errors.Is(err, daemon.ErrDraft),
 		errors.Is(err, daemon.ErrExternalOpen),
 		errors.Is(err, notify.ErrNotAwaitingApproval), errors.Is(err, launch.ErrCswapMissing):
