@@ -13,6 +13,9 @@ const fx = vi.hoisted(() => ({
   terms: [] as FakeTerm[],
   propose: { cols: 100, rows: 30 } as { cols: number; rows: number } | undefined,
   writeCbs: [] as (() => void)[],
+  // the WebGL addon: what it saw, and whether loading it throws (no WebGL2)
+  webgl: [] as { term: unknown }[],
+  webglThrows: false,
 }))
 
 interface FakeTerm {
@@ -101,6 +104,20 @@ vi.mock('@xterm/addon-fit', () => {
     }
   }
   return { FitAddon }
+})
+
+vi.mock('@xterm/addon-webgl', () => {
+  class WebglAddon {
+    onContextLoss() {
+      return { dispose() {} }
+    }
+    dispose() {}
+    activate(t: unknown) {
+      if (fx.webglThrows) throw new Error('WebGL2 not supported')
+      fx.webgl.push({ term: t })
+    }
+  }
+  return { WebglAddon }
 })
 
 vi.mock('../api', async (importOriginal) => {
@@ -218,6 +235,8 @@ beforeEach(() => {
   vi.useFakeTimers()
   fx.terms.length = 0
   fx.writeCbs = []
+  fx.webgl = []
+  fx.webglThrows = false
   fx.propose = { cols: 100, rows: 30 }
   sockets = []
   messages = []
@@ -458,6 +477,21 @@ describe('TerminalPanel terminal', () => {
   it('lets Option+drag select on macOS while the agent uses the mouse (#68)', async () => {
     await mountPanel()
     expect(term().options.macOptionClickForcesSelection).toBe(true)
+  })
+
+  it('draws with the WebGL renderer and scales wide fallback glyphs into their cell (#117)', async () => {
+    await mountPanel()
+    expect(fx.webgl).toEqual([{ term: term() }])
+    expect(term().options.rescaleOverlappingGlyphs).toBe(true)
+  })
+
+  it('keeps the terminal working on the DOM renderer when WebGL2 is missing (#117)', async () => {
+    fx.webglThrows = true
+    await mountPanel()
+    await replay()
+    expect(fx.webgl).toEqual([])
+    term().dataCb?.('x')
+    expect(sockets[0].sent.at(-1)).toBe(JSON.stringify({ type: 'input', data: 'x' }))
   })
 
   it('themes xterm from the tokens', async () => {

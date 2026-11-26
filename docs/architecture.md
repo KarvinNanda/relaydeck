@@ -491,11 +491,12 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 - A query sent at the exact moment a browser attaches may get no answer or two answers.
 - The screen emulator has one drain goroutine per emulator. `Screen.Close` ends it by closing the emulator's input pipe (the library's own `Close` races with the drain's `Read`, so it is not used). `waitLoop` calls it when the process is gone, and `reset` ends the replaced emulator's drain. `Agent.Inject` runs the PTY write in a goroutine with a 2 s timeout (`ErrInjectTimeout`), because a hung claude can block a write for good. That one blocked write goroutine ends when the PTY closes.
 - The scrollback replay is the last 1 MiB of output, not a rendered screen.
+- **Panels draw with xterm's WebGL renderer, and fall back to the DOM renderer** when the browser has no WebGL2, when the addon chunk fails to load, or when the GPU drops the context (`web/src/termrender.ts:useWebgl`). The bundled JetBrains Mono is the `latin` subset only, so box drawing and Claude Code's symbols (`⏺`, `⎿`, `✻`) come from the next font in `--font`, which differs per OS (Menlo on macOS, Consolas and then Segoe UI Symbol on Windows). WebGL draws box drawing itself and scales a wide fallback glyph into its cell (`rescaleOverlappingGlyphs`). On the DOM fallback a wide glyph can still spill over its neighbor and box drawing can show gaps between rows (#117).
 - A slow browser is dropped (the terminal socket closes with "try again later") and reconnects with a fresh replay.
 
 ### Build and dependencies
 
-- **Dev-only npm audit advisories:** `npm audit` reports picomatch (high) and minimatch and glob (moderate) through vite, vitest, vue-tsc and typescript-eslint. `npm audit --omit=dev` reports 0, because the production dependencies are Vue, xterm.js and a font. These tools do not ship in the binary.
+- **Dev-only npm audit advisories:** `npm audit` reports picomatch (high) and minimatch and glob (moderate) through vite, vitest, vue-tsc and typescript-eslint. `npm audit --omit=dev` reports 0, because the production dependencies are Vue, xterm.js with its fit and WebGL addons, and a font. These tools do not ship in the binary.
 - The Go binary embeds `internal/webui/dist`. Without `npm run build` that folder holds only `.gitkeep`, the binary still builds, and `/` answers 404.
 
 ## 7. Where to change things
@@ -526,6 +527,7 @@ Things a maintainer or user must know. Items marked "deferred" are small finding
 | cswap (status, map, account display) | `internal/cswap/cswap.go`, `internal/daemon/cswappoll.go`, `internal/daemon/cfg.go:mappedAccount` |
 | Session list, titles, project directory name | `internal/sessions/sessions.go`, `internal/paths/paths.go:ProjectDirName` |
 | Terminal WebSocket protocol, query-reply filter, size clamp | `internal/server/ws.go`, `web/src/components/TerminalPanel.vue` |
+| Terminal renderer (WebGL or DOM), terminal font | `web/src/termrender.ts`, `createTerm` in `web/src/components/TerminalPanel.vue`, `--font` in `web/src/styles/tokens.css`, font imports in `web/src/main.ts` |
 | Event stream and state snapshot shape | `internal/daemon/events.go`, `internal/daemon/state.go`, `web/src/stores/state.ts`, `web/src/types.ts` |
 | Panel count and layouts | `web/src/stores/panels.ts`, `web/src/components/PanelGrid.vue`, `web/src/components/LayoutSwitcher.vue` |
 | Messages drawer, timeline, notify graph | `web/src/components/NotifyView.vue`, `Timeline.vue`, `NotifyGraph.vue`, `web/src/stores/messages.ts` |
