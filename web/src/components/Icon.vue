@@ -101,6 +101,11 @@ const icons = {
     { tag: 'path', d: 'M20 21a8 8 0 0 0-16 0' },
   ],
   play: [{ tag: 'path', d: 'M6 3l14 9-14 9V3z' }],
+  trash: [
+    { tag: 'path', d: 'M3 6h18' },
+    { tag: 'path', d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' },
+    { tag: 'path', d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' },
+  ],
   x: [
     { tag: 'path', d: 'M18 6 6 18' },
     { tag: 'path', d: 'm6 6 12 12' },

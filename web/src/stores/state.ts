@@ -154,6 +154,7 @@ export function createStore(deps: StoreDeps = { api, openSocket }) {
         scheduleRefresh()
         break
       case 'external':
+      case 'config':
         scheduleRefresh()
         break
       default:

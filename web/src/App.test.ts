@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import App from './App.vue'
 import { store } from './stores/state'
 import { loadPrefs, prefs } from './stores/prefs'
+import { panelStore } from './stores/panels'
 
 afterEach(() => {
   store.state.unauthorized = false
@@ -71,6 +72,32 @@ describe('App', () => {
     const w = mount(App)
     expect(w.find('.count').text()).toBe('3')
     expect(w.find('button[aria-controls="messages"]').text()).toContain('3 awaiting approval')
+  })
+
+  it('closes the panel of a folder that is gone from the state (#116)', async () => {
+    const f = { path: '/a', permission_mode: 'auto', status: 'stopped', on_default_login: false, pending: 0, awaiting_approval: 0 } as const
+    store.state.data = {
+      platform: 'darwin',
+      account: { cswap: false, known: false, default: '' },
+      workspaces: [{ name: 'w', folders: [{ name: 'a', ...f }] }],
+    }
+    panelStore.openPanel('w', 'gone')
+    panelStore.openPanel('x', 'b')
+    const w = mount(App)
+    expect(panelStore.panels).toEqual([])
+    panelStore.openPanel('w', 'a')
+    store.state.data = { ...store.state.data, workspaces: [] }
+    await nextTick()
+    expect(panelStore.panels).toEqual([])
+    w.unmount()
+  })
+
+  it('keeps open panels while the state is not loaded yet (#116)', () => {
+    panelStore.openPanel('w', 'a')
+    const w = mount(App)
+    expect(panelStore.panels).toEqual([{ ws: 'w', folder: 'a' }])
+    w.unmount()
+    panelStore.closePanel('w', 'a')
   })
 
   it('shows disconnected as text, not only color', () => {

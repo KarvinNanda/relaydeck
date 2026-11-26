@@ -4,6 +4,7 @@
 // 18 own, so this file does not change when they fill them in.
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { store } from './stores/state'
+import { panelStore } from './stores/panels'
 import { prefs, setSideWidth, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN } from './stores/prefs'
 import Icon from './components/Icon.vue'
 import NoToken from './components/NoToken.vue'
@@ -47,6 +48,17 @@ watch(
   ([name, n], [oldName, old]) => {
     if (name === oldName && n > old) store.ui.messagesOpen = true
   },
+)
+
+// A folder or workspace removed (in this tab or another) closes its panels.
+// Before the first state arrives nothing is known, so nothing closes.
+watch(
+  () => store.state.data,
+  (data) => {
+    if (!data) return
+    panelStore.prune((ws, folder) => data.workspaces.some((w) => w.name === ws && w.folders.some((f) => f.name === folder)))
+  },
+  { immediate: true },
 )
 
 // ---- sidebar width ----

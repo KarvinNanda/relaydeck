@@ -93,5 +93,9 @@ export interface ExternalEvent {
   ws: string
   folder: string
 }
-export type DaemonEvent = StatusEvent | MessageChangeEvent | AccountEvent | ExternalEvent
+// A workspace or folder was added or removed (#116); the store refreshes.
+export interface ConfigEvent {
+  type: 'config'
+}
+export type DaemonEvent = StatusEvent | MessageChangeEvent | AccountEvent | ExternalEvent | ConfigEvent
 export type EventFrame = StateFrame | DaemonEvent

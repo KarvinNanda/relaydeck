@@ -652,3 +652,52 @@ func TestReadAsAfterRequeueIsUntracked(t *testing.T) {
 		t.Fatal("untracked late read was requeued")
 	}
 }
+
+// A removed folder can never read its messages, so every message still
+// waiting for it (in flight or awaiting approval) is rejected. Delivered
+// messages and messages to other folders are left alone.
+func TestDropRejectsWaitingMessages(t *testing.T) {
+	r := newTestRouter()
+	read, _ := r.Send("ws", "be", "fe", "read")
+	r.Read("ws", "fe")
+	queued, _ := r.Send("ws", "fe-admin", "fe", "queued")
+	held, _ := r.Send("ws", "fe-admin", "fe", "held")
+	if err := r.SetState(held.ID, StateHeldExternal); err != nil {
+		t.Fatal(err)
+	}
+	r.Send("ws", "fe", "be", "hop 2")
+	r.Read("ws", "be")
+	awaiting, _ := r.Send("ws", "be", "fe", "hop 3")
+	if awaiting.State != StateAwaitingApproval {
+		t.Fatalf("setup: %+v", awaiting)
+	}
+	other, _ := r.Send("ws", "fe-admin", "be", "to be")
+
+	sub, cancel := r.Subscribe()
+	defer cancel()
+	if n := r.Drop("ws", "fe"); n != 3 {
+		t.Fatalf("Drop = %d, want 3", n)
+	}
+	want := map[string]State{read.ID: StateDelivered, queued.ID: StateRejected, held.ID: StateRejected, awaiting.ID: StateRejected, other.ID: StateQueued}
+	for _, m := range r.Timeline("ws") {
+		if w, ok := want[m.ID]; ok && m.State != w {
+			t.Fatalf("%s (%q) is %s, want %s", m.ID, m.Body, m.State, w)
+		}
+	}
+	if p := r.Pending("ws", "fe"); len(p) != 0 {
+		t.Fatalf("pending after drop: %+v", p)
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case m := <-sub:
+			if m.State != StateRejected {
+				t.Fatalf("event %+v, want rejected", m)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("got %d events, want 3", i)
+		}
+	}
+	if n := r.Drop("ws", "fe"); n != 0 {
+		t.Fatalf("second Drop = %d, want 0", n)
+	}
+}
