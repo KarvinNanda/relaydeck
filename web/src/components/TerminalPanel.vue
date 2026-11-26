@@ -36,6 +36,7 @@ import SessionPicker, { relTime } from './SessionPicker.vue'
 import type { Session } from '../types'
 import { detectOS, keyAction, type TermOS } from '../termkeys'
 import { Recolor, userRows } from '../termcolors'
+import { useWebgl } from '../termrender'
 import { prefs } from '../stores/prefs'
 
 const props = defineProps<{ ws: string; folder: string; focused: boolean; maximized: boolean; canMaximize: boolean }>()
@@ -431,12 +432,21 @@ function copySelection(t: Terminal, os: TermOS): void {
 // xterm.js is loaded on first use: the app shell does not need it, and it
 // touches canvas APIs as soon as its module runs.
 async function createTerm(el: HTMLElement): Promise<void> {
-  const [{ Terminal }, { FitAddon }] = await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')])
+  // The WebGL addon is optional: if its chunk fails to load, the panel
+  // still works on xterm's DOM renderer (see termrender.ts).
+  const [{ Terminal }, { FitAddon }, webgl] = await Promise.all([
+    import('@xterm/xterm'),
+    import('@xterm/addon-fit'),
+    import('@xterm/addon-webgl').catch(() => null),
+  ])
   if (!alive || term) return
   term = new Terminal({
     fontFamily: token('--font'),
     fontSize: prefs.termFont, // the top bar size control (stores/prefs.ts)
     lineHeight: 1, // more rows; the server needs at least MIN_ROWS
+    // WebGL renderer only: a symbol from a wider fallback font is scaled
+    // into its cell instead of covering its neighbors (#117).
+    rescaleOverlappingGlyphs: true,
     cursorBlink: true,
     // OSC 8 hyperlinks from the agent: http and https only. The agent chose
     // the link, so the user sees the real URL and confirms before it opens.
@@ -466,6 +476,7 @@ async function createTerm(el: HTMLElement): Promise<void> {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(el)
+  if (webgl) useWebgl(term, () => new webgl.WebglAddon())
   // A thin blue bar at the left edge of each user prompt row, drawn in its
   // own layer over the screen (markers and decorations need xterm's normal
   // buffer, and Claude Code runs in the alternate screen).
