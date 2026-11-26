@@ -31,14 +31,17 @@ import (
 
 // Errors returned by the Daemon methods. 13b maps them to HTTP codes.
 var (
-	ErrNotFound     = errors.New("not found")
-	ErrConflict     = errors.New("already exists")
-	ErrInvalid      = errors.New("invalid input")
-	ErrRunning      = errors.New("agent is already running")
-	ErrNotRunning   = errors.New("agent is not running")
-	ErrDraft        = errors.New("agent has an unsent draft; clear it or use force")
-	ErrExternalOpen = errors.New("this session is open in a terminal outside relaydeck")
-	ErrShuttingDown = errors.New("relaydeck is shutting down")
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("already exists")
+	ErrInvalid  = errors.New("invalid input")
+	ErrRunning  = errors.New("agent is already running")
+	// ErrRemoveRunning: a folder (or a workspace with a folder) whose agent
+	// runs cannot be removed. The text names the folders to stop.
+	ErrRemoveRunning = errors.New("a running agent cannot be removed")
+	ErrNotRunning    = errors.New("agent is not running")
+	ErrDraft         = errors.New("agent has an unsent draft; clear it or use force")
+	ErrExternalOpen  = errors.New("this session is open in a terminal outside relaydeck")
+	ErrShuttingDown  = errors.New("relaydeck is shutting down")
 
 	// ErrClaudeNotFound: the claude command is not on PATH. The server
 	// cannot do the work here, so the API answers 503.

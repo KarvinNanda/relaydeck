@@ -356,6 +356,25 @@ func (r *Router) resolve(id string, to State) error {
 	return nil
 }
 
+// Drop rejects every message to folder to of ws that is still waiting (in
+// flight or awaiting approval), for a folder that was removed from the
+// config: nothing can read them any more. It returns how many it rejected.
+// Delivered messages stay as they are.
+func (r *Router) Drop(ws, to string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, m := range r.msgs {
+		if m.Workspace != ws || m.To != to || !(inFlight(m.State) || m.State == StateAwaitingApproval) {
+			continue
+		}
+		m.State = StateRejected
+		r.publish(*m)
+		n++
+	}
+	return n
+}
+
 // Timeline returns every message of the workspace, oldest first.
 func (r *Router) Timeline(ws string) []Message {
 	r.mu.Lock()

@@ -254,6 +254,99 @@ describe('Sidebar', () => {
     expect(w.find('form.ws-form [role="alert"]').text()).toContain('workspace "tools" already exists')
   })
 
+  describe('remove (#116)', () => {
+    function wsBlock(w: ReturnType<typeof mount>, name: string) {
+      const b = w.findAll('div.ws').find((d) => d.find('.ws-row .name').text() === name)
+      if (!b) throw new Error(`no workspace ${name}`)
+      return b
+    }
+
+    it('every folder row has a labelled remove button next to it, always visible', () => {
+      const w = mount(Sidebar)
+      const b = row(w, 'tf').find('button.rm')
+      expect(b.attributes('aria-label')).toBe('Remove folder tf')
+      expect(b.attributes('title')).toBe('Remove folder tf')
+    })
+
+    it('asks first, says nothing on disk is deleted, then deletes and refreshes', async () => {
+      apiMock.mockImplementation(async () => snapshot())
+      const w = mount(Sidebar, { attachTo: document.body })
+      await row(w, 'tf').find('button.rm').trigger('click')
+      const box = row(w, 'tf').find('.rm-confirm')
+      expect(box.text()).toContain('Remove tf from relaydeck?')
+      expect(box.text()).toContain('The folder and its Claude Code sessions stay on disk.')
+      expect(document.activeElement?.textContent).toContain('Cancel') // the safe choice has focus
+      expect(apiMock).not.toHaveBeenCalled()
+      await box.find('button.btn-danger').trigger('click')
+      await flushPromises()
+      expect(apiMock).toHaveBeenCalledWith('DELETE', '/api/workspaces/infra-tools/folders/tf')
+      expect(apiMock).toHaveBeenCalledWith('GET', '/api/state')
+      expect(w.find('.rm-confirm').exists()).toBe(false)
+      w.unmount()
+    })
+
+    it('Cancel and Escape close the question without a request', async () => {
+      const w = mount(Sidebar)
+      await row(w, 'tf').find('button.rm').trigger('click')
+      await row(w, 'tf').find('.rm-confirm button:not(.btn-danger)').trigger('click')
+      expect(w.find('.rm-confirm').exists()).toBe(false)
+      await row(w, 'tf').find('button.rm').trigger('click')
+      await row(w, 'tf').find('.rm-confirm').trigger('keydown', { key: 'Escape' })
+      expect(w.find('.rm-confirm').exists()).toBe(false)
+      expect(apiMock).not.toHaveBeenCalled()
+    })
+
+    it('a folder that is not stopped says to stop it first, with no remove button', async () => {
+      const w = mount(Sidebar)
+      await row(w, 'be').find('button.rm').trigger('click')
+      const box = row(w, 'be').find('.rm-confirm')
+      expect(box.text()).toContain('Stop be before you remove it.')
+      expect(box.find('button.btn-danger').exists()).toBe(false)
+    })
+
+    it('shows the server error in the question', async () => {
+      apiMock.mockImplementation(async () => {
+        throw new ApiError(409, 'a running agent cannot be removed: stop tf first')
+      })
+      const w = mount(Sidebar)
+      await row(w, 'tf').find('button.rm').trigger('click')
+      await row(w, 'tf').find('.rm-confirm button.btn-danger').trigger('click')
+      await flushPromises()
+      expect(row(w, 'tf').find('.rm-confirm [role="alert"]').text()).toContain('stop tf first')
+    })
+
+    it('one question at a time: opening another closes the first', async () => {
+      const w = mount(Sidebar)
+      await row(w, 'tf').find('button.rm').trigger('click')
+      await row(w, 'worker').find('button.rm').trigger('click')
+      expect(w.findAll('.rm-confirm').length).toBe(1)
+      expect(row(w, 'worker').find('.rm-confirm').exists()).toBe(true)
+    })
+
+    it('Remove workspace asks with the folder count and deletes it', async () => {
+      const snap = snapshot()
+      snap.workspaces[1].folders[1].status = 'stopped'
+      store.state.data = snap
+      apiMock.mockImplementation(async () => snap)
+      const w = mount(Sidebar)
+      await wsBlock(w, 'infra-tools').find('button.rm-ws').trigger('click')
+      const box = wsBlock(w, 'infra-tools').find('.rm-confirm')
+      expect(box.text()).toContain('Remove workspace infra-tools and its 2 folders from relaydeck?')
+      expect(box.text()).toContain('The folders and their Claude Code sessions stay on disk.')
+      await box.find('button.btn-danger').trigger('click')
+      await flushPromises()
+      expect(apiMock).toHaveBeenCalledWith('DELETE', '/api/workspaces/infra-tools')
+    })
+
+    it('Remove workspace names the folders to stop first', async () => {
+      const w = mount(Sidebar)
+      await wsBlock(w, 'game-lounge').find('button.rm-ws').trigger('click')
+      const box = wsBlock(w, 'game-lounge').find('.rm-confirm')
+      expect(box.text()).toContain('Stop be, fe-admin, fe-customer before you remove this workspace.')
+      expect(box.find('button.btn-danger').exists()).toBe(false)
+    })
+  })
+
   it('shows the status key with all five statuses', () => {
     const w = mount(Sidebar)
     // no heading row: the group is named for screen readers instead

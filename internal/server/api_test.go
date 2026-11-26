@@ -95,6 +95,9 @@ var apiRoutes = []struct{ method, path string }{
 	{"POST", "/api/agents/w/a/deliver-now"},
 	{"POST", "/api/agents/w/a/attachments"},
 	{"POST", "/api/ws-ticket"},
+	// last: with the token these really remove
+	{"DELETE", "/api/workspaces/w/folders/b"},
+	{"DELETE", "/api/workspaces/w"},
 }
 
 // Every /api route needs the UI token (401 without it or with any other
@@ -129,8 +132,8 @@ func TestRoutesRequireUIToken(t *testing.T) {
 	if r.picker.count() != 0 {
 		t.Fatal("folder dialog opened by a refused request")
 	}
-	if n := len(r.d.State().Workspaces); n != 1 {
-		t.Fatalf("refused request added a workspace: %d", n)
+	if st := r.d.State(); len(st.Workspaces) != 1 || len(st.Workspaces[0].Folders) != 2 {
+		t.Fatalf("refused request changed the workspaces: %+v", st.Workspaces)
 	}
 
 	// With the token every listed route exists (no 401, 404 or 405).
@@ -495,8 +498,56 @@ func TestStatusOfNewSentinels(t *testing.T) {
 	if got := statusOf(fmt.Errorf("%w: session id", launch.ErrBadInput)); got != 400 {
 		t.Fatalf("launch.ErrBadInput = %d, want 400", got)
 	}
+	if got := statusOf(fmt.Errorf("%w: stop a first", daemon.ErrRemoveRunning)); got != 409 {
+		t.Fatalf("ErrRemoveRunning = %d, want 409", got)
+	}
 	if got := statusOf(daemon.ErrShuttingDown); got != 503 {
 		t.Fatalf("ErrShuttingDown = %d, want 503", got)
+	}
+}
+
+// #116: DELETE removes a folder or a whole workspace from the config (204).
+// Unknown is 404, a running agent is 409 with the folders to stop.
+func TestRemoveRoutes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ConPTY is not reliable on CI runners; PTY tests run on unix only")
+	}
+	t.Setenv("PATH", fakeBinDir)
+	r := newRig(t, nil)
+	if code, body := r.api(t, "DELETE", "/api/workspaces/w/folders/b", nil); code != 204 {
+		t.Fatalf("remove b = %d %s", code, body)
+	}
+	if code, body := r.api(t, "DELETE", "/api/workspaces/w/folders/b", nil); code != 404 || errText(t, body) == "" {
+		t.Fatalf("remove b again = %d %s", code, body)
+	}
+	if code, _ := r.api(t, "DELETE", "/api/workspaces/nope", nil); code != 404 {
+		t.Fatalf("remove unknown workspace = %d", code)
+	}
+	if code, body := r.api(t, "POST", "/api/agents/w/a/start", nil); code != 204 {
+		t.Fatalf("start = %d %s", code, body)
+	}
+	for _, path := range []string{"/api/workspaces/w/folders/a", "/api/workspaces/w"} {
+		code, body := r.api(t, "DELETE", path, nil)
+		if code != 409 || errText(t, body) != "a running agent cannot be removed: stop a first" {
+			t.Fatalf("DELETE %s while a runs = %d %s", path, code, body)
+		}
+	}
+	if code, body := r.api(t, "POST", "/api/agents/w/a/stop?force=true", nil); code != 204 {
+		t.Fatalf("stop = %d %s", code, body)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, body := r.api(t, "DELETE", "/api/workspaces/w", nil)
+		if code == 204 {
+			break
+		}
+		if code != 409 || time.Now().After(deadline) {
+			t.Fatalf("remove w after stop = %d %s", code, body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(r.d.State().Workspaces); n != 0 {
+		t.Fatalf("workspaces left = %d, want 0", n)
 	}
 }
 

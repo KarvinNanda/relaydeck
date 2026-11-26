@@ -164,7 +164,15 @@ A workspace is a group of folders whose agents can message each other. Agents ca
 5. Leave **Account** empty unless you use cswap (the field is not shown on Windows). Pick a **Permission mode** (the default is `auto`).
 6. Click **Add folder**.
 
-There is no remove or rename for workspaces and folders in v1. See [section 11](#11-known-limits).
+### Remove a folder or a workspace
+
+1. Stop the folder's agent first (the Stop button in its panel). For a workspace, stop every folder in it.
+2. In the sidebar, click the trash button at the right of the folder row. For a workspace, click the trash button next to **Add folder**.
+3. Read the question and click **Remove**. Click **Cancel** or press Escape to keep it.
+
+Only the entry in relaydeck goes away. The folder on disk and its Claude Code sessions stay, so you can add the folder again later and resume a session. If the agent is still running, the sidebar asks you to stop it first, and the server refuses the remove too. Messages that were still waiting for a removed folder become `rejected`. An open panel of a removed folder closes, in every browser tab.
+
+There is no rename. See [section 11](#11-known-limits).
 
 ### Open a panel and start an agent
 
@@ -293,7 +301,7 @@ Shift+Enter or Ctrl+Enter starts a new line in the input box instead of sending 
 ## 11. Known limits
 
 - The message queue is lost on a daemon restart. Persisting it is planned.
-- No remove or rename for workspaces and folders. Edit `config.yaml` by hand and restart.
+- No rename for workspaces and folders. Remove the folder and add it again under the new name, or edit `config.yaml` by hand and restart.
 - Automatic delivery reads the terminal screen. It is validated on Claude Code 2.1.326 and 2.1.327. A new Claude Code layout makes delivery wait, not misfire. **Deliver now** is the way out.
 - The 4 panel limit is enforced in the browser only.
 - A multi-agent chain needs an instruction from you in each agent.

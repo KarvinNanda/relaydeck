@@ -100,4 +100,15 @@ describe('panels store', () => {
     expect(p.focused).toEqual({ ws: 'w', folder: 'a' })
     expect(p.panels).toEqual([{ ws: 'w', folder: 'a' }])
   })
+
+  it('prune closes the panels of folders that are gone and keeps focus valid (#116)', () => {
+    const p = createPanels()
+    p.openPanel('w', 'a')
+    p.openPanel('w', 'b')
+    p.openPanel('x', 'c')
+    p.focusPanel('w', 'b')
+    p.prune((ws, folder) => !(ws === 'w' && folder === 'b') && ws !== 'x')
+    expect(p.panels).toEqual([{ ws: 'w', folder: 'a' }])
+    expect(p.focused).toEqual({ ws: 'w', folder: 'a' })
+  })
 })

@@ -203,6 +203,19 @@ describe('state store', () => {
     expect(store.state.data!.workspaces[0].folders[0].pending).toBe(1)
   })
 
+  it('refreshes the state after a config event, so every tab sees a removed folder (#116)', async () => {
+    const after = snapshot()
+    after.workspaces[0].folders.pop()
+    const { store, api, sockets } = rig([snapshot(), after])
+    store.start()
+    await flush()
+    sockets[0].send({ type: 'state', ...snapshot() })
+    sockets[0].send({ type: 'config' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(store.state.data!.workspaces[0].folders.length).toBe(snapshot().workspaces[0].folders.length - 1)
+  })
+
   it('refreshes the state after an external event (#89)', async () => {
     const after = snapshot()
     after.workspaces[0].folders[0].external_pid = 4242
